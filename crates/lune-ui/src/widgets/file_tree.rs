@@ -225,13 +225,16 @@ pub fn render_file_tree(
     state: &mut FileTreeState,
     workspace_name: &str,
 ) {
-    if area.height == 0 || area.width == 0 {
+    if area.height == 0 || area.width < 2 {
         return;
     }
 
+    // Reserve the rightmost column for the border separator.
+    let content_width = area.width - 1;
+
     // Header row.
     let header = format!(" {workspace_name}");
-    Line::from(Span::from(header).bold()).render(Rect::new(area.x, area.y, area.width, 1), buf);
+    Line::from(Span::from(header).bold()).render(Rect::new(area.x, area.y, content_width, 1), buf);
 
     if area.height < 2 {
         return;
@@ -253,9 +256,19 @@ pub fn render_file_tree(
         }
 
         let is_selected = state.scroll_offset + i == state.selected;
-        let line_area = Rect::new(area.x, y, area.width, 1);
+        let line_area = Rect::new(area.x, y, content_width, 1);
 
         render_entry(line_area, buf, entry, *depth, is_selected, &state.config);
+    }
+
+    // Draw a right border line for visual separation from the editor pane.
+    let border_x = area.x + content_width;
+    let border_style = Style::default().fg(Color::DarkGray);
+    for y in area.y..area.y + area.height {
+        if let Some(cell) = buf.cell_mut((border_x, y)) {
+            cell.set_symbol("│");
+            cell.set_style(border_style);
+        }
     }
 }
 

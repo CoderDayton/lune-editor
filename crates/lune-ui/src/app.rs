@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Error;
 use crossbeam::channel::{self, Receiver, TryRecvError};
@@ -121,6 +121,8 @@ pub struct AppState {
     pub git_behind: usize,
     /// Git panel state.
     pub git_panel: GitPanelState,
+    /// Last left-click info for double-click detection: (time, column, row).
+    last_click: Option<(Instant, u16, u16)>,
 }
 
 /// Which border is being dragged by the mouse.
@@ -168,6 +170,7 @@ impl AppState {
             git_ahead: 0,
             git_behind: 0,
             git_panel: GitPanelState::new(),
+            last_click: None,
         }
     }
 
@@ -1159,9 +1162,19 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
                 && row < left_area.y + left_area.height
             {
                 state.focus.focus(PanelId::FileTree);
+                // Detect double-click: same position within 500ms.
+                let now = Instant::now();
+                let is_double = state.last_click.is_some_and(|(t, c, r)| {
+                    c == col && r == row && now.duration_since(t).as_millis() < 500
+                });
                 if let Some(idx) = state.file_tree.hit_test(row, left_area) {
                     state.file_tree.selected = idx;
+                    if is_double {
+                        state.last_click = None;
+                        return handle_file_tree_enter(state);
+                    }
                 }
+                state.last_click = Some((now, col, row));
                 return Control::Changed;
             }
         }
