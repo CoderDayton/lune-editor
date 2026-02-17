@@ -9,7 +9,7 @@
 
 use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
-use ratatui_core::style::{Color, Modifier, Style, Stylize};
+use ratatui_core::style::{Style, Stylize};
 use ratatui_core::text::{Line, Span};
 use ratatui_core::widgets::Widget;
 
@@ -18,6 +18,7 @@ use lune_core::prelude::*;
 use lune_git::GutterMarks;
 
 use crate::highlight::theme::SyntaxTheme;
+use crate::theme::Theme;
 use crate::vim::VimMode;
 
 // ── Viewport state ────────────────────────────────────────────────────
@@ -66,7 +67,10 @@ impl ViewportState {
 
     /// Scroll down by N lines, clamped to total line count.
     pub fn scroll_down(&mut self, n: usize, total_lines: usize, viewport_height: usize) {
-        let max_top = total_lines.saturating_sub(viewport_height);
+        // Allow scrolling beyond the last screenful so content can reach the
+        // top of the viewport, minus a small margin to always show one line.
+        let min_visible = 1.min(viewport_height);
+        let max_top = total_lines.saturating_sub(min_visible);
         self.top_line = (self.top_line + n).min(max_top);
     }
 }
@@ -106,15 +110,16 @@ pub fn render_editor_pane(
     viewport: &mut ViewportState,
     vim_mode: VimMode,
     highlighted: Option<&[HighlightedLine]>,
-    theme: &SyntaxTheme,
+    syntax_theme: &SyntaxTheme,
     gutter_marks: Option<&GutterMarks>,
+    theme: &Theme,
 ) {
     if area.height == 0 || area.width == 0 {
         return;
     }
 
     let Some(text_buf) = text_buf else {
-        render_welcome(area, buf);
+        render_welcome(area, buf, theme);
         return;
     };
 
@@ -150,7 +155,7 @@ pub fn render_editor_pane(
         if line_idx < total_lines {
             // Render git gutter mark (if active).
             if let Some(marks) = gutter_marks {
-                render_git_gutter(area.x, y, line_idx, marks, buf);
+                render_git_gutter(area.x, y, line_idx, marks, buf, theme);
             }
 
             render_line_number(
@@ -160,6 +165,7 @@ pub fn render_editor_pane(
                 line_idx,
                 cursor.line == line_idx,
                 buf,
+                theme,
             );
 
             // Look up highlighted spans for this line.
@@ -176,8 +182,9 @@ pub fn render_editor_pane(
                 vim_mode,
                 selection.as_ref(),
                 hl_line,
-                theme,
+                syntax_theme,
                 buf,
+                theme,
             );
         } else {
             // Tilde for lines past end of buffer.
@@ -195,12 +202,13 @@ fn render_line_number(
     line_idx: usize,
     is_current: bool,
     buf: &mut Buffer,
+    theme: &Theme,
 ) {
     let num_str = format!("{:>width$} ", line_idx + 1, width = (gw - 1) as usize);
     let span = if is_current {
-        Span::from(num_str).bold()
+        Span::styled(num_str, theme.editor_gutter_active)
     } else {
-        Span::from(num_str).dim()
+        Span::styled(num_str, theme.editor_gutter_inactive)
     };
     Line::from(span).render(Rect::new(x, y, gw, 1), buf);
 }
@@ -211,12 +219,19 @@ fn render_line_number(
 /// - `│` green for added lines
 /// - `│` yellow for modified lines
 /// - `▾` red for deleted lines (at the line above the deletion)
-fn render_git_gutter(x: u16, y: u16, line_idx: usize, marks: &GutterMarks, buf: &mut Buffer) {
+fn render_git_gutter(
+    x: u16,
+    y: u16,
+    line_idx: usize,
+    marks: &GutterMarks,
+    buf: &mut Buffer,
+    theme: &Theme,
+) {
     if let Some(mark) = marks.get(line_idx) {
         let (ch, color) = match mark {
-            lune_git::GutterMark::Added => ("│", Color::Green),
-            lune_git::GutterMark::Modified => ("│", Color::Yellow),
-            lune_git::GutterMark::Deleted => ("▾", Color::Red),
+            lune_git::GutterMark::Added => ("│", theme.git_added),
+            lune_git::GutterMark::Modified => ("│", theme.git_modified),
+            lune_git::GutterMark::Deleted => ("▾", theme.git_deleted),
         };
         let span = Span::styled(ch, Style::new().fg(color));
         Line::from(span).render(Rect::new(x, y, GIT_GUTTER_WIDTH, 1), buf);
@@ -238,6 +253,7 @@ fn render_line_content(
     hl_line: Option<&HighlightedLine>,
     theme: &SyntaxTheme,
     buf: &mut Buffer,
+    ui_theme: &Theme,
 ) {
     let line_owned = text_buf.line(line_idx).unwrap_or_default();
     let line_text = line_owned.trim_end_matches('\n').trim_end_matches('\r');
@@ -262,13 +278,13 @@ fn render_line_content(
     // Apply selection highlighting.
     if let Some((sel_start, sel_end)) = selection {
         apply_selection_highlight(
-            x, y, width, line_idx, left_col, sel_start, sel_end, line_text, buf,
+            x, y, width, line_idx, left_col, sel_start, sel_end, line_text, buf, ui_theme,
         );
     }
 
     // Render cursor.
     if cursor.line == line_idx {
-        render_cursor(x, y, width, cursor, left_col, vim_mode, buf);
+        render_cursor(x, y, width, cursor, left_col, vim_mode, buf, ui_theme);
     }
 }
 
@@ -336,6 +352,7 @@ fn build_styled_line<'a>(
 
 /// Render the cursor on a line cell.
 #[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::too_many_arguments)]
 fn render_cursor(
     x: u16,
     y: u16,
@@ -344,6 +361,7 @@ fn render_cursor(
     left_col: usize,
     vim_mode: VimMode,
     buf: &mut Buffer,
+    theme: &Theme,
 ) {
     let cursor_screen_col = cursor.col.saturating_sub(left_col);
     if cursor_screen_col < width {
@@ -353,15 +371,11 @@ fn render_cursor(
         match vim_mode {
             VimMode::Normal | VimMode::Visual | VimMode::VisualLine | VimMode::Command => {
                 // Block cursor: reverse the cell.
-                cell.set_style(Style::new().add_modifier(Modifier::REVERSED));
+                cell.set_style(theme.editor_cursor_normal);
             }
             VimMode::Insert => {
                 // Line cursor: underline the cell.
-                cell.set_style(
-                    Style::new()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::UNDERLINED),
-                );
+                cell.set_style(theme.editor_cursor_insert);
             }
         }
     }
@@ -379,6 +393,7 @@ fn apply_selection_highlight(
     sel_end: &Position,
     line_text: &str,
     buf: &mut Buffer,
+    theme: &Theme,
 ) {
     // Determine the selected column range on this line.
     let (line_sel_start, line_sel_end) = if line_idx < sel_start.line || line_idx > sel_end.line {
@@ -393,7 +408,7 @@ fn apply_selection_highlight(
         (0, line_text.len())
     };
 
-    let sel_style = Style::new().bg(Color::DarkGray);
+    let sel_style = Style::new().bg(theme.selection_bg);
 
     for col in line_sel_start..line_sel_end {
         if col < left_col {
@@ -410,7 +425,7 @@ fn apply_selection_highlight(
 
 /// Render the welcome screen when no buffer is open.
 #[allow(clippy::cast_possible_truncation)]
-fn render_welcome(area: Rect, buf: &mut Buffer) {
+fn render_welcome(area: Rect, buf: &mut Buffer, theme: &Theme) {
     let messages = [
         "Lune Editor",
         "",
@@ -431,9 +446,9 @@ fn render_welcome(area: Rect, buf: &mut Buffer) {
         }
         let x = area.x + area.width.saturating_sub(msg.len() as u16) / 2;
         let span = if i == 0 {
-            Span::from(*msg).bold()
+            Span::styled(*msg, theme.welcome_title)
         } else {
-            Span::from(*msg).dim()
+            Span::styled(*msg, theme.welcome_text)
         };
         Line::from(span).render(Rect::new(x, y, msg.len() as u16, 1), buf);
     }
@@ -524,7 +539,7 @@ mod tests {
         vp.scroll_down(10, 100, 20);
         assert_eq!(vp.top_line, 10);
         vp.scroll_down(200, 100, 20);
-        assert_eq!(vp.top_line, 80); // max = 100 - 20
+        assert_eq!(vp.top_line, 99); // max = 100 - 1 (last line at top)
     }
 
     #[test]

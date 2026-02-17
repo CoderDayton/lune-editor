@@ -97,12 +97,10 @@ impl Keymap {
             KeyModifiers::CONTROL,
             AppCommand::ToggleAiPanel,
         );
-
-        // Focus cycling.
         km.bind(
-            KeyCode::Char('E'),
+            KeyCode::Char('G'),
             KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            AppCommand::FocusNextPane,
+            AppCommand::ToggleGitPanel,
         );
 
         // Editor commands.

@@ -7,14 +7,15 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use ratatui::widgets::{Block, Borders, Clear};
+use ratatui::widgets::{Block, BorderType, Borders, Clear};
 use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
-use ratatui_core::style::{Color, Style, Stylize};
+use ratatui_core::style::{Style, Stylize};
 use ratatui_core::text::{Line, Span};
 use ratatui_core::widgets::Widget;
 
 use crate::event::AppCommand;
+use crate::theme::Theme;
 use lune_core::language::lang;
 
 // ── Overlay kinds ─────────────────────────────────────────────────────
@@ -63,7 +64,9 @@ impl OverlayState {
     pub fn open_command_palette(&mut self) {
         self.command_palette.input.clear();
         self.command_palette.selected = 0;
-        self.command_palette.filtered_commands = all_palette_commands();
+        self.command_palette.scroll_offset = 0;
+        self.command_palette.ensure_commands_cached();
+        self.command_palette.filtered_commands = self.command_palette.all_commands.clone();
         self.active = Some(OverlayKind::CommandPalette);
     }
 
@@ -110,6 +113,8 @@ impl OverlayState {
 pub struct PaletteCommand {
     /// Display name.
     pub label: String,
+    /// Pre-computed lowercase label for filtering.
+    label_lower: String,
     /// The command to execute.
     pub command: AppCommand,
 }
@@ -121,22 +126,35 @@ pub struct CommandPaletteState {
     pub input: String,
     /// Index of the currently selected command.
     pub selected: usize,
+    /// Scroll offset for the visible list window.
+    pub scroll_offset: usize,
     /// Filtered list of commands matching the input.
     pub filtered_commands: Vec<PaletteCommand>,
+    /// Cached full command list (built once, reused across filter calls).
+    all_commands: Vec<PaletteCommand>,
 }
 
 impl CommandPaletteState {
+    /// Ensure the cached command list is populated.
+    fn ensure_commands_cached(&mut self) {
+        if self.all_commands.is_empty() {
+            self.all_commands = all_palette_commands();
+        }
+    }
+
     /// Update the filtered command list based on current input.
     pub fn update_filter(&mut self) {
+        self.ensure_commands_cached();
         let query = self.input.to_lowercase();
-        let all = all_palette_commands();
 
         if query.is_empty() {
-            self.filtered_commands = all;
+            self.filtered_commands = self.all_commands.clone();
         } else {
-            self.filtered_commands = all
-                .into_iter()
-                .filter(|cmd| cmd.label.to_lowercase().contains(&query))
+            self.filtered_commands = self
+                .all_commands
+                .iter()
+                .filter(|cmd| cmd.label_lower.contains(&query))
+                .cloned()
                 .collect();
         }
 
@@ -146,6 +164,7 @@ impl CommandPaletteState {
         } else {
             self.selected = self.selected.min(self.filtered_commands.len() - 1);
         }
+        self.scroll_offset = self.scroll_offset.min(self.selected);
     }
 
     /// Move selection up.
@@ -163,6 +182,18 @@ impl CommandPaletteState {
     pub fn select_next(&mut self) {
         if !self.filtered_commands.is_empty() {
             self.selected = (self.selected + 1) % self.filtered_commands.len();
+        }
+    }
+
+    /// Adjust `scroll_offset` so `selected` is visible within `visible_rows`.
+    pub const fn ensure_visible(&mut self, visible_rows: usize) {
+        if visible_rows == 0 {
+            return;
+        }
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        } else if self.selected >= self.scroll_offset + visible_rows {
+            self.scroll_offset = self.selected + 1 - visible_rows;
         }
     }
 
@@ -187,65 +218,32 @@ impl CommandPaletteState {
     }
 }
 
+/// Helper to build a `PaletteCommand` with pre-computed lowercase label.
+fn palette_cmd(label: &str, command: AppCommand) -> PaletteCommand {
+    PaletteCommand {
+        label_lower: label.to_lowercase(),
+        label: label.to_string(),
+        command,
+    }
+}
+
 /// Build the full list of palette commands.
 fn all_palette_commands() -> Vec<PaletteCommand> {
     let mut cmds = vec![
-        PaletteCommand {
-            label: "Save".to_string(),
-            command: AppCommand::Save,
-        },
-        PaletteCommand {
-            label: "Save All".to_string(),
-            command: AppCommand::SaveAll,
-        },
-        PaletteCommand {
-            label: "Open File".to_string(),
-            command: AppCommand::OpenFilePicker,
-        },
-        PaletteCommand {
-            label: "Close Tab".to_string(),
-            command: AppCommand::CloseTab,
-        },
-        PaletteCommand {
-            label: "Next Tab".to_string(),
-            command: AppCommand::NextTab,
-        },
-        PaletteCommand {
-            label: "Previous Tab".to_string(),
-            command: AppCommand::PrevTab,
-        },
-        PaletteCommand {
-            label: "Toggle File Tree".to_string(),
-            command: AppCommand::ToggleFileTree,
-        },
-        PaletteCommand {
-            label: "Toggle AI Panel".to_string(),
-            command: AppCommand::ToggleAiPanel,
-        },
-        PaletteCommand {
-            label: "Toggle Git Panel".to_string(),
-            command: AppCommand::ToggleGitPanel,
-        },
-        PaletteCommand {
-            label: "Undo".to_string(),
-            command: AppCommand::Undo,
-        },
-        PaletteCommand {
-            label: "Redo".to_string(),
-            command: AppCommand::Redo,
-        },
-        PaletteCommand {
-            label: "Find".to_string(),
-            command: AppCommand::Find,
-        },
-        PaletteCommand {
-            label: "Find and Replace".to_string(),
-            command: AppCommand::Replace,
-        },
-        PaletteCommand {
-            label: "Quit".to_string(),
-            command: AppCommand::Quit,
-        },
+        palette_cmd("Save", AppCommand::Save),
+        palette_cmd("Save All", AppCommand::SaveAll),
+        palette_cmd("Open File", AppCommand::OpenFilePicker),
+        palette_cmd("Close Tab", AppCommand::CloseTab),
+        palette_cmd("Next Tab", AppCommand::NextTab),
+        palette_cmd("Previous Tab", AppCommand::PrevTab),
+        palette_cmd("Toggle File Tree", AppCommand::ToggleFileTree),
+        palette_cmd("Toggle AI Panel", AppCommand::ToggleAiPanel),
+        palette_cmd("Toggle Git Panel", AppCommand::ToggleGitPanel),
+        palette_cmd("Undo", AppCommand::Undo),
+        palette_cmd("Redo", AppCommand::Redo),
+        palette_cmd("Find", AppCommand::Find),
+        palette_cmd("Find and Replace", AppCommand::Replace),
+        palette_cmd("Quit", AppCommand::Quit),
     ];
 
     // Language change commands.
@@ -269,12 +267,11 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
     ];
 
     for (name, lid) in languages {
-        cmds.push(PaletteCommand {
-            label: format!("Change Language: {name}"),
-            command: AppCommand::ChangeLanguage(lid),
-        });
+        let label = format!("Change Language: {name}");
+        cmds.push(palette_cmd(&label, AppCommand::ChangeLanguage(lid)));
     }
 
+    cmds.sort_by(|a, b| a.label_lower.cmp(&b.label_lower));
     cmds
 }
 
@@ -497,18 +494,18 @@ pub struct Notification {
 
 /// Render the active overlay on top of the main layout.
 #[allow(clippy::cast_possible_truncation)]
-pub fn render_overlay(area: Rect, buf: &mut Buffer, overlay: &OverlayState) {
+pub fn render_overlay(area: Rect, buf: &mut Buffer, overlay: &mut OverlayState, theme: &Theme) {
     // Render notifications (bottom-right toasts).
-    render_notifications(area, buf, &overlay.notifications);
+    render_notifications(area, buf, &overlay.notifications, theme);
 
     // Render the active overlay.
     match &overlay.active {
         Some(OverlayKind::CommandPalette) => {
-            render_command_palette(area, buf, &overlay.command_palette);
+            render_command_palette(area, buf, &mut overlay.command_palette, theme);
         }
         Some(OverlayKind::FindReplace) => {
             // Placeholder — will be implemented with search integration.
-            render_centered_popup(area, buf, "Find & Replace", &["(Coming soon)"]);
+            render_centered_popup(area, buf, "Find & Replace", &["(Coming soon)"], theme);
         }
         Some(OverlayKind::ConfirmDialog { message, .. }) => {
             render_centered_popup(
@@ -516,10 +513,11 @@ pub fn render_overlay(area: Rect, buf: &mut Buffer, overlay: &OverlayState) {
                 buf,
                 "Confirm",
                 &[message, "", "Press Enter to confirm, Esc to cancel"],
+                theme,
             );
         }
         Some(OverlayKind::FilePicker) => {
-            render_file_picker(area, buf, &overlay.file_picker);
+            render_file_picker(area, buf, &overlay.file_picker, theme);
         }
         None => {}
     }
@@ -527,7 +525,12 @@ pub fn render_overlay(area: Rect, buf: &mut Buffer, overlay: &OverlayState) {
 
 /// Render the command palette popup.
 #[allow(clippy::cast_possible_truncation)]
-fn render_command_palette(area: Rect, buf: &mut Buffer, state: &CommandPaletteState) {
+fn render_command_palette(
+    area: Rect,
+    buf: &mut Buffer,
+    state: &mut CommandPaletteState,
+    theme: &Theme,
+) {
     // Popup dimensions: ~60% width, ~40% height, centered.
     let popup_w = (area.width * 60 / 100).max(30).min(area.width);
     let popup_h = (area.height * 40 / 100).max(8).min(area.height);
@@ -542,8 +545,9 @@ fn render_command_palette(area: Rect, buf: &mut Buffer, state: &CommandPaletteSt
     // Draw border.
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title(" Command Palette ")
-        .style(Style::new().fg(Color::White));
+        .style(Style::new().fg(theme.overlay_border));
     let inner = block.inner(popup_rect);
     block.render(popup_rect, buf);
 
@@ -563,19 +567,26 @@ fn render_command_palette(area: Rect, buf: &mut Buffer, state: &CommandPaletteSt
             .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
     }
 
-    // Command list.
+    // Command list with scroll support.
     let list_start_y = inner.y + 2;
     let list_height = inner.height.saturating_sub(2) as usize;
 
-    for (i, cmd) in state.filtered_commands.iter().enumerate().take(list_height) {
-        let y = list_start_y + i as u16;
+    // Ensure the selected item is visible in the scroll window.
+    state.ensure_visible(list_height);
+
+    for (vi, i) in (state.scroll_offset..).take(list_height).enumerate() {
+        if i >= state.filtered_commands.len() {
+            break;
+        }
+        let y = list_start_y + vi as u16;
         if y >= inner.y + inner.height {
             break;
         }
 
+        let cmd = &state.filtered_commands[i];
         let label = format!("  {}", cmd.label);
         let span = if i == state.selected {
-            Span::from(label).bold().reversed()
+            Span::styled(label, theme.overlay_selected)
         } else {
             Span::from(label)
         };
@@ -585,7 +596,7 @@ fn render_command_palette(area: Rect, buf: &mut Buffer, state: &CommandPaletteSt
 
 /// Render the file picker popup.
 #[allow(clippy::cast_possible_truncation)]
-fn render_file_picker(area: Rect, buf: &mut Buffer, state: &FilePickerState) {
+fn render_file_picker(area: Rect, buf: &mut Buffer, state: &FilePickerState, theme: &Theme) {
     // Popup dimensions: ~60% width, ~60% height, centered.
     let popup_w = (area.width * 60 / 100).max(40).min(area.width);
     let popup_h = (area.height * 60 / 100).max(10).min(area.height);
@@ -603,8 +614,9 @@ fn render_file_picker(area: Rect, buf: &mut Buffer, state: &FilePickerState) {
     let title = format!(" Open: {dir_display} ");
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title(title)
-        .style(Style::new().fg(Color::White));
+        .style(Style::new().fg(theme.overlay_border));
     let inner = block.inner(popup_rect);
     block.render(popup_rect, buf);
 
@@ -628,7 +640,7 @@ fn render_file_picker(area: Rect, buf: &mut Buffer, state: &FilePickerState) {
     let list_start_y = inner.y + 2;
     if inner.height > 2 {
         let up_label = "  ../ (parent directory)";
-        let up_style = Style::new().fg(Color::DarkGray).italic();
+        let up_style = Style::new().fg(theme.overlay_hint_fg).italic();
         Line::from(Span::from(up_label).style(up_style))
             .render(Rect::new(inner.x, list_start_y, inner.width, 1), buf);
     }
@@ -663,13 +675,13 @@ fn render_file_picker(area: Rect, buf: &mut Buffer, state: &FilePickerState) {
             };
 
             let style = if entry.is_dir {
-                Style::new().fg(Color::Cyan)
+                Style::new().fg(theme.overlay_dir_fg)
             } else {
-                Style::new().fg(Color::White)
+                Style::new().fg(theme.overlay_file_fg)
             };
 
             let span = if i == state.selected {
-                Span::from(truncated).style(style).bold().reversed()
+                Span::styled(truncated, theme.overlay_selected)
             } else {
                 Span::from(truncated).style(style)
             };
@@ -694,7 +706,13 @@ fn truncate_path_display(path: &Path, max_len: usize) -> String {
 
 /// Render a generic centered popup with a title and message lines.
 #[allow(clippy::cast_possible_truncation)]
-fn render_centered_popup(area: Rect, buf: &mut Buffer, title: &str, messages: &[&str]) {
+fn render_centered_popup(
+    area: Rect,
+    buf: &mut Buffer,
+    title: &str,
+    messages: &[&str],
+    theme: &Theme,
+) {
     let popup_w = (area.width * 50 / 100).max(20).min(area.width);
     let popup_h = (messages.len() as u16 + 4).min(area.height);
     let popup_x = area.x + (area.width - popup_w) / 2;
@@ -706,8 +724,9 @@ fn render_centered_popup(area: Rect, buf: &mut Buffer, title: &str, messages: &[
     let title_str = format!(" {title} ");
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title(title_str)
-        .style(Style::new().fg(Color::White));
+        .style(Style::new().fg(theme.overlay_border));
     let inner = block.inner(popup_rect);
     block.render(popup_rect, buf);
 
@@ -725,7 +744,12 @@ fn render_centered_popup(area: Rect, buf: &mut Buffer, title: &str, messages: &[
 
 /// Render toast notifications in the bottom-right corner.
 #[allow(clippy::cast_possible_truncation)]
-fn render_notifications(area: Rect, buf: &mut Buffer, notifications: &[Notification]) {
+fn render_notifications(
+    area: Rect,
+    buf: &mut Buffer,
+    notifications: &[Notification],
+    theme: &Theme,
+) {
     if notifications.is_empty() {
         return;
     }
@@ -746,9 +770,9 @@ fn render_notifications(area: Rect, buf: &mut Buffer, notifications: &[Notificat
         Clear.render(rect, buf);
 
         let style = match notif.level {
-            NotificationLevel::Info => Style::new().fg(Color::Green),
-            NotificationLevel::Warning => Style::new().fg(Color::Yellow),
-            NotificationLevel::Error => Style::new().fg(Color::Red),
+            NotificationLevel::Info => Style::new().fg(theme.notif_info),
+            NotificationLevel::Warning => Style::new().fg(theme.notif_warn),
+            NotificationLevel::Error => Style::new().fg(theme.notif_error),
         };
 
         let text = format!(
@@ -765,8 +789,10 @@ mod tests {
     use std::fs;
 
     fn make_palette() -> CommandPaletteState {
+        let all = all_palette_commands();
         CommandPaletteState {
-            filtered_commands: all_palette_commands(),
+            filtered_commands: all.clone(),
+            all_commands: all,
             ..Default::default()
         }
     }

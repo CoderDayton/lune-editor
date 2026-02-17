@@ -14,5 +14,6 @@ pub mod focus;
 pub mod highlight;
 pub mod keybindings;
 pub mod layout;
+pub mod theme;
 pub mod vim;
 pub mod widgets;

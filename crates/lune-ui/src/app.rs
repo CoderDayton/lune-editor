@@ -29,6 +29,7 @@ use lune_git::{GitService, GutterMarks};
 
 use crate::highlight;
 use crate::highlight::theme::SyntaxTheme;
+use crate::theme::Theme;
 
 use crate::event::{AppCommand, AppEvent};
 use crate::focus::{FocusManager, PanelId};
@@ -109,6 +110,8 @@ pub struct AppState {
     lang_registry: LanguageRegistry,
     /// Syntax color theme.
     syntax_theme: SyntaxTheme,
+    /// UI design tokens (colors, borders, styles).
+    pub theme: Theme,
     /// Git service (active when workspace is in a git repository).
     git_service: Option<GitService>,
     /// Per-buffer git gutter marks (cached).
@@ -164,6 +167,7 @@ impl AppState {
             highlighters: HashMap::new(),
             lang_registry: LanguageRegistry::new(),
             syntax_theme: SyntaxTheme::dark(),
+            theme: Theme::dark(),
             git_service: None,
             gutter_marks: HashMap::new(),
             git_branch: String::new(),
@@ -353,50 +357,26 @@ impl AppState {
         self.active_buffer.and_then(|id| self.registry.get_mut(id))
     }
 
-    /// Switch to the next tab.
-    pub fn next_tab(&mut self) {
-        if self.tabs.is_empty() {
+    /// Switch to an adjacent tab by signed offset (+1 = next, -1 = prev).
+    #[allow(clippy::cast_possible_wrap)]
+    pub fn cycle_tab(&mut self, delta: isize) {
+        let len = self.tabs.len();
+        if len == 0 {
             return;
         }
-        if let Some(current) = self.active_buffer {
-            if let Some(idx) = self.tabs.iter().position(|&id| id == current) {
-                let next = (idx + 1) % self.tabs.len();
-                self.active_buffer = Some(self.tabs[next]);
-            }
-        }
-    }
-
-    /// Switch to the previous tab.
-    pub fn prev_tab(&mut self) {
-        if self.tabs.is_empty() {
-            return;
-        }
-        if let Some(current) = self.active_buffer {
-            if let Some(idx) = self.tabs.iter().position(|&id| id == current) {
-                let prev = if idx == 0 {
-                    self.tabs.len() - 1
-                } else {
-                    idx - 1
-                };
-                self.active_buffer = Some(self.tabs[prev]);
-            }
+        if let Some(idx) = self
+            .active_buffer
+            .and_then(|id| self.tabs.iter().position(|&t| t == id))
+        {
+            let next = (idx as isize + delta).rem_euclid(len as isize) as usize;
+            self.active_buffer = Some(self.tabs[next]);
         }
     }
 
     /// Close the active tab.
     pub fn close_active_tab(&mut self) {
         if let Some(id) = self.active_buffer {
-            if let Some(idx) = self.tabs.iter().position(|&tid| tid == id) {
-                self.tabs.remove(idx);
-                self.registry.close(id);
-                self.highlighters.remove(&id);
-                // Activate the nearest remaining tab.
-                self.active_buffer = if self.tabs.is_empty() {
-                    None
-                } else {
-                    Some(self.tabs[idx.min(self.tabs.len() - 1)])
-                };
-            }
+            close_tab_by_id(self, id);
         }
     }
 
@@ -428,23 +408,20 @@ impl AppState {
         }
     }
 
-    /// Build the git branch display string for the status bar.
-    ///
-    /// Format: `branch ↑2 ↓1` (with ahead/behind counts if non-zero).
+    /// Build the git branch display string: `branch ↑2 ↓1`.
     fn build_git_branch_display(&self) -> String {
         use std::fmt::Write;
-
         if self.git_branch.is_empty() {
             return String::new();
         }
-        let mut display = self.git_branch.clone();
+        let mut s = self.git_branch.clone();
         if self.git_ahead > 0 {
-            let _ = write!(display, " ↑{}", self.git_ahead);
+            let _ = write!(s, " ↑{}", self.git_ahead);
         }
         if self.git_behind > 0 {
-            let _ = write!(display, " ↓{}", self.git_behind);
+            let _ = write!(s, " ↓{}", self.git_behind);
         }
-        display
+        s
     }
 
     /// Detect file type from the active buffer using the language registry.
@@ -510,7 +487,14 @@ pub fn render(
     if let Some(left_area) = splits.left {
         let ws_name = state.workspace.as_ref().map_or("EXPLORER", Workspace::name);
         let ft_focused = state.focus.is_focused(PanelId::FileTree);
-        file_tree::render_file_tree(left_area, buf, &mut state.file_tree, ws_name, ft_focused);
+        file_tree::render_file_tree(
+            left_area,
+            buf,
+            &mut state.file_tree,
+            ws_name,
+            ft_focused,
+            &state.theme,
+        );
     }
 
     // Render center: tab bar + editor.
@@ -521,18 +505,24 @@ pub fn render(
     if let Some(right_area) = splits.right {
         if state.layout.show_git_panel {
             let gp_focused = state.focus.is_focused(PanelId::GitPanel);
-            git_panel::render_git_panel(right_area, buf, &mut state.git_panel, gp_focused);
+            git_panel::render_git_panel(
+                right_area,
+                buf,
+                &mut state.git_panel,
+                gp_focused,
+                &state.theme,
+            );
         } else {
-            render_right_panel_placeholder(right_area, buf);
+            render_right_panel_placeholder(right_area, buf, &state.theme);
         }
     }
 
     // Render status bar.
     let status_state = state.build_status_line();
-    status_bar::render_status_bar(splits.status, buf, &status_state);
+    status_bar::render_status_bar(splits.status, buf, &status_state, &state.theme);
 
     // Render overlays on top.
-    overlay::render_overlay(area, buf, &state.overlay);
+    overlay::render_overlay(area, buf, &mut state.overlay, &state.theme);
 
     Ok(())
 }
@@ -552,7 +542,7 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
     let content_area = chunks[1];
 
     // Render tab bar.
-    tab_bar::render_tab_bar(tab_area, buf, &state.tab_mgr, is_focused);
+    tab_bar::render_tab_bar(tab_area, buf, &state.tab_mgr, is_focused, &state.theme);
 
     // Store content area for mouse mapping.
     state.last_editor_content_area = Some(content_area);
@@ -582,11 +572,12 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         highlighted.as_deref(),
         &state.syntax_theme,
         active_gutter,
+        &state.theme,
     );
 }
 
 /// Render a right panel placeholder (AI/Git).
-fn render_right_panel_placeholder(area: Rect, buf: &mut Buffer) {
+fn render_right_panel_placeholder(area: Rect, buf: &mut Buffer, _theme: &Theme) {
     if area.height == 0 {
         return;
     }
@@ -643,8 +634,8 @@ fn handle_fs_event(fs_event: &crate::event::FsEvent, state: &mut AppState) -> Co
         }
     }
 
-    // Refresh git status on file changes (but not too frequently —
-    // the timer handles periodic refresh).
+    // Refresh git status on file changes.
+    // TODO: throttle to avoid blocking the event loop on large repos.
     state.refresh_git();
 
     Control::Changed
@@ -667,6 +658,12 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
     // 1. If overlay is active, route to overlay handler.
     if state.overlay.is_active() {
         return handle_overlay_key(key, state);
+    }
+
+    // Tab key cycles focus between panes (only outside Insert mode).
+    if key.code == KeyCode::Tab && key.modifiers.is_empty() && !state.vim.mode.is_insert() {
+        handle_focus_next_pane(state);
+        return Control::Changed;
     }
 
     // 2. Check global keybindings.
@@ -712,13 +709,11 @@ fn handle_overlay_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
             let cmd = on_confirm.clone();
             match key.code {
                 KeyCode::Enter => {
-                    state.overlay.close();
-                    state.focus.focus_return();
+                    close_overlay(state);
                     Control::Event(AppEvent::Command(cmd))
                 }
                 KeyCode::Esc => {
-                    state.overlay.close();
-                    state.focus.focus_return();
+                    close_overlay(state);
                     Control::Changed
                 }
                 _ => Control::Continue,
@@ -726,8 +721,7 @@ fn handle_overlay_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
         }
         Some(overlay::OverlayKind::FindReplace) => {
             if key.code == KeyCode::Esc {
-                state.overlay.close();
-                state.focus.focus_return();
+                close_overlay(state);
                 Control::Changed
             } else {
                 Control::Continue
@@ -738,23 +732,28 @@ fn handle_overlay_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
     }
 }
 
+/// Close the active overlay and return focus.
+fn close_overlay(state: &mut AppState) {
+    state.overlay.close();
+    state.focus.focus_return();
+}
+
 /// Handle keys in the command palette.
 fn handle_palette_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
     match key.code {
         KeyCode::Esc => {
-            state.overlay.close();
-            state.focus.focus_return();
+            close_overlay(state);
             Control::Changed
         }
-        KeyCode::Enter => {
-            if let Some(cmd) = state.overlay.command_palette.selected_command().cloned() {
-                state.overlay.close();
-                state.focus.focus_return();
+        KeyCode::Enter => state
+            .overlay
+            .command_palette
+            .selected_command()
+            .cloned()
+            .map_or(Control::Changed, |cmd| {
+                close_overlay(state);
                 Control::Event(AppEvent::Command(cmd))
-            } else {
-                Control::Changed
-            }
-        }
+            }),
         KeyCode::Up => {
             state.overlay.command_palette.select_prev();
             Control::Changed
@@ -779,8 +778,7 @@ fn handle_palette_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
 fn handle_file_picker_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
     match key.code {
         KeyCode::Esc => {
-            state.overlay.close();
-            state.focus.focus_return();
+            close_overlay(state);
             Control::Changed
         }
         KeyCode::Enter => handle_file_picker_enter(state),
@@ -793,7 +791,6 @@ fn handle_file_picker_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEv
             Control::Changed
         }
         KeyCode::Backspace => {
-            // If input is empty, go up one directory.
             if !state.overlay.file_picker.backspace() {
                 state.overlay.file_picker.go_up();
             }
@@ -818,10 +815,8 @@ fn handle_file_picker_enter(state: &mut AppState) -> Control<AppEvent> {
         state.overlay.file_picker.enter_directory(&entry.path);
         Control::Changed
     } else {
-        // Open the file and close the picker.
         let path = entry.path;
-        state.overlay.close();
-        state.focus.focus_return();
+        close_overlay(state);
         Control::Event(AppEvent::Command(AppCommand::OpenFile(path)))
     }
 }
@@ -841,9 +836,9 @@ fn handle_file_tree_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEven
         // Enter: open file or toggle directory.
         KeyCode::Enter => handle_file_tree_enter(state),
         // l/Right: expand directory.
-        KeyCode::Char('l') | KeyCode::Right => handle_file_tree_expand(state),
+        KeyCode::Char('l') | KeyCode::Right => handle_file_tree_set_expanded(state, true),
         // h/Left: collapse directory (or go to parent).
-        KeyCode::Char('h') | KeyCode::Left => handle_file_tree_collapse(state),
+        KeyCode::Char('h') | KeyCode::Left => handle_file_tree_set_expanded(state, false),
         // Toggle hidden files.
         KeyCode::Char('H') if key.modifiers.contains(KeyModifiers::SHIFT) => {
             Control::Event(AppEvent::Command(AppCommand::ToggleHiddenFiles))
@@ -875,25 +870,12 @@ fn handle_file_tree_enter(state: &mut AppState) -> Control<AppEvent> {
     }
 }
 
-/// Handle expand (l/Right) in the file tree.
-fn handle_file_tree_expand(state: &mut AppState) -> Control<AppEvent> {
+/// Handle expand/collapse in the file tree.
+fn handle_file_tree_set_expanded(state: &mut AppState, expanded: bool) -> Control<AppEvent> {
     if state.file_tree.selected_is_dir() {
         if let Some(path) = state.file_tree.selected_path().map(Path::to_path_buf) {
             if let Some(ref mut ws) = state.workspace {
-                ws.set_expanded(&path, true);
-                state.refresh_file_tree();
-            }
-        }
-    }
-    Control::Changed
-}
-
-/// Handle collapse (h/Left) in the file tree.
-fn handle_file_tree_collapse(state: &mut AppState) -> Control<AppEvent> {
-    if state.file_tree.selected_is_dir() {
-        if let Some(path) = state.file_tree.selected_path().map(Path::to_path_buf) {
-            if let Some(ref mut ws) = state.workspace {
-                ws.set_expanded(&path, false);
+                ws.set_expanded(&path, expanded);
                 state.refresh_file_tree();
             }
         }
@@ -978,6 +960,12 @@ fn toggle_selected_dir(state: &mut AppState) -> Control<AppEvent> {
 
 /// Handle key events in insert mode — characters are inserted.
 fn handle_insert_mode(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    let extend = key.modifiers.contains(KeyModifiers::SHIFT);
+    let mutates_text = matches!(
+        key.code,
+        KeyCode::Char(_) | KeyCode::Enter | KeyCode::Backspace | KeyCode::Delete | KeyCode::Tab
+    );
+
     let result = match key.code {
         KeyCode::Char(ch) => {
             if let Some(buf) = state.active_buf_mut() {
@@ -997,12 +985,10 @@ fn handle_insert_mode(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
             if let Some(buf) = state.active_buf_mut() {
                 let pos = buf.cursor.primary.head;
                 if pos.col > 0 {
-                    let start = Position::new(pos.line, pos.col - 1);
-                    buf.delete(start, pos);
+                    buf.delete(Position::new(pos.line, pos.col - 1), pos);
                 } else if pos.line > 0 {
-                    let prev_line_len = buf.line_len(pos.line - 1).saturating_sub(1);
-                    let start = Position::new(pos.line - 1, prev_line_len);
-                    buf.delete(start, pos);
+                    let prev_len = buf.line_len(pos.line - 1).saturating_sub(1);
+                    buf.delete(Position::new(pos.line - 1, prev_len), pos);
                 }
             }
             Control::Changed
@@ -1010,65 +996,28 @@ fn handle_insert_mode(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
         KeyCode::Delete => {
             if let Some(buf) = state.active_buf_mut() {
                 let pos = buf.cursor.primary.head;
-                let end = Position::new(pos.line, pos.col + 1);
-                buf.delete(pos, end);
-            }
-            Control::Changed
-        }
-        KeyCode::Left => {
-            if let Some(buf) = state.active_buf_mut() {
-                buf.move_left(key.modifiers.contains(KeyModifiers::SHIFT));
-            }
-            Control::Changed
-        }
-        KeyCode::Right => {
-            if let Some(buf) = state.active_buf_mut() {
-                buf.move_right(key.modifiers.contains(KeyModifiers::SHIFT));
-            }
-            Control::Changed
-        }
-        KeyCode::Up => {
-            if let Some(buf) = state.active_buf_mut() {
-                buf.move_up(key.modifiers.contains(KeyModifiers::SHIFT));
-            }
-            Control::Changed
-        }
-        KeyCode::Down => {
-            if let Some(buf) = state.active_buf_mut() {
-                buf.move_down(key.modifiers.contains(KeyModifiers::SHIFT));
-            }
-            Control::Changed
-        }
-        KeyCode::Home => {
-            if let Some(buf) = state.active_buf_mut() {
-                buf.move_line_start(key.modifiers.contains(KeyModifiers::SHIFT));
-            }
-            Control::Changed
-        }
-        KeyCode::End => {
-            if let Some(buf) = state.active_buf_mut() {
-                buf.move_line_end(key.modifiers.contains(KeyModifiers::SHIFT));
+                buf.delete(pos, Position::new(pos.line, pos.col + 1));
             }
             Control::Changed
         }
         KeyCode::Tab => {
             if let Some(buf) = state.active_buf_mut() {
                 let pos = buf.cursor.primary.head;
-                buf.insert(pos, "    "); // 4-space tabs
+                buf.insert(pos, "    ");
             }
             Control::Changed
+        }
+        KeyCode::Home => apply_motion(state, |buf| buf.move_line_start(extend)),
+        KeyCode::End => apply_motion(state, |buf| buf.move_line_end(extend)),
+        KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+            apply_arrow_motion(key, state, extend)
         }
         _ => Control::Continue,
     };
 
-    // Update highlighter after text-mutating keys.
-    if matches!(
-        key.code,
-        KeyCode::Char(_) | KeyCode::Enter | KeyCode::Backspace | KeyCode::Delete | KeyCode::Tab
-    ) {
+    if mutates_text {
         state.update_active_highlighter();
     }
-
     result
 }
 
@@ -1083,7 +1032,7 @@ fn handle_normal_mode(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
         let action = state.vim.handle_normal(ch, buf);
         apply_vim_action(&action, state)
     } else {
-        handle_arrow_keys(key, state, false)
+        apply_arrow_motion(key, state, false)
     }
 }
 
@@ -1102,35 +1051,18 @@ fn handle_visual_mode(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
     }
 }
 
-/// Handle arrow keys (shared between normal/insert modes).
-fn handle_arrow_keys(key: &KeyEvent, state: &mut AppState, extend: bool) -> Control<AppEvent> {
-    match key.code {
-        KeyCode::Left => {
-            if let Some(buf) = state.active_buf_mut() {
-                buf.move_left(extend);
-            }
-            Control::Changed
-        }
-        KeyCode::Right => {
-            if let Some(buf) = state.active_buf_mut() {
-                buf.move_right(extend);
-            }
-            Control::Changed
-        }
-        KeyCode::Up => {
-            if let Some(buf) = state.active_buf_mut() {
-                buf.move_up(extend);
-            }
-            Control::Changed
-        }
-        KeyCode::Down => {
-            if let Some(buf) = state.active_buf_mut() {
-                buf.move_down(extend);
-            }
-            Control::Changed
-        }
-        _ => Control::Continue,
-    }
+/// Map arrow keys to cursor motion. Returns `Continue` for non-arrow keys.
+fn apply_arrow_motion(key: &KeyEvent, state: &mut AppState, extend: bool) -> Control<AppEvent> {
+    let method: Option<fn(&mut TextBuffer, bool)> = match key.code {
+        KeyCode::Left => Some(TextBuffer::move_left),
+        KeyCode::Right => Some(TextBuffer::move_right),
+        KeyCode::Up => Some(TextBuffer::move_up),
+        KeyCode::Down => Some(TextBuffer::move_down),
+        _ => None,
+    };
+    method.map_or(Control::Continue, |m| {
+        apply_motion(state, |buf| m(buf, extend))
+    })
 }
 
 // ── Mouse handling ────────────────────────────────────────────────────
@@ -1163,13 +1095,17 @@ fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
     }
 }
 
+/// Check if a point is inside a rect.
+const fn point_in_rect(col: u16, row: u16, r: Rect) -> bool {
+    col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
+}
+
 /// Handle left mouse button click.
 #[allow(clippy::cast_possible_truncation)]
 fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEvent> {
-    let col = mouse.column;
-    let row = mouse.row;
+    let (col, row) = (mouse.column, mouse.row);
 
-    // Check if clicking on panel borders (start drag).
+    // Check panel borders first (start drag).
     if let Some(ref splits) = state.last_splits {
         if layout::is_on_left_border(splits, col) {
             state.dragging_border = Some(DragBorder::Left);
@@ -1179,18 +1115,11 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             state.dragging_border = Some(DragBorder::Right);
             return Control::Continue;
         }
-    }
 
-    // Check if clicking in file tree area.
-    if let Some(ref splits) = state.last_splits {
+        // File tree area.
         if let Some(left_area) = splits.left {
-            if col >= left_area.x
-                && col < left_area.x + left_area.width
-                && row >= left_area.y
-                && row < left_area.y + left_area.height
-            {
+            if point_in_rect(col, row, left_area) {
                 state.focus.focus(PanelId::FileTree);
-                // Detect double-click: same position within 500ms.
                 let now = Instant::now();
                 let is_double = state.last_click.is_some_and(|(t, c, r)| {
                     c == col && r == row && now.duration_since(t).as_millis() < 500
@@ -1207,21 +1136,33 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             }
         }
 
-        // Check if clicking in right panel area (git panel).
-        if let Some(right_area) = splits.right {
-            if col >= right_area.x
-                && col < right_area.x + right_area.width
-                && row >= right_area.y
-                && row < right_area.y + right_area.height
-                && state.layout.show_git_panel
-            {
-                state.focus.focus(PanelId::GitPanel);
+        // Git panel area.
+        if state.layout.show_git_panel {
+            if let Some(right_area) = splits.right {
+                if point_in_rect(col, row, right_area) {
+                    state.focus.focus(PanelId::GitPanel);
+                    return Control::Changed;
+                }
+            }
+        }
+
+        // Tab bar (first row of center).
+        if row == splits.center.y {
+            let tab_area = Rect::new(splits.center.x, splits.center.y, splits.center.width, 1);
+            if let Some((idx, is_close)) = state.tab_mgr.hit_test(col, tab_area.x, tab_area.width) {
+                if is_close {
+                    if let Some(bid) = state.tab_mgr.buffer_at(idx) {
+                        close_tab_by_id(state, bid);
+                    }
+                } else if let Some(bid) = state.tab_mgr.buffer_at(idx) {
+                    state.active_buffer = Some(bid);
+                }
                 return Control::Changed;
             }
         }
     }
 
-    // Check if clicking in editor content area (set cursor position).
+    // Editor content area — set cursor.
     if let Some(content_area) = state.last_editor_content_area {
         let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
         let has_git = state
@@ -1245,38 +1186,23 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
         }
     }
 
-    // Check if clicking on a tab.
-    if let Some(ref splits) = state.last_splits {
-        // Tab area is the first row of the center area.
-        let tab_area = Rect::new(splits.center.x, splits.center.y, splits.center.width, 1);
-        if row == tab_area.y {
-            if let Some((idx, is_close)) = state.tab_mgr.hit_test(col, tab_area.x, tab_area.width) {
-                if is_close {
-                    // Close the clicked tab.
-                    if let Some(bid) = state.tab_mgr.buffer_at(idx) {
-                        if let Some(tab_idx) = state.tabs.iter().position(|&id| id == bid) {
-                            state.tabs.remove(tab_idx);
-                            state.registry.close(bid);
-                            state.highlighters.remove(&bid);
-                            if state.active_buffer == Some(bid) {
-                                state.active_buffer = if state.tabs.is_empty() {
-                                    None
-                                } else {
-                                    Some(state.tabs[tab_idx.min(state.tabs.len() - 1)])
-                                };
-                            }
-                        }
-                    }
-                } else if let Some(bid) = state.tab_mgr.buffer_at(idx) {
-                    // Switch to clicked tab.
-                    state.active_buffer = Some(bid);
-                }
-                return Control::Changed;
-            }
+    Control::Continue
+}
+
+/// Close a specific tab by buffer ID (used by mouse click and keyboard).
+fn close_tab_by_id(state: &mut AppState, bid: BufferId) {
+    if let Some(idx) = state.tabs.iter().position(|&id| id == bid) {
+        state.tabs.remove(idx);
+        state.registry.close(bid);
+        state.highlighters.remove(&bid);
+        if state.active_buffer == Some(bid) {
+            state.active_buffer = if state.tabs.is_empty() {
+                None
+            } else {
+                Some(state.tabs[idx.min(state.tabs.len() - 1)])
+            };
         }
     }
-
-    Control::Continue
 }
 
 /// Handle mouse drag for panel resizing.
@@ -1390,10 +1316,7 @@ fn apply_vim_action(action: &VimAction, state: &mut AppState) -> Control<AppEven
             Control::Changed
         }
         VimAction::Undo => {
-            if let Some(buf) = state.active_buf_mut() {
-                buf.undo();
-            }
-            state.update_active_highlighter();
+            apply_buf_edit(state, TextBuffer::undo);
             Control::Changed
         }
         // TODO: implement remaining actions (YankLine, ChangeLine, *Motion).
@@ -1429,6 +1352,14 @@ fn apply_motion(state: &mut AppState, f: impl FnOnce(&mut TextBuffer)) -> Contro
     Control::Changed
 }
 
+/// Helper: apply a buffer edit and refresh the highlighter.
+fn apply_buf_edit(state: &mut AppState, f: fn(&mut TextBuffer) -> bool) {
+    if let Some(buf) = state.active_buf_mut() {
+        let _ = f(buf);
+    }
+    state.update_active_highlighter();
+}
+
 /// Helper: repeat a motion method N times.
 fn move_n(buf: &mut TextBuffer, n: usize, extend: bool, method: fn(&mut TextBuffer, bool)) {
     for _ in 0..n {
@@ -1449,11 +1380,11 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             Control::Changed
         }
         AppCommand::NextTab => {
-            state.next_tab();
+            state.cycle_tab(1);
             Control::Changed
         }
         AppCommand::PrevTab => {
-            state.prev_tab();
+            state.cycle_tab(-1);
             Control::Changed
         }
         // Panel toggles and focus.
@@ -1464,17 +1395,11 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
         | AppCommand::OpenCommandPalette
         | AppCommand::OpenFilePicker => handle_panel_command(cmd, state),
         AppCommand::Undo => {
-            if let Some(buf) = state.active_buf_mut() {
-                buf.undo();
-            }
-            state.update_active_highlighter();
+            apply_buf_edit(state, TextBuffer::undo);
             Control::Changed
         }
         AppCommand::Redo => {
-            if let Some(buf) = state.active_buf_mut() {
-                buf.redo();
-            }
-            state.update_active_highlighter();
+            apply_buf_edit(state, TextBuffer::redo);
             Control::Changed
         }
         AppCommand::EnterNormalMode => {
@@ -1503,8 +1428,8 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
         }
         AppCommand::ChangeLanguage(lang_id) => handle_change_language(*lang_id, state),
         // Git operations.
-        AppCommand::GitStage => handle_git_stage(state),
-        AppCommand::GitUnstage => handle_git_unstage(state),
+        AppCommand::GitStage => handle_git_file_op(state, GitService::stage, "Staged"),
+        AppCommand::GitUnstage => handle_git_file_op(state, GitService::unstage, "Unstaged"),
         AppCommand::GitCommit => handle_git_commit(state),
         AppCommand::GitDiscard => handle_git_discard(state),
         AppCommand::GitRefresh => {
@@ -1691,46 +1616,26 @@ fn handle_change_language(lang_id: LanguageId, state: &mut AppState) -> Control<
     Control::Changed
 }
 
-/// Handle git stage: stage the selected file in the git panel.
-fn handle_git_stage(state: &mut AppState) -> Control<AppEvent> {
+/// Execute a git file operation (stage/unstage) on the selected file.
+fn handle_git_file_op(
+    state: &mut AppState,
+    op: fn(&GitService, &Path) -> anyhow::Result<()>,
+    label: &str,
+) -> Control<AppEvent> {
     let Some(file) = state.git_panel.selected_file().cloned() else {
         return Control::Continue;
     };
-
     if let Some(ref git) = state.git_service {
-        match git.stage(&file.path) {
+        match op(git, &file.path) {
             Ok(()) => {
-                state.status_message = format!("Staged: {}", file.path.display());
+                state.status_message = format!("{label}: {}", file.path.display());
                 state.refresh_git();
             }
             Err(e) => {
-                state.status_message = format!("Stage failed: {e}");
+                state.status_message = format!("{label} failed: {e}");
                 state
                     .overlay
-                    .notify(format!("Stage failed: {e}"), NotificationLevel::Error);
-            }
-        }
-    }
-    Control::Changed
-}
-
-/// Handle git unstage: unstage the selected file in the git panel.
-fn handle_git_unstage(state: &mut AppState) -> Control<AppEvent> {
-    let Some(file) = state.git_panel.selected_file().cloned() else {
-        return Control::Continue;
-    };
-
-    if let Some(ref git) = state.git_service {
-        match git.unstage(&file.path) {
-            Ok(()) => {
-                state.status_message = format!("Unstaged: {}", file.path.display());
-                state.refresh_git();
-            }
-            Err(e) => {
-                state.status_message = format!("Unstage failed: {e}");
-                state
-                    .overlay
-                    .notify(format!("Unstage failed: {e}"), NotificationLevel::Error);
+                    .notify(format!("{label} failed: {e}"), NotificationLevel::Error);
             }
         }
     }

@@ -39,12 +39,6 @@ fn main() -> Result<()> {
         }
     }
 
-    // If no files were opened, start with vim insert mode for a friendlier
-    // first experience (like VS Code). Otherwise start in normal mode.
-    if state.tabs.is_empty() {
-        state.vim.enter_insert();
-    }
-
     // Run the TUI event loop.
     lune_ui::app::run(&mut state)?;
 

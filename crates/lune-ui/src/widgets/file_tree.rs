@@ -11,13 +11,13 @@ use std::path::Path;
 
 use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
-use ratatui_core::style::{Color, Modifier, Style};
+use ratatui_core::style::{Modifier, Style};
 use ratatui_core::text::{Line, Span};
 use ratatui_core::widgets::Widget;
 
 use lune_core::workspace::{flatten_tree, DirEntry, EntryKind, FileStatus, Workspace};
 
-use super::{FOCUS_ACCENT, UNFOCUSED_BORDER};
+use crate::theme::Theme;
 
 /// Configuration for file tree rendering.
 #[derive(Clone, Debug)]
@@ -227,6 +227,7 @@ pub fn render_file_tree(
     state: &mut FileTreeState,
     workspace_name: &str,
     is_focused: bool,
+    theme: &Theme,
 ) {
     if area.height == 0 || area.width < 2 {
         return;
@@ -235,15 +236,17 @@ pub fn render_file_tree(
     // Reserve the rightmost column for the border separator.
     let content_width = area.width - 1;
     let accent = if is_focused {
-        FOCUS_ACCENT
+        theme.border_focused
     } else {
-        UNFOCUSED_BORDER
+        theme.border_unfocused
     };
 
     // Header row — accent color when focused.
     let header = format!(" {workspace_name}");
     let header_style = if is_focused {
-        Style::default().fg(accent).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::BOLD)
     };
@@ -272,15 +275,32 @@ pub fn render_file_tree(
         let is_selected = state.scroll_offset + i == state.selected;
         let line_area = Rect::new(area.x, y, content_width, 1);
 
-        render_entry(line_area, buf, entry, *depth, is_selected, &state.config);
+        render_entry(
+            line_area,
+            buf,
+            entry,
+            *depth,
+            is_selected,
+            &state.config,
+            theme,
+        );
     }
 
     // Draw a right border line for visual separation from the editor pane.
     let border_x = area.x + content_width;
     let border_style = Style::default().fg(accent);
+    let v_str: String = theme.border_chars.vertical.to_string();
+    let tr_str: String = theme.border_chars.top_right.to_string();
+    let br_str: String = theme.border_chars.bottom_right.to_string();
     for y in area.y..area.y + area.height {
         if let Some(cell) = buf.cell_mut((border_x, y)) {
-            cell.set_symbol("│");
+            if y == area.y {
+                cell.set_symbol(&tr_str);
+            } else if y == area.y + area.height - 1 {
+                cell.set_symbol(&br_str);
+            } else {
+                cell.set_symbol(&v_str);
+            }
             cell.set_style(border_style);
         }
     }
@@ -295,6 +315,7 @@ fn render_entry(
     depth: usize,
     is_selected: bool,
     config: &FileTreeConfig,
+    theme: &Theme,
 ) {
     if area.width == 0 {
         return;
@@ -308,46 +329,30 @@ fn render_entry(
             (
                 arrow,
                 Style::default()
-                    .fg(Color::Blue)
+                    .fg(theme.tree_dir_fg)
                     .add_modifier(Modifier::BOLD),
             )
         }
-        EntryKind::File => ("  ", Style::default().fg(Color::White)),
-        EntryKind::Symlink => ("@ ", Style::default().fg(Color::Cyan)),
+        EntryKind::File => ("  ", Style::default().fg(theme.tree_file_fg)),
+        EntryKind::Symlink => ("@ ", Style::default().fg(theme.tree_symlink_fg)),
     };
 
-    // Override file name color based on git status.
-    let name_style = entry
-        .git_status
-        .map_or(base_name_style, |status| match status {
-            FileStatus::Modified => base_name_style.fg(Color::Yellow),
-            FileStatus::Added => base_name_style.fg(Color::Green),
-            FileStatus::Deleted => base_name_style.fg(Color::Red),
-            FileStatus::Conflicted => base_name_style.fg(Color::Magenta),
-            FileStatus::Renamed => base_name_style.fg(Color::Cyan),
-            FileStatus::Untracked => base_name_style.fg(Color::Gray),
-            FileStatus::Ignored => base_name_style.fg(Color::DarkGray),
-        });
-
-    let git_suffix = entry.git_status.map_or("", |status| match status {
-        FileStatus::Modified => " M",
-        FileStatus::Added => " A",
-        FileStatus::Untracked => " ?",
-        FileStatus::Deleted => " D",
-        FileStatus::Renamed => " R",
-        FileStatus::Ignored => " I",
-        FileStatus::Conflicted => " !",
-    });
-
-    let git_color = entry
-        .git_status
-        .map_or(Color::DarkGray, |status| match status {
-            FileStatus::Modified => Color::Yellow,
-            FileStatus::Added => Color::Green,
-            FileStatus::Untracked | FileStatus::Ignored => Color::DarkGray,
-            FileStatus::Deleted | FileStatus::Conflicted => Color::Red,
-            FileStatus::Renamed => Color::Cyan,
-        });
+    // Derive git-related display data in a single lookup.
+    let (name_style, git_suffix, git_color) =
+        entry
+            .git_status
+            .map_or((base_name_style, "", theme.fg_dim), |status| {
+                let (suffix, color) = match status {
+                    FileStatus::Modified => (" M", theme.git_modified),
+                    FileStatus::Added => (" A", theme.git_added),
+                    FileStatus::Deleted => (" D", theme.git_deleted),
+                    FileStatus::Renamed => (" R", theme.git_renamed),
+                    FileStatus::Untracked => (" ?", theme.git_untracked),
+                    FileStatus::Conflicted => (" !", theme.git_conflicted),
+                    FileStatus::Ignored => (" I", theme.git_ignored),
+                };
+                (base_name_style.fg(color), suffix, color)
+            });
 
     let mut spans = vec![
         Span::raw(indent),
@@ -360,9 +365,9 @@ fn render_entry(
     }
 
     let bg = if is_selected {
-        Color::DarkGray
+        theme.tree_selected_bg
     } else {
-        Color::Reset
+        theme.bg
     };
 
     let line = Line::from(spans);
@@ -543,12 +548,14 @@ mod tests {
     fn render_does_not_panic_on_empty() {
         let mut state = FileTreeState::new();
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let theme = Theme::dark();
         render_file_tree(
             Rect::new(0, 0, 30, 10),
             &mut buf,
             &mut state,
             "project",
             false,
+            &theme,
         );
     }
 
@@ -556,7 +563,8 @@ mod tests {
     fn render_does_not_panic_on_zero_area() {
         let mut state = FileTreeState::new();
         let mut buf = Buffer::empty(Rect::new(0, 0, 0, 0));
-        render_file_tree(Rect::ZERO, &mut buf, &mut state, "project", false);
+        let theme = Theme::dark();
+        render_file_tree(Rect::ZERO, &mut buf, &mut state, "project", false, &theme);
     }
 
     #[test]
@@ -566,7 +574,8 @@ mod tests {
 
         let area = Rect::new(0, 0, 40, 8);
         let mut buf = Buffer::empty(area);
-        render_file_tree(area, &mut buf, &mut state, "my-project", true);
+        let theme = Theme::dark();
+        render_file_tree(area, &mut buf, &mut state, "my-project", true, &theme);
 
         // Verify header is rendered.
         let header_cell = buf.cell((1, 0)).expect("cell should exist");

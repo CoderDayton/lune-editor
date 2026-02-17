@@ -13,7 +13,7 @@ use ratatui_core::widgets::Widget;
 use lune_core::workspace::FileStatus;
 use lune_git::{GitFileStatus, GitStatus};
 
-use super::{FOCUS_ACCENT, UNFOCUSED_BORDER};
+use crate::theme::Theme;
 
 /// State of the git panel widget.
 #[derive(Clone, Debug)]
@@ -184,26 +184,43 @@ fn build_entries(status: &GitStatus) -> Vec<PanelEntry> {
 
 /// Render the git panel.
 #[allow(clippy::cast_possible_truncation)]
-pub fn render_git_panel(area: Rect, buf: &mut Buffer, state: &mut GitPanelState, is_focused: bool) {
+pub fn render_git_panel(
+    area: Rect,
+    buf: &mut Buffer,
+    state: &mut GitPanelState,
+    is_focused: bool,
+    theme: &Theme,
+) {
     if area.height == 0 || area.width < 2 {
         return;
     }
 
     let accent = if is_focused {
-        FOCUS_ACCENT
+        theme.border_focused
     } else {
-        UNFOCUSED_BORDER
+        theme.border_unfocused
     };
 
     // Reserve the leftmost column for the border separator.
     let content_x = area.x + 1;
     let content_width = area.width - 1;
 
-    // Draw a left border line for visual separation from the editor pane.
+    // Draw a left border line with rounded corners for visual separation from the editor pane.
     let border_style = Style::default().fg(accent);
+    let tl_str = theme.border_chars.top_left.to_string();
+    let bl_str = theme.border_chars.bottom_left.to_string();
+    let v_str = theme.border_chars.vertical.to_string();
+    let last_y = area.y + area.height - 1;
     for y in area.y..area.y + area.height {
         if let Some(cell) = buf.cell_mut((area.x, y)) {
-            cell.set_symbol("│");
+            let sym = if y == area.y {
+                &tl_str
+            } else if y == last_y {
+                &bl_str
+            } else {
+                &v_str
+            };
+            cell.set_symbol(sym);
             cell.set_style(border_style);
         }
     }
@@ -211,7 +228,9 @@ pub fn render_git_panel(area: Rect, buf: &mut Buffer, state: &mut GitPanelState,
     // Title bar — accent color when focused.
     let title = " SOURCE CONTROL";
     let title_style = if is_focused {
-        Style::default().fg(accent).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::BOLD)
     };
@@ -252,7 +271,7 @@ pub fn render_git_panel(area: Rect, buf: &mut Buffer, state: &mut GitPanelState,
                 Line::from(span).render(Rect::new(content_x, y, content_width, 1), buf);
             }
             PanelEntry::File { file, .. } => {
-                render_file_entry(content_x, y, content_width, file, is_selected, buf);
+                render_file_entry(content_x, y, content_width, file, is_selected, buf, theme);
             }
         }
     }
@@ -267,8 +286,9 @@ fn render_file_entry(
     file: &GitFileStatus,
     is_selected: bool,
     buf: &mut Buffer,
+    theme: &Theme,
 ) {
-    let (icon, color) = status_icon_color(file.status);
+    let (icon, color) = status_icon_color(file.status, theme);
     let path_str = file.path.to_string_lossy();
 
     // Format: " M path/to/file.rs"
@@ -287,15 +307,15 @@ fn render_file_entry(
 }
 
 /// Get the status icon character and color for a `FileStatus`.
-const fn status_icon_color(status: FileStatus) -> (char, Color) {
+const fn status_icon_color(status: FileStatus, theme: &Theme) -> (char, Color) {
     match status {
-        FileStatus::Modified => ('M', Color::Yellow),
-        FileStatus::Added => ('A', Color::Green),
-        FileStatus::Deleted => ('D', Color::Red),
-        FileStatus::Renamed => ('R', Color::Cyan),
-        FileStatus::Untracked => ('U', Color::Gray),
-        FileStatus::Conflicted => ('C', Color::Magenta),
-        FileStatus::Ignored => ('I', Color::DarkGray),
+        FileStatus::Modified => ('M', theme.git_modified),
+        FileStatus::Added => ('A', theme.git_added),
+        FileStatus::Deleted => ('D', theme.git_deleted),
+        FileStatus::Renamed => ('R', theme.git_renamed),
+        FileStatus::Untracked => ('U', theme.git_untracked),
+        FileStatus::Conflicted => ('C', theme.git_conflicted),
+        FileStatus::Ignored => ('I', theme.git_ignored),
     }
 }
 
@@ -303,6 +323,8 @@ const fn status_icon_color(status: FileStatus) -> (char, Color) {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    use crate::theme::Theme;
 
     fn make_status() -> GitStatus {
         GitStatus {
@@ -397,7 +419,8 @@ mod tests {
 
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        render_git_panel(area, &mut buf, &mut state, false);
+        let theme = Theme::dark();
+        render_git_panel(area, &mut buf, &mut state, false, &theme);
     }
 
     #[test]
@@ -405,16 +428,18 @@ mod tests {
         let mut state = GitPanelState::new();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        render_git_panel(area, &mut buf, &mut state, false);
+        let theme = Theme::dark();
+        render_git_panel(area, &mut buf, &mut state, false, &theme);
     }
 
     #[test]
     fn status_icon_colors() {
-        let (icon, _) = status_icon_color(FileStatus::Modified);
+        let theme = Theme::dark();
+        let (icon, _) = status_icon_color(FileStatus::Modified, &theme);
         assert_eq!(icon, 'M');
-        let (icon, _) = status_icon_color(FileStatus::Added);
+        let (icon, _) = status_icon_color(FileStatus::Added, &theme);
         assert_eq!(icon, 'A');
-        let (icon, _) = status_icon_color(FileStatus::Deleted);
+        let (icon, _) = status_icon_color(FileStatus::Deleted, &theme);
         assert_eq!(icon, 'D');
     }
 }

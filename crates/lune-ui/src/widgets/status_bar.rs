@@ -7,10 +7,10 @@
 
 use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
-use ratatui_core::style::Stylize;
 use ratatui_core::text::{Line, Span};
 use ratatui_core::widgets::Widget;
 
+use crate::theme::Theme;
 use crate::vim::VimMode;
 
 // ── Status line state ─────────────────────────────────────────────────
@@ -44,7 +44,7 @@ pub struct StatusLineState {
 
 /// Render the status bar.
 #[allow(clippy::cast_possible_truncation)]
-pub fn render_status_bar(area: Rect, buf: &mut Buffer, status: &StatusLineState) {
+pub fn render_status_bar(area: Rect, buf: &mut Buffer, status: &StatusLineState, theme: &Theme) {
     if area.height == 0 || area.width == 0 {
         return;
     }
@@ -94,16 +94,16 @@ pub fn render_status_bar(area: Rect, buf: &mut Buffer, status: &StatusLineState)
     let right_pad = padding - left_pad;
 
     let spans = vec![
-        Span::from(mode_label).bold().reversed(),
+        Span::styled(mode_label, theme.status_mode),
         Span::from(" "),
         Span::from(left_text),
         Span::from(" ".repeat(left_pad)),
         Span::from(cursor_text),
         Span::from(" ".repeat(right_pad)),
-        Span::from(right_text).dim(),
+        Span::styled(right_text, theme.status_info),
     ];
 
-    Line::from(spans).reversed().render(area, buf);
+    Line::from(spans).style(theme.status_bg).render(area, buf);
 }
 
 /// Convert a `VimMode` to its display label.

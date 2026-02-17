@@ -6,13 +6,13 @@
 
 use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
-use ratatui_core::style::{Style, Stylize};
+use ratatui_core::style::Stylize;
 use ratatui_core::text::{Line, Span};
 use ratatui_core::widgets::Widget;
 
 use lune_core::prelude::*;
 
-use super::FOCUS_ACCENT;
+use crate::theme::Theme;
 
 // ── Tab entry ─────────────────────────────────────────────────────────
 
@@ -156,7 +156,13 @@ impl TabManager {
 /// When `is_focused` is true, the active tab uses the accent color to
 /// indicate the editor pane has focus.
 #[allow(clippy::cast_possible_truncation)]
-pub fn render_tab_bar(area: Rect, buf: &mut Buffer, tab_mgr: &TabManager, is_focused: bool) {
+pub fn render_tab_bar(
+    area: Rect,
+    buf: &mut Buffer,
+    tab_mgr: &TabManager,
+    is_focused: bool,
+    theme: &Theme,
+) {
     if area.height == 0 || area.width == 0 {
         return;
     }
@@ -195,16 +201,12 @@ pub fn render_tab_bar(area: Rect, buf: &mut Buffer, tab_mgr: &TabManager, is_foc
 
         if is_active {
             if is_focused {
-                spans.push(
-                    Span::from(label)
-                        .bold()
-                        .style(Style::new().fg(FOCUS_ACCENT)),
-                );
+                spans.push(Span::styled(label, theme.tab_active_focused));
             } else {
-                spans.push(Span::from(label).bold().reversed());
+                spans.push(Span::styled(label, theme.tab_active_unfocused));
             }
         } else {
-            spans.push(Span::from(label).dim());
+            spans.push(Span::styled(label, theme.tab_inactive));
         }
 
         used_width += label_width;
