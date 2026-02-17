@@ -13,6 +13,8 @@ use ratatui_core::widgets::Widget;
 use lune_core::workspace::FileStatus;
 use lune_git::{GitFileStatus, GitStatus};
 
+use super::{FOCUS_ACCENT, UNFOCUSED_BORDER};
+
 /// State of the git panel widget.
 #[derive(Clone, Debug)]
 pub struct GitPanelState {
@@ -182,19 +184,44 @@ fn build_entries(status: &GitStatus) -> Vec<PanelEntry> {
 
 /// Render the git panel.
 #[allow(clippy::cast_possible_truncation)]
-pub fn render_git_panel(area: Rect, buf: &mut Buffer, state: &mut GitPanelState) {
-    if area.height == 0 || area.width == 0 {
+pub fn render_git_panel(area: Rect, buf: &mut Buffer, state: &mut GitPanelState, is_focused: bool) {
+    if area.height == 0 || area.width < 2 {
         return;
     }
 
-    // Title bar.
+    let accent = if is_focused {
+        FOCUS_ACCENT
+    } else {
+        UNFOCUSED_BORDER
+    };
+
+    // Reserve the leftmost column for the border separator.
+    let content_x = area.x + 1;
+    let content_width = area.width - 1;
+
+    // Draw a left border line for visual separation from the editor pane.
+    let border_style = Style::default().fg(accent);
+    for y in area.y..area.y + area.height {
+        if let Some(cell) = buf.cell_mut((area.x, y)) {
+            cell.set_symbol("│");
+            cell.set_style(border_style);
+        }
+    }
+
+    // Title bar — accent color when focused.
     let title = " SOURCE CONTROL";
-    Line::from(Span::from(title).bold()).render(Rect::new(area.x, area.y, area.width, 1), buf);
+    let title_style = if is_focused {
+        Style::default().fg(accent).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().add_modifier(Modifier::BOLD)
+    };
+    Line::from(Span::styled(title, title_style))
+        .render(Rect::new(content_x, area.y, content_width, 1), buf);
 
     if state.status.is_none() || state.entries.is_empty() {
         if area.height > 1 {
             Line::from(Span::from(" No changes").dim())
-                .render(Rect::new(area.x, area.y + 1, area.width, 1), buf);
+                .render(Rect::new(content_x, area.y + 1, content_width, 1), buf);
         }
         return;
     }
@@ -222,10 +249,10 @@ pub fn render_git_panel(area: Rect, buf: &mut Buffer, state: &mut GitPanelState)
         match entry {
             PanelEntry::Header(text) => {
                 let span = Span::from(format!(" {text}")).bold();
-                Line::from(span).render(Rect::new(area.x, y, area.width, 1), buf);
+                Line::from(span).render(Rect::new(content_x, y, content_width, 1), buf);
             }
             PanelEntry::File { file, .. } => {
-                render_file_entry(area.x, y, area.width, file, is_selected, buf);
+                render_file_entry(content_x, y, content_width, file, is_selected, buf);
             }
         }
     }
@@ -370,7 +397,7 @@ mod tests {
 
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        render_git_panel(area, &mut buf, &mut state);
+        render_git_panel(area, &mut buf, &mut state, false);
     }
 
     #[test]
@@ -378,7 +405,7 @@ mod tests {
         let mut state = GitPanelState::new();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        render_git_panel(area, &mut buf, &mut state);
+        render_git_panel(area, &mut buf, &mut state, false);
     }
 
     #[test]

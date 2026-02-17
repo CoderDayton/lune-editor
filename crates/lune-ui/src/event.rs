@@ -102,6 +102,10 @@ pub enum AppCommand {
     /// Reveal a file in the file tree (expand ancestors, scroll to it).
     RevealInFileTree(PathBuf),
 
+    // ── Focus management ───────────────────────────────────────────
+    /// Cycle focus to the next visible pane.
+    FocusNextPane,
+
     // ── File tree operations ──────────────────────────────────────
     /// Create a new file (prompt for name from file tree context).
     NewFile,

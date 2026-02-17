@@ -11,11 +11,13 @@ use std::path::Path;
 
 use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
-use ratatui_core::style::{Color, Modifier, Style, Stylize};
+use ratatui_core::style::{Color, Modifier, Style};
 use ratatui_core::text::{Line, Span};
 use ratatui_core::widgets::Widget;
 
 use lune_core::workspace::{flatten_tree, DirEntry, EntryKind, FileStatus, Workspace};
+
+use super::{FOCUS_ACCENT, UNFOCUSED_BORDER};
 
 /// Configuration for file tree rendering.
 #[derive(Clone, Debug)]
@@ -224,6 +226,7 @@ pub fn render_file_tree(
     buf: &mut Buffer,
     state: &mut FileTreeState,
     workspace_name: &str,
+    is_focused: bool,
 ) {
     if area.height == 0 || area.width < 2 {
         return;
@@ -231,10 +234,21 @@ pub fn render_file_tree(
 
     // Reserve the rightmost column for the border separator.
     let content_width = area.width - 1;
+    let accent = if is_focused {
+        FOCUS_ACCENT
+    } else {
+        UNFOCUSED_BORDER
+    };
 
-    // Header row.
+    // Header row — accent color when focused.
     let header = format!(" {workspace_name}");
-    Line::from(Span::from(header).bold()).render(Rect::new(area.x, area.y, content_width, 1), buf);
+    let header_style = if is_focused {
+        Style::default().fg(accent).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().add_modifier(Modifier::BOLD)
+    };
+    Line::from(Span::styled(header, header_style))
+        .render(Rect::new(area.x, area.y, content_width, 1), buf);
 
     if area.height < 2 {
         return;
@@ -263,7 +277,7 @@ pub fn render_file_tree(
 
     // Draw a right border line for visual separation from the editor pane.
     let border_x = area.x + content_width;
-    let border_style = Style::default().fg(Color::DarkGray);
+    let border_style = Style::default().fg(accent);
     for y in area.y..area.y + area.height {
         if let Some(cell) = buf.cell_mut((border_x, y)) {
             cell.set_symbol("│");
@@ -529,14 +543,20 @@ mod tests {
     fn render_does_not_panic_on_empty() {
         let mut state = FileTreeState::new();
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
-        render_file_tree(Rect::new(0, 0, 30, 10), &mut buf, &mut state, "project");
+        render_file_tree(
+            Rect::new(0, 0, 30, 10),
+            &mut buf,
+            &mut state,
+            "project",
+            false,
+        );
     }
 
     #[test]
     fn render_does_not_panic_on_zero_area() {
         let mut state = FileTreeState::new();
         let mut buf = Buffer::empty(Rect::new(0, 0, 0, 0));
-        render_file_tree(Rect::ZERO, &mut buf, &mut state, "project");
+        render_file_tree(Rect::ZERO, &mut buf, &mut state, "project", false);
     }
 
     #[test]
@@ -546,7 +566,7 @@ mod tests {
 
         let area = Rect::new(0, 0, 40, 8);
         let mut buf = Buffer::empty(area);
-        render_file_tree(area, &mut buf, &mut state, "my-project");
+        render_file_tree(area, &mut buf, &mut state, "my-project", true);
 
         // Verify header is rendered.
         let header_cell = buf.cell((1, 0)).expect("cell should exist");

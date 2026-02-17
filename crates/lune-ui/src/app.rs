@@ -509,16 +509,19 @@ pub fn render(
     // Render left panel (file tree).
     if let Some(left_area) = splits.left {
         let ws_name = state.workspace.as_ref().map_or("EXPLORER", Workspace::name);
-        file_tree::render_file_tree(left_area, buf, &mut state.file_tree, ws_name);
+        let ft_focused = state.focus.is_focused(PanelId::FileTree);
+        file_tree::render_file_tree(left_area, buf, &mut state.file_tree, ws_name, ft_focused);
     }
 
     // Render center: tab bar + editor.
-    render_center(splits.center, buf, state);
+    let editor_focused = state.focus.is_focused(PanelId::Editor);
+    render_center(splits.center, buf, state, editor_focused);
 
     // Render right panel (git panel or AI placeholder).
     if let Some(right_area) = splits.right {
         if state.layout.show_git_panel {
-            git_panel::render_git_panel(right_area, buf, &mut state.git_panel);
+            let gp_focused = state.focus.is_focused(PanelId::GitPanel);
+            git_panel::render_git_panel(right_area, buf, &mut state.git_panel, gp_focused);
         } else {
             render_right_panel_placeholder(right_area, buf);
         }
@@ -535,7 +538,7 @@ pub fn render(
 }
 
 /// Render the center area: tab bar + editor pane.
-fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState) {
+fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused: bool) {
     if area.height < 2 {
         return;
     }
@@ -549,7 +552,7 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState) {
     let content_area = chunks[1];
 
     // Render tab bar.
-    tab_bar::render_tab_bar(tab_area, buf, &state.tab_mgr);
+    tab_bar::render_tab_bar(tab_area, buf, &state.tab_mgr, is_focused);
 
     // Store content area for mouse mapping.
     state.last_editor_content_area = Some(content_area);
@@ -898,6 +901,31 @@ fn handle_file_tree_collapse(state: &mut AppState) -> Control<AppEvent> {
     Control::Changed
 }
 
+// ── Focus cycling ─────────────────────────────────────────────────
+
+/// Cycle focus to the next visible pane.
+///
+/// Builds a list of currently visible panels and advances to the next one
+/// in order: `FileTree` → Editor → `GitPanel` → (wrap). Panels that are
+/// not visible are skipped.
+fn handle_focus_next_pane(state: &mut AppState) {
+    let mut panes = Vec::with_capacity(3);
+    if state.layout.show_file_tree {
+        panes.push(PanelId::FileTree);
+    }
+    panes.push(PanelId::Editor);
+    if state.layout.show_git_panel {
+        panes.push(PanelId::GitPanel);
+    }
+
+    let current = state.focus.active();
+    let next = panes
+        .iter()
+        .position(|&p| p == current)
+        .map_or(PanelId::Editor, |idx| panes[(idx + 1) % panes.len()]);
+    state.focus.set_active(next);
+}
+
 // ── Git panel key handling ────────────────────────────────────────
 
 /// Handle key events when the git panel is focused.
@@ -1207,6 +1235,7 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             total_lines,
             has_git,
         ) {
+            state.focus.set_active(PanelId::Editor);
             if let Some(buf) = state.active_buf_mut() {
                 let clamped_line = pos.line.min(buf.line_count().saturating_sub(1));
                 let clamped_col = pos.col.min(buf.line_len(clamped_line).saturating_sub(1));
@@ -1427,39 +1456,13 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             state.prev_tab();
             Control::Changed
         }
-        AppCommand::ToggleFileTree => {
-            state.layout.toggle_file_tree();
-            Control::Changed
-        }
-        AppCommand::ToggleAiPanel => {
-            state.layout.toggle_ai_panel();
-            Control::Changed
-        }
-        AppCommand::ToggleGitPanel => {
-            state.layout.toggle_git_panel();
-            if state.layout.show_git_panel {
-                state.focus.focus(PanelId::GitPanel);
-                // Refresh git status when opening the panel.
-                state.refresh_git();
-            } else {
-                state.focus.focus(PanelId::Editor);
-            }
-            Control::Changed
-        }
-        AppCommand::OpenCommandPalette => {
-            state.overlay.open_command_palette();
-            state.focus.focus(PanelId::CommandPalette);
-            Control::Changed
-        }
-        AppCommand::OpenFilePicker => {
-            let start_dir = state.workspace.as_ref().map_or_else(
-                || std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
-                |ws| ws.root().to_path_buf(),
-            );
-            state.overlay.open_file_picker(&start_dir);
-            state.focus.focus(PanelId::CommandPalette); // Reuse overlay focus
-            Control::Changed
-        }
+        // Panel toggles and focus.
+        AppCommand::ToggleFileTree
+        | AppCommand::ToggleAiPanel
+        | AppCommand::ToggleGitPanel
+        | AppCommand::FocusNextPane
+        | AppCommand::OpenCommandPalette
+        | AppCommand::OpenFilePicker => handle_panel_command(cmd, state),
         AppCommand::Undo => {
             if let Some(buf) = state.active_buf_mut() {
                 buf.undo();
@@ -1509,6 +1512,55 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             Control::Changed
         }
         AppCommand::GitDiscardConfirmed(path) => handle_git_discard_confirmed(path, state),
+    }
+}
+
+/// Handle panel toggle and focus commands.
+fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
+    match cmd {
+        AppCommand::ToggleFileTree => {
+            state.layout.toggle_file_tree();
+            if state.layout.show_file_tree {
+                state.focus.focus(PanelId::FileTree);
+            } else {
+                state.focus.set_active(PanelId::Editor);
+            }
+            Control::Changed
+        }
+        AppCommand::ToggleAiPanel => {
+            state.layout.toggle_ai_panel();
+            Control::Changed
+        }
+        AppCommand::ToggleGitPanel => {
+            state.layout.toggle_git_panel();
+            if state.layout.show_git_panel {
+                state.focus.focus(PanelId::GitPanel);
+                // Refresh git status when opening the panel.
+                state.refresh_git();
+            } else {
+                state.focus.set_active(PanelId::Editor);
+            }
+            Control::Changed
+        }
+        AppCommand::FocusNextPane => {
+            handle_focus_next_pane(state);
+            Control::Changed
+        }
+        AppCommand::OpenCommandPalette => {
+            state.overlay.open_command_palette();
+            state.focus.focus(PanelId::CommandPalette);
+            Control::Changed
+        }
+        AppCommand::OpenFilePicker => {
+            let start_dir = state.workspace.as_ref().map_or_else(
+                || std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+                |ws| ws.root().to_path_buf(),
+            );
+            state.overlay.open_file_picker(&start_dir);
+            state.focus.focus(PanelId::CommandPalette); // Reuse overlay focus
+            Control::Changed
+        }
+        _ => Control::Continue,
     }
 }
 
