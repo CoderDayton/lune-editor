@@ -1,0 +1,42 @@
+[package]
+name = "lune-ui"
+description = "TUI layer: ratatui widgets, layout, effects, event routing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lune-core.workspace = true
+lune-git.workspace = true
+ratatui.workspace = true
+ratatui-core.workspace = true
+ratatui-crossterm.workspace = true
+crossterm.workspace = true
+crossbeam.workspace = true
+rat-salsa.workspace = true
+rat-widget.workspace = true
+rat-event.workspace = true
+rat-focus.workspace = true
+tachyonfx.workspace = true
+anyhow.workspace = true
+log.workspace = true
+tree-sitter.workspace = true
+tree-sitter-highlight.workspace = true
+tree-sitter-rust.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-javascript.workspace = true
+tree-sitter-typescript.workspace = true
+tree-sitter-json.workspace = true
+tree-sitter-c.workspace = true
+tree-sitter-go.workspace = true
+tree-sitter-html.workspace = true
+tree-sitter-css.workspace = true
+tree-sitter-bash.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

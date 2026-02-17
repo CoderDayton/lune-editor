@@ -1,0 +1,111 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Internal crates
+lune-core = { path = "crates/lune-core" }
+lune-ui = { path = "crates/lune-ui" }
+lune-ai = { path = "crates/lune-ai" }
+lune-git = { path = "crates/lune-git" }
+
+# TUI framework
+ratatui = { version = "0.30", features = ["crossterm"] }
+ratatui-core = { version = "0.1", features = ["std", "layout-cache"] }
+ratatui-crossterm = "0.1"
+crossterm = "0.29"
+rat-salsa = { version = "4", features = ["dialog_widgets", "async"] }
+rat-widget = { version = "3", features = ["user_directories"] }
+rat-event = "2"
+rat-focus = "2"
+tachyonfx = "0.24"
+
+# Editor core
+ropey = "1"
+uuid = { version = "1", features = ["v4"] }
+similar = "2"
+
+# Syntax highlighting (tree-sitter)
+tree-sitter = "0.26"
+tree-sitter-highlight = "0.26"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-json = "0.24"
+tree-sitter-c = "0.24"
+tree-sitter-go = "0.25"
+tree-sitter-html = "0.23"
+tree-sitter-css = "0.25"
+tree-sitter-bash = "0.25"
+regex = "1"
+
+# File system
+notify = "7"
+
+# Git
+git2 = "0.20"
+
+# AI / PTY
+portable-pty = "0.9"
+
+# Serialization / config
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging (rat-salsa uses `log`, so we use `log` for compat)
+log = "0.4"
+
+# Async
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time"] }
+crossbeam = "0.8"
+
+# Testing
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Common pedantic overrides
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+# --- Binary crate (root) ---
+
+[package]
+name = "lune-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "lune"
+path = "src/main.rs"
+
+[dependencies]
+lune-core.workspace = true
+lune-ui.workspace = true
+lune-ai.workspace = true
+lune-git.workspace = true
+anyhow.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

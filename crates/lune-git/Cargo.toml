@@ -1,0 +1,21 @@
+[package]
+name = "lune-git"
+description = "Git integration: libgit2 service, gutter markers, staging"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lune-core.workspace = true
+git2.workspace = true
+similar.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "lune-ai"
+description = "AI integration: PTY manager, context provider, Live Mode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lune-core.workspace = true
+portable-pty.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

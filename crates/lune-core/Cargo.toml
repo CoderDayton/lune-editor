@@ -1,0 +1,24 @@
+[package]
+name = "lune-core"
+description = "Core editor engine: buffer, rope, undo/redo, diff, search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ropey.workspace = true
+uuid.workspace = true
+similar.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+log.workspace = true
+notify.workspace = true
+crossbeam.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
