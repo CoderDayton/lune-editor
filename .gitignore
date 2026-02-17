@@ -1,5 +1,22 @@
 /target
 *.swp
 *.swo
+*.bk
+*.orig
+*.log
 .DS_Store
 .env
+.env.*
+
+# IDE
+.idea/
+.vscode/
+
+# Profiling / coverage
+*.profraw
+*.profdata
+perf.data*
+flamegraph.svg
+
+# AI assistant context
+CLAUDE.md
