@@ -46,22 +46,21 @@ impl GitService {
             .find_tree(tree_oid)
             .context("failed to find tree")?;
 
-        let parents = match self.repo().head() {
+        let oid = match self.repo().head() {
             Ok(head) => {
-                let commit = head
+                let parent = head
                     .peel_to_commit()
                     .context("failed to peel HEAD to commit")?;
-                vec![commit]
+                self.repo()
+                    .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])
+                    .context("failed to create commit")?
             }
-            Err(e) if e.code() == git2::ErrorCode::UnbornBranch => vec![],
+            Err(e) if e.code() == git2::ErrorCode::UnbornBranch => self
+                .repo()
+                .commit(Some("HEAD"), &sig, &sig, message, &tree, &[])
+                .context("failed to create commit")?,
             Err(e) => return Err(e).context("failed to get HEAD"),
         };
-
-        let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
-        let oid = self
-            .repo()
-            .commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)
-            .context("failed to create commit")?;
 
         Ok(oid)
     }

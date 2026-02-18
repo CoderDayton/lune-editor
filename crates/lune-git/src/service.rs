@@ -59,11 +59,13 @@ impl GitService {
     }
 
     /// Returns the repository working directory root.
+    #[inline]
     pub fn root(&self) -> &Path {
         &self.root
     }
 
     /// Whether this is a valid git repository.
+    #[inline]
     pub fn is_repo(&self) -> bool {
         self.repo.workdir().is_some()
     }
@@ -202,6 +204,7 @@ impl GitService {
     }
 
     /// Expose the inner `git2::Repository` for other modules in this crate.
+    #[inline]
     pub(crate) const fn repo(&self) -> &Repository {
         &self.repo
     }

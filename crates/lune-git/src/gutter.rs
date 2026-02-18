@@ -3,7 +3,7 @@
 //! [`GutterMarks`] maps line numbers to [`GutterMark`] indicators
 //! for rendering in the editor gutter column.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::Path;
 
 use anyhow::Result;
@@ -25,21 +25,24 @@ pub enum GutterMark {
 #[derive(Clone, Debug, Default)]
 pub struct GutterMarks {
     /// Mapping from 0-based line number to gutter mark.
-    pub marks: HashMap<usize, GutterMark>,
+    pub marks: FxHashMap<usize, GutterMark>,
 }
 
 impl GutterMarks {
     /// Get the gutter mark for a specific line (0-based).
+    #[inline]
     pub fn get(&self, line: usize) -> Option<GutterMark> {
         self.marks.get(&line).copied()
     }
 
     /// Whether there are any marks.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.marks.is_empty()
     }
 
     /// Number of marked lines.
+    #[inline]
     pub fn len(&self) -> usize {
         self.marks.len()
     }
@@ -74,7 +77,9 @@ impl GitService {
             Err(e) => return Err(e.into()),
         };
         let blob = self.repo().find_blob(entry.id())?;
-        let content = String::from_utf8_lossy(blob.content()).into_owned();
+        let raw = blob.content();
+        let content = std::str::from_utf8(raw)
+            .map_or_else(|_| String::from_utf8_lossy(raw).into_owned(), str::to_owned);
         Ok(Some(content))
     }
 }
@@ -86,7 +91,7 @@ fn compute_gutter_marks(old: &str, new: &str) -> GutterMarks {
     use similar::{ChangeTag, TextDiff};
 
     let diff = TextDiff::from_lines(old, new);
-    let mut marks = HashMap::new();
+    let mut marks = FxHashMap::default();
     let mut new_line: usize = 0;
 
     for change in diff.iter_all_changes() {

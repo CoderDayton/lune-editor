@@ -62,30 +62,32 @@ pub enum DiffLineKind {
 
 impl GitService {
     /// Compute the diff for a single file between the working tree and HEAD.
+    #[inline]
     pub fn diff_file(&self, rel_path: &Path) -> Result<Option<FileDiff>> {
-        let mut opts = DiffOptions::new();
-        opts.pathspec(rel_path);
-
-        let head_tree = self.head_tree()?;
-        let diff = self
-            .repo()
-            .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))
-            .context("failed to compute working tree diff")?;
-
-        let diffs = collect_file_diffs(&diff)?;
-        Ok(diffs.into_iter().next())
+        self.diff_single(rel_path, false)
     }
 
     /// Compute the diff for a single file between the index (staged) and HEAD.
+    #[inline]
     pub fn diff_staged(&self, rel_path: &Path) -> Result<Option<FileDiff>> {
+        self.diff_single(rel_path, true)
+    }
+
+    /// Shared implementation for single-file diffs (working tree or staged).
+    fn diff_single(&self, rel_path: &Path, staged_only: bool) -> Result<Option<FileDiff>> {
         let mut opts = DiffOptions::new();
         opts.pathspec(rel_path);
 
         let head_tree = self.head_tree()?;
-        let diff = self
-            .repo()
-            .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
-            .context("failed to compute staged diff")?;
+        let diff = if staged_only {
+            self.repo()
+                .diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
+                .context("failed to compute staged diff")?
+        } else {
+            self.repo()
+                .diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut opts))
+                .context("failed to compute working tree diff")?
+        };
 
         let diffs = collect_file_diffs(&diff)?;
         Ok(diffs.into_iter().next())
@@ -120,7 +122,7 @@ impl GitService {
 /// Uses `Diff::print` which provides a single callback instead of
 /// multiple mutable closures, avoiding borrow checker issues.
 fn collect_file_diffs(diff: &Diff<'_>) -> Result<Vec<FileDiff>> {
-    let mut file_diffs: Vec<FileDiff> = Vec::new();
+    let mut file_diffs: Vec<FileDiff> = Vec::with_capacity(diff.stats()?.files_changed());
 
     diff.print(DiffFormat::Patch, |delta, hunk, line| {
         let path = delta
@@ -152,13 +154,14 @@ fn collect_file_diffs(diff: &Diff<'_>) -> Result<Vec<FileDiff>> {
                         .last()
                         .is_none_or(|last| last.header != header);
                     if needs_hunk {
+                        let line_capacity = (h.old_lines() + h.new_lines()) as usize;
                         file_diff.hunks.push(DiffHunk {
                             header,
                             old_start: h.old_start() as usize,
                             old_count: h.old_lines() as usize,
                             new_start: h.new_start() as usize,
                             new_count: h.new_lines() as usize,
-                            lines: Vec::new(),
+                            lines: Vec::with_capacity(line_capacity),
                         });
                     }
                 }
