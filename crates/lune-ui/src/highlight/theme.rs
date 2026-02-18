@@ -3,8 +3,8 @@
 //! Provides a default dark theme and the machinery to resolve highlight
 //! categories to terminal-renderable styles.
 
+use crate::primitives::{Color, Modifier, Style};
 use lune_core::highlight::HighlightStyle;
-use ratatui_core::style::{Color, Modifier, Style};
 
 // ── Syntax theme ──────────────────────────────────────────────────────
 

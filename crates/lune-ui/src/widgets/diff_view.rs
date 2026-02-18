@@ -3,11 +3,7 @@
 //! Renders a unified or side-by-side diff for a single file.
 //! Supports navigation between hunks and scrolling.
 
-use ratatui_core::buffer::Buffer;
-use ratatui_core::layout::Rect;
-use ratatui_core::style::{Modifier, Style, Stylize};
-use ratatui_core::text::{Line, Span};
-use ratatui_core::widgets::Widget;
+use crate::primitives::{Buffer, Line, Modifier, Rect, Span, Style, Stylize, Widget};
 
 use lune_git::diff::{DiffLineKind, FileDiff};
 

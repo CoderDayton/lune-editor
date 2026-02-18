@@ -4,11 +4,7 @@
 //! colors and attributes to ratatui styles. Also renders the cursor
 //! position and a session status header.
 
-use ratatui_core::buffer::Buffer;
-use ratatui_core::layout::Rect;
-use ratatui_core::style::{Color, Modifier, Style};
-use ratatui_core::text::{Line, Span};
-use ratatui_core::widgets::Widget;
+use crate::primitives::{Buffer, Color, Line, Modifier, Rect, Span, Style, Widget};
 
 use lune_ai::session::SessionState;
 

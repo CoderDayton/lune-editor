@@ -6,9 +6,9 @@
 
 use std::path::PathBuf;
 
+use crate::primitives::CtEvent;
 use lune_core::language::LanguageId;
 use rat_salsa::timer::TimeOut;
-use ratatui_crossterm::crossterm::event::Event as CtEvent;
 
 /// Unified event type for the Lune Editor event loop.
 #[derive(Debug)]

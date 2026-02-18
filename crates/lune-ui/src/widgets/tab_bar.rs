@@ -6,11 +6,7 @@
 
 use std::collections::HashMap;
 
-use ratatui_core::buffer::Buffer;
-use ratatui_core::layout::Rect;
-use ratatui_core::style::Stylize;
-use ratatui_core::text::{Line, Span};
-use ratatui_core::widgets::Widget;
+use crate::primitives::{Buffer, Line, Rect, Span, Stylize, Widget};
 
 use lune_core::prelude::*;
 

@@ -4,11 +4,7 @@
 //! Supports keyboard/mouse navigation, staging (`s`), unstaging (`u`),
 //! discarding (`d`), opening diff view (`Enter`), and committing (`c`).
 
-use ratatui_core::buffer::Buffer;
-use ratatui_core::layout::Rect;
-use ratatui_core::style::{Color, Modifier, Style, Stylize};
-use ratatui_core::text::{Line, Span};
-use ratatui_core::widgets::Widget;
+use crate::primitives::{Buffer, Color, Line, Modifier, Rect, Span, Style, Stylize, Widget};
 
 use lune_core::workspace::FileStatus;
 use lune_git::{GitFileStatus, GitStatus};

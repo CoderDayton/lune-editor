@@ -23,8 +23,8 @@
 
 use std::path::Path;
 
+use crate::primitives::{Color, Modifier, Style};
 use lune_core::highlight::HighlightStyle;
-use ratatui_core::style::{Color, Modifier, Style};
 use serde::{Deserialize, Serialize};
 
 use crate::highlight::theme::SyntaxTheme;

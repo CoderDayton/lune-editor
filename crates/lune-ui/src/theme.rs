@@ -14,7 +14,7 @@
 //! // Use theme.accent, theme.border_focused, theme.editor_cursor_normal, etc.
 //! ```
 
-use ratatui_core::style::{Color, Modifier, Style};
+use crate::primitives::{Color, Modifier, Style};
 
 // ── Border characters ─────────────────────────────────────────────────
 

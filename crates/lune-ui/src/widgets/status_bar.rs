@@ -5,10 +5,7 @@
 //! - Center: cursor position (Ln/Col)
 //! - Right: git branch, encoding, file type, AI status
 
-use ratatui_core::buffer::Buffer;
-use ratatui_core::layout::Rect;
-use ratatui_core::text::{Line, Span};
-use ratatui_core::widgets::Widget;
+use crate::primitives::{Buffer, Line, Rect, Span, Widget};
 
 use crate::theme::Theme;
 use crate::vim::VimMode;

@@ -5,9 +5,7 @@
 
 use std::fmt;
 
-use ratatui_core::buffer::Buffer;
-use ratatui_core::layout::Rect;
-use ratatui_core::style::Color;
+use crate::primitives::{Buffer, Color, Rect};
 use tachyonfx::{fx, Duration, Effect, EffectManager};
 
 use crate::focus::PanelId;

@@ -4,7 +4,7 @@
 //! editor in the center, optional right panel (AI terminal / git), and a status
 //! bar at the bottom.
 
-use ratatui_core::layout::{Constraint, Direction, Layout, Rect};
+use crate::primitives::{Constraint, Direction, Layout, Rect};
 
 // ── Layout state (persisted) ──────────────────────────────────────────
 

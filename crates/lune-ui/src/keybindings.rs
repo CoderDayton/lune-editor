@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::primitives::{KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Serialize};
 
 use crate::event::AppCommand;

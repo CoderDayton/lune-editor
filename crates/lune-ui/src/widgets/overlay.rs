@@ -7,12 +7,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use ratatui::widgets::{Block, BorderType, Borders, Clear};
-use ratatui_core::buffer::Buffer;
-use ratatui_core::layout::Rect;
-use ratatui_core::style::{Style, Stylize};
-use ratatui_core::text::{Line, Span};
-use ratatui_core::widgets::Widget;
+use crate::primitives::{
+    Block, BorderType, Borders, Buffer, Clear, Line, Rect, Span, Style, Stylize, Widget,
+};
 
 use crate::event::AppCommand;
 use crate::theme::Theme;

@@ -13,11 +13,10 @@ use anyhow::Error;
 use crossbeam::channel::{self, Receiver, TryRecvError};
 use rat_salsa::poll::{PollCrossterm, PollTimers};
 use rat_salsa::{run_tui, Control, RunConfig, SalsaAppContext, SalsaContext};
-use ratatui_core::buffer::Buffer;
-use ratatui_core::layout::{Constraint, Direction, Layout, Rect};
-use ratatui_crossterm::crossterm::event::{
-    Event as CtEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-    MouseEventKind,
+
+use crate::primitives::{
+    Buffer, Constraint, CtEvent, Direction, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, Layout,
+    MouseButton, MouseEvent, MouseEventKind, Rect,
 };
 
 use lune_core::prelude::*;

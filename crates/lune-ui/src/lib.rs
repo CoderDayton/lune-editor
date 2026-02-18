@@ -8,6 +8,8 @@
 //! - **Event routing**: rat-salsa event loop integration, focus management
 //! - **Effects**: tachyonfx-based visual effects and animations
 
+pub mod primitives;
+
 pub mod app;
 pub mod effects;
 pub mod event;

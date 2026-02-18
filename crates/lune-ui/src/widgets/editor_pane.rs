@@ -7,11 +7,7 @@
 //! When syntax highlighting data is available, lines are rendered with
 //! styled spans from the theme instead of plain text.
 
-use ratatui_core::buffer::Buffer;
-use ratatui_core::layout::Rect;
-use ratatui_core::style::{Color, Style, Stylize};
-use ratatui_core::text::{Line, Span};
-use ratatui_core::widgets::Widget;
+use crate::primitives::{Buffer, Color, Line, Rect, Span, Style, Stylize, Widget};
 
 use rustc_hash::FxHashMap;
 
