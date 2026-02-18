@@ -77,6 +77,8 @@ crossbeam = "0.8"
 
 # Testing
 tempfile = "3"
+proptest = "1"
+insta = { version = "1", features = ["yaml"] }
 
 # Hashing — FxHash for internal (non-DoS-risk) keys
 rustc-hash = "2"
@@ -120,6 +122,14 @@ log.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+lune-core.workspace = true
+lune-ui.workspace = true
+lune-ai.workspace = true
+lune-git.workspace = true
+tempfile.workspace = true
+git2.workspace = true
 
 # ── Release profile (P2: max-speed) ────────────────────────────────────
 [profile.release]
