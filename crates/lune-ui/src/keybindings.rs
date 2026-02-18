@@ -55,71 +55,46 @@ impl Keymap {
     /// Create the default global keymap.
     #[must_use]
     pub fn default_global() -> Self {
+        use KeyCode::{BackTab, Char, Tab};
+        const CTRL: KeyModifiers = KeyModifiers::CONTROL;
+        const CTRL_SHIFT: KeyModifiers = KeyModifiers::from_bits_truncate(
+            KeyModifiers::CONTROL.bits() | KeyModifiers::SHIFT.bits(),
+        );
+
+        let bindings: &[(KeyCode, KeyModifiers, AppCommand)] = &[
+            // Application lifecycle
+            (Char('q'), CTRL, AppCommand::Quit),
+            // File operations
+            (Char('s'), CTRL, AppCommand::Save),
+            (Char('S'), CTRL_SHIFT, AppCommand::SaveAll),
+            (Char('o'), CTRL, AppCommand::OpenFilePicker),
+            // Tab management
+            (Char('w'), CTRL, AppCommand::CloseTab),
+            (Tab, CTRL, AppCommand::NextTab),
+            (BackTab, CTRL_SHIFT, AppCommand::PrevTab),
+            // Panel toggles
+            (Char('b'), CTRL, AppCommand::ToggleFileTree),
+            (Char('`'), CTRL, AppCommand::ToggleAiPanel),
+            (Char('G'), CTRL_SHIFT, AppCommand::ToggleGitPanel),
+            // AI commands
+            (Char('A'), CTRL_SHIFT, AppCommand::AiAskSelection),
+            (Char('R'), CTRL_SHIFT, AppCommand::AiRefactorFile),
+            (Char('I'), CTRL_SHIFT, AppCommand::AiSummarizeChanges),
+            // Editor commands
+            (Char('z'), CTRL, AppCommand::Undo),
+            (Char('y'), CTRL, AppCommand::Redo),
+            (Char('f'), CTRL, AppCommand::Find),
+            (Char('h'), CTRL, AppCommand::Replace),
+            // Command palette
+            (Char('p'), CTRL, AppCommand::OpenCommandPalette),
+            // Live Mode
+            (Char('l'), CTRL, AppCommand::ToggleLiveMode),
+        ];
+
         let mut km = Self::new();
-
-        // Application lifecycle.
-        km.bind(KeyCode::Char('q'), KeyModifiers::CONTROL, AppCommand::Quit);
-
-        // File operations.
-        km.bind(KeyCode::Char('s'), KeyModifiers::CONTROL, AppCommand::Save);
-        km.bind(
-            KeyCode::Char('S'),
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            AppCommand::SaveAll,
-        );
-        km.bind(
-            KeyCode::Char('o'),
-            KeyModifiers::CONTROL,
-            AppCommand::OpenFilePicker,
-        );
-
-        // Tab management.
-        km.bind(
-            KeyCode::Char('w'),
-            KeyModifiers::CONTROL,
-            AppCommand::CloseTab,
-        );
-        km.bind(KeyCode::Tab, KeyModifiers::CONTROL, AppCommand::NextTab);
-        km.bind(
-            KeyCode::BackTab,
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            AppCommand::PrevTab,
-        );
-
-        // Panel toggles.
-        km.bind(
-            KeyCode::Char('b'),
-            KeyModifiers::CONTROL,
-            AppCommand::ToggleFileTree,
-        );
-        km.bind(
-            KeyCode::Char('`'),
-            KeyModifiers::CONTROL,
-            AppCommand::ToggleAiPanel,
-        );
-        km.bind(
-            KeyCode::Char('G'),
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            AppCommand::ToggleGitPanel,
-        );
-
-        // Editor commands.
-        km.bind(KeyCode::Char('z'), KeyModifiers::CONTROL, AppCommand::Undo);
-        km.bind(KeyCode::Char('y'), KeyModifiers::CONTROL, AppCommand::Redo);
-        km.bind(KeyCode::Char('f'), KeyModifiers::CONTROL, AppCommand::Find);
-        km.bind(
-            KeyCode::Char('h'),
-            KeyModifiers::CONTROL,
-            AppCommand::Replace,
-        );
-
-        // Command palette.
-        km.bind(
-            KeyCode::Char('p'),
-            KeyModifiers::CONTROL,
-            AppCommand::OpenCommandPalette,
-        );
-
+        for (code, mods, cmd) in bindings {
+            km.bind(*code, *mods, cmd.clone());
+        }
         km
     }
 

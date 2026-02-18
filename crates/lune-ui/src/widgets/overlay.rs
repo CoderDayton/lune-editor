@@ -66,7 +66,8 @@ impl OverlayState {
         self.command_palette.selected = 0;
         self.command_palette.scroll_offset = 0;
         self.command_palette.ensure_commands_cached();
-        self.command_palette.filtered_commands = self.command_palette.all_commands.clone();
+        // Reuse allocation; input was just cleared so update_filter will copy all commands.
+        self.command_palette.update_filter();
         self.active = Some(OverlayKind::CommandPalette);
     }
 
@@ -147,15 +148,18 @@ impl CommandPaletteState {
         self.ensure_commands_cached();
         let query = self.input.to_lowercase();
 
+        // Reuse the existing Vec allocation where possible.
+        self.filtered_commands.clear();
         if query.is_empty() {
-            self.filtered_commands = self.all_commands.clone();
+            self.filtered_commands
+                .extend(self.all_commands.iter().cloned());
         } else {
-            self.filtered_commands = self
-                .all_commands
-                .iter()
-                .filter(|cmd| cmd.label_lower.contains(&query))
-                .cloned()
-                .collect();
+            self.filtered_commands.extend(
+                self.all_commands
+                    .iter()
+                    .filter(|cmd| cmd.label_lower.contains(&query))
+                    .cloned(),
+            );
         }
 
         // Clamp selection.
@@ -215,6 +219,26 @@ impl CommandPaletteState {
     pub fn backspace(&mut self) {
         self.input.pop();
         self.update_filter();
+    }
+}
+
+/// Zero-allocation ASCII case-insensitive string comparison.
+///
+/// Avoids the two `to_lowercase()` allocations that a naïve comparator would
+/// incur on every call during a sort.
+fn cmp_ignore_ascii_case(a: &str, b: &str) -> std::cmp::Ordering {
+    let mut ai = a.chars().map(|c| c.to_ascii_lowercase());
+    let mut bi = b.chars().map(|c| c.to_ascii_lowercase());
+    loop {
+        match (ai.next(), bi.next()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (Some(ac), Some(bc)) => match ac.cmp(&bc) {
+                std::cmp::Ordering::Equal => {}
+                other => return other,
+            },
+        }
     }
 }
 
@@ -323,11 +347,7 @@ impl Default for FilePickerState {
 impl FilePickerState {
     /// Open the file picker at the given directory, scanning its contents.
     pub fn open(&mut self, dir: &Path) {
-        self.current_dir = dir.to_path_buf();
-        self.input.clear();
-        self.selected = 0;
-        self.scroll_offset = 0;
-        self.scan_directory();
+        self.navigate_to(dir.to_path_buf());
     }
 
     /// Scan the current directory and populate entries.
@@ -358,8 +378,10 @@ impl FilePickerState {
             }
 
             // Sort directories first (alphabetically), then files (alphabetically).
-            dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-            files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            // Use char-by-char ASCII case-insensitive compare to avoid allocating
+            // two lowercase Strings per comparison.
+            dirs.sort_by(|a, b| cmp_ignore_ascii_case(&a.name, &b.name));
+            files.sort_by(|a, b| cmp_ignore_ascii_case(&a.name, &b.name));
 
             self.all_entries.extend(dirs);
             self.all_entries.extend(files);
@@ -372,15 +394,21 @@ impl FilePickerState {
     pub fn update_filter(&mut self) {
         let query = self.input.to_lowercase();
 
+        // Reuse the existing Vec allocation where possible.
+        self.filtered_entries.clear();
         if query.is_empty() {
-            self.filtered_entries = self.all_entries.clone();
+            self.filtered_entries
+                .extend(self.all_entries.iter().cloned());
         } else {
-            self.filtered_entries = self
-                .all_entries
-                .iter()
-                .filter(|e| e.name.to_lowercase().contains(&query))
-                .cloned()
-                .collect();
+            // `e.name.to_lowercase()` still allocates per entry; use
+            // contains with a byte-level ASCII fold for pure-ASCII names,
+            // falling back to the allocating path only when needed.
+            self.filtered_entries.extend(
+                self.all_entries
+                    .iter()
+                    .filter(|e| e.name.to_lowercase().contains(&query))
+                    .cloned(),
+            );
         }
 
         // Clamp selection.
@@ -416,23 +444,24 @@ impl FilePickerState {
         self.filtered_entries.get(self.selected)
     }
 
-    /// Navigate into a subdirectory.
-    pub fn enter_directory(&mut self, dir: &Path) {
-        self.current_dir = dir.to_path_buf();
+    /// Navigate to a directory, reset state, and rescan.
+    fn navigate_to(&mut self, dir: PathBuf) {
+        self.current_dir = dir;
         self.input.clear();
         self.selected = 0;
         self.scroll_offset = 0;
         self.scan_directory();
     }
 
+    /// Navigate into a subdirectory.
+    pub fn enter_directory(&mut self, dir: &Path) {
+        self.navigate_to(dir.to_path_buf());
+    }
+
     /// Navigate up to the parent directory.
     pub fn go_up(&mut self) {
         if let Some(parent) = self.current_dir.parent().map(Path::to_path_buf) {
-            self.current_dir = parent;
-            self.input.clear();
-            self.selected = 0;
-            self.scroll_offset = 0;
-            self.scan_directory();
+            self.navigate_to(parent);
         }
     }
 
@@ -523,40 +552,42 @@ pub fn render_overlay(area: Rect, buf: &mut Buffer, overlay: &mut OverlayState, 
     }
 }
 
-/// Render the command palette popup.
-#[allow(clippy::cast_possible_truncation)]
-fn render_command_palette(
+/// Render a popup frame with a title, input line, and separator. Returns the inner
+/// area below the separator, or `None` if the popup is too small.
+#[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
+fn render_popup_frame(
     area: Rect,
     buf: &mut Buffer,
-    state: &mut CommandPaletteState,
+    title: &str,
+    input: &str,
+    width_pct: u16,
+    height_pct: u16,
+    min_w: u16,
+    min_h: u16,
     theme: &Theme,
-) {
-    // Popup dimensions: ~60% width, ~40% height, centered.
-    let popup_w = (area.width * 60 / 100).max(30).min(area.width);
-    let popup_h = (area.height * 40 / 100).max(8).min(area.height);
+) -> Option<(Rect, u16)> {
+    let popup_w = (area.width * width_pct / 100).max(min_w).min(area.width);
+    let popup_h = (area.height * height_pct / 100).max(min_h).min(area.height);
     let popup_x = area.x + (area.width - popup_w) / 2;
-    let popup_y = area.y + (area.height - popup_h) / 4; // Slightly above center.
+    let popup_y = area.y + (area.height - popup_h) / 4;
 
     let popup_rect = Rect::new(popup_x, popup_y, popup_w, popup_h);
-
-    // Clear the area behind the popup.
     Clear.render(popup_rect, buf);
 
-    // Draw border.
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title(" Command Palette ")
+        .title(title)
         .style(Style::new().fg(theme.overlay_border));
     let inner = block.inner(popup_rect);
     block.render(popup_rect, buf);
 
     if inner.height == 0 || inner.width == 0 {
-        return;
+        return None;
     }
 
     // Input line.
-    let input_line = format!("> {}", state.input);
+    let input_line = format!("> {input}");
     Line::from(Span::from(input_line).bold())
         .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
 
@@ -567,11 +598,33 @@ fn render_command_palette(
             .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
     }
 
-    // Command list with scroll support.
     let list_start_y = inner.y + 2;
-    let list_height = inner.height.saturating_sub(2) as usize;
+    Some((inner, list_start_y))
+}
 
-    // Ensure the selected item is visible in the scroll window.
+/// Render the command palette popup.
+#[allow(clippy::cast_possible_truncation)]
+fn render_command_palette(
+    area: Rect,
+    buf: &mut Buffer,
+    state: &mut CommandPaletteState,
+    theme: &Theme,
+) {
+    let Some((inner, list_start_y)) = render_popup_frame(
+        area,
+        buf,
+        " Command Palette ",
+        &state.input,
+        60,
+        40,
+        30,
+        8,
+        theme,
+    ) else {
+        return;
+    };
+
+    let list_height = inner.height.saturating_sub(2) as usize;
     state.ensure_visible(list_height);
 
     for (vi, i) in (state.scroll_offset..).take(list_height).enumerate() {
@@ -597,44 +650,16 @@ fn render_command_palette(
 /// Render the file picker popup.
 #[allow(clippy::cast_possible_truncation)]
 fn render_file_picker(area: Rect, buf: &mut Buffer, state: &FilePickerState, theme: &Theme) {
-    // Popup dimensions: ~60% width, ~60% height, centered.
-    let popup_w = (area.width * 60 / 100).max(40).min(area.width);
-    let popup_h = (area.height * 60 / 100).max(10).min(area.height);
-    let popup_x = area.x + (area.width - popup_w) / 2;
-    let popup_y = area.y + (area.height - popup_h) / 4; // Slightly above center.
-
-    let popup_rect = Rect::new(popup_x, popup_y, popup_w, popup_h);
-
-    // Clear the area behind the popup.
-    Clear.render(popup_rect, buf);
-
-    // Draw border with title showing current directory.
-    let dir_display =
-        truncate_path_display(&state.current_dir, (popup_w.saturating_sub(6)) as usize);
+    let dir_display = truncate_path_display(
+        &state.current_dir,
+        (area.width * 60 / 100).saturating_sub(6) as usize,
+    );
     let title = format!(" Open: {dir_display} ");
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title(title)
-        .style(Style::new().fg(theme.overlay_border));
-    let inner = block.inner(popup_rect);
-    block.render(popup_rect, buf);
-
-    if inner.height == 0 || inner.width == 0 {
+    let Some((inner, _)) =
+        render_popup_frame(area, buf, &title, &state.input, 60, 60, 40, 10, theme)
+    else {
         return;
-    }
-
-    // Input line (filter).
-    let input_line = format!("> {}", state.input);
-    Line::from(Span::from(input_line).bold())
-        .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
-
-    // Separator.
-    if inner.height > 1 {
-        let sep = "─".repeat(inner.width as usize);
-        Line::from(Span::from(sep).dim())
-            .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
-    }
+    };
 
     // Breadcrumb hint: ".." to go up.
     let list_start_y = inner.y + 2;

@@ -480,4 +480,256 @@ mod tests {
         let action = vim.handle_normal('u', &buf);
         assert_eq!(action, VimAction::Undo);
     }
+
+    // ── Mode transition keys ──────────────────────────────────────
+
+    #[test]
+    fn a_enters_insert_and_moves_right() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        let action = vim.handle_normal('a', &buf);
+        assert_eq!(action, VimAction::MoveRight(1));
+        assert_eq!(vim.mode, VimMode::Insert);
+    }
+
+    #[test]
+    fn o_opens_line_below() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        let action = vim.handle_normal('o', &buf);
+        assert_eq!(action, VimAction::OpenLineBelow);
+        assert_eq!(vim.mode, VimMode::Insert);
+    }
+
+    #[test]
+    fn o_upper_opens_line_above() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        let action = vim.handle_normal('O', &buf);
+        assert_eq!(action, VimAction::OpenLineAbove);
+        assert_eq!(vim.mode, VimMode::Insert);
+    }
+
+    #[test]
+    fn i_upper_enters_insert_at_line_start() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        let action = vim.handle_normal('I', &buf);
+        assert_eq!(action, VimAction::MoveLineStart);
+        assert_eq!(vim.mode, VimMode::Insert);
+    }
+
+    #[test]
+    fn a_upper_enters_insert_at_line_end() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        let action = vim.handle_normal('A', &buf);
+        assert_eq!(action, VimAction::MoveLineEnd);
+        assert_eq!(vim.mode, VimMode::Insert);
+    }
+
+    #[test]
+    fn v_upper_enters_visual_line() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        let action = vim.handle_normal('V', &buf);
+        assert_eq!(action, VimAction::ModeChanged(VimMode::VisualLine));
+        assert_eq!(vim.mode, VimMode::VisualLine);
+    }
+
+    // ── Motion keys ───────────────────────────────────────────────
+
+    #[test]
+    fn k_moves_up() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        assert_eq!(vim.handle_normal('k', &buf), VimAction::MoveUp(1));
+    }
+
+    #[test]
+    fn l_moves_right() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        assert_eq!(vim.handle_normal('l', &buf), VimAction::MoveRight(1));
+    }
+
+    #[test]
+    fn w_moves_word_right() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        assert_eq!(vim.handle_normal('w', &buf), VimAction::MoveWordRight(1));
+    }
+
+    #[test]
+    fn b_moves_word_left() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        assert_eq!(vim.handle_normal('b', &buf), VimAction::MoveWordLeft(1));
+    }
+
+    #[test]
+    fn dollar_moves_to_line_end() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        assert_eq!(vim.handle_normal('$', &buf), VimAction::MoveLineEnd);
+    }
+
+    #[test]
+    fn g_upper_without_count_moves_buffer_end() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        assert_eq!(vim.handle_normal('G', &buf), VimAction::MoveBufferEnd);
+    }
+
+    #[test]
+    fn g_upper_with_count_moves_to_line() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        vim.handle_normal('5', &buf);
+        assert_eq!(vim.handle_normal('G', &buf), VimAction::MoveToLine(4));
+    }
+
+    // ── Operator+motion combos ────────────────────────────────────
+
+    #[test]
+    fn yy_yanks_line() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        assert_eq!(vim.handle_normal('y', &buf), VimAction::None);
+        assert_eq!(vim.handle_normal('y', &buf), VimAction::YankLine(1));
+    }
+
+    #[test]
+    fn cc_changes_line() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        vim.handle_normal('c', &buf);
+        let action = vim.handle_normal('c', &buf);
+        assert_eq!(action, VimAction::ChangeLine(1));
+        assert_eq!(vim.mode, VimMode::Insert); // cc enters insert mode.
+    }
+
+    #[test]
+    fn cw_changes_word() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        vim.handle_normal('c', &buf);
+        let action = vim.handle_normal('w', &buf);
+        assert_eq!(action, VimAction::ChangeMotion(VimMotion::WordRight(1)));
+        assert_eq!(vim.mode, VimMode::Insert);
+    }
+
+    #[test]
+    fn dw_deletes_word() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        vim.handle_normal('d', &buf);
+        assert_eq!(
+            vim.handle_normal('w', &buf),
+            VimAction::DeleteMotion(VimMotion::WordRight(1))
+        );
+    }
+
+    #[test]
+    fn d_dollar_deletes_to_line_end() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        vim.handle_normal('d', &buf);
+        assert_eq!(
+            vim.handle_normal('$', &buf),
+            VimAction::DeleteMotion(VimMotion::LineEnd)
+        );
+    }
+
+    #[test]
+    fn y_g_upper_yanks_to_buffer_end() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        vim.handle_normal('y', &buf);
+        assert_eq!(
+            vim.handle_normal('G', &buf),
+            VimAction::YankMotion(VimMotion::BufferEnd)
+        );
+    }
+
+    // ── VimMode helpers ───────────────────────────────────────────
+
+    #[test]
+    fn vim_mode_is_insert() {
+        assert!(VimMode::Insert.is_insert());
+        assert!(!VimMode::Normal.is_insert());
+        assert!(!VimMode::Visual.is_insert());
+    }
+
+    #[test]
+    fn vim_mode_is_visual() {
+        assert!(VimMode::Visual.is_visual());
+        assert!(VimMode::VisualLine.is_visual());
+        assert!(!VimMode::Normal.is_visual());
+        assert!(!VimMode::Insert.is_visual());
+    }
+
+    // ── VimState helpers ──────────────────────────────────────────
+
+    #[test]
+    fn effective_count_default_is_one() {
+        let vim = VimState::new();
+        assert_eq!(vim.effective_count(), 1);
+    }
+
+    #[test]
+    fn feed_digit_builds_count() {
+        let mut vim = VimState::new();
+        assert!(vim.feed_digit('3'));
+        assert!(vim.feed_digit('5'));
+        assert_eq!(vim.effective_count(), 35);
+    }
+
+    #[test]
+    fn feed_digit_zero_at_start_is_not_count() {
+        let mut vim = VimState::new();
+        assert!(!vim.feed_digit('0'));
+        assert_eq!(vim.count, None);
+    }
+
+    #[test]
+    fn feed_digit_non_digit_returns_false() {
+        let mut vim = VimState::new();
+        assert!(!vim.feed_digit('a'));
+    }
+
+    #[test]
+    fn reset_pending_clears_state() {
+        let mut vim = VimState::new();
+        vim.count = Some(5);
+        vim.pending_op = Some(VimOp::Delete);
+        vim.reset_pending();
+        assert!(vim.count.is_none());
+        assert!(vim.pending_op.is_none());
+    }
+
+    #[test]
+    fn enter_visual_line_mode() {
+        let mut vim = VimState::new();
+        vim.enter_visual_line();
+        assert_eq!(vim.mode, VimMode::VisualLine);
+    }
+
+    #[test]
+    fn unknown_key_returns_none() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        let action = vim.handle_normal('Z', &buf);
+        assert_eq!(action, VimAction::None);
+    }
+
+    #[test]
+    fn operator_with_unknown_motion_returns_none() {
+        let mut vim = VimState::new();
+        let buf = make_buf();
+        vim.handle_normal('d', &buf); // Pending delete.
+        let action = vim.handle_normal('Z', &buf); // Unknown motion.
+        assert_eq!(action, VimAction::None);
+        assert!(vim.pending_op.is_none()); // Should be cleared.
+    }
 }

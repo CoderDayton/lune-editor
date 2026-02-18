@@ -9,6 +9,7 @@
 //! - **Effects**: tachyonfx-based visual effects and animations
 
 pub mod app;
+pub mod effects;
 pub mod event;
 pub mod focus;
 pub mod highlight;

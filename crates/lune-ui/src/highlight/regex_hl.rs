@@ -44,26 +44,19 @@ impl RegexHighlighter {
 
     /// Highlight a single line of text, producing non-overlapping spans.
     fn highlight_line(&self, line_text: &str) -> Vec<StyledSpan> {
-        // Track which columns are already claimed.
-        let len = line_text.len();
-        let mut claimed = vec![false; len];
-        let mut spans = Vec::new();
+        let mut spans: Vec<StyledSpan> = Vec::new();
 
         for rule in &self.rules {
             for mat in rule.pattern.find_iter(line_text) {
                 let start = mat.start();
                 let end = mat.end();
 
-                // Skip if any part of this match is already claimed.
-                if claimed[start..end].iter().any(|&c| c) {
-                    continue;
-                }
+                // Skip if any part of this match overlaps an already-claimed span.
+                let overlaps = spans.iter().any(|s| start < s.end_col && end > s.start_col);
 
-                // Claim the range.
-                for slot in &mut claimed[start..end] {
-                    *slot = true;
+                if !overlaps {
+                    spans.push(StyledSpan::new(start, end, rule.style));
                 }
-                spans.push(StyledSpan::new(start, end, rule.style));
             }
         }
 
@@ -100,15 +93,11 @@ impl Highlighter for RegexHighlighter {
 
 /// Build regex rules for a language.
 fn build_rules(lang_id: LanguageId) -> Vec<Rule> {
-    if lang_id == lang::TOML {
-        toml_rules()
-    } else if lang_id == lang::YAML {
-        yaml_rules()
-    } else if lang_id == lang::MARKDOWN {
-        markdown_rules()
-    } else {
-        // Generic fallback rules for any language.
-        generic_rules()
+    match lang_id {
+        l if l == lang::TOML => toml_rules(),
+        l if l == lang::YAML => yaml_rules(),
+        l if l == lang::MARKDOWN => markdown_rules(),
+        _ => generic_rules(),
     }
 }
 

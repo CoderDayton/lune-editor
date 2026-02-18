@@ -4,6 +4,7 @@
 //! state (`AppState`) used by the rat-salsa event loop, plus the four
 //! function pointers required by `run_tui`.
 
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -14,23 +15,28 @@ use rat_salsa::poll::{PollCrossterm, PollTimers};
 use rat_salsa::{run_tui, Control, RunConfig, SalsaAppContext, SalsaContext};
 use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::{Constraint, Direction, Layout, Rect};
-use ratatui_core::style::Stylize;
-use ratatui_core::text::{Line, Span};
-use ratatui_core::widgets::Widget;
 use ratatui_crossterm::crossterm::event::{
     Event as CtEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
 };
 
 use lune_core::prelude::*;
+use lune_core::ropey::Rope;
 use lune_core::watcher::{FileWatcher, WatchEvent};
 use lune_core::workspace::EntryKind;
 use lune_git::{GitService, GutterMarks};
+
+use lune_ai::context::{
+    extract_selection_text, EditorContext, FileContext, GitStatusSummary, SelectionContext,
+    TabContext,
+};
+use lune_ai::{AiClientKind, AiManager, LiveModeController, TermSize as AiTermSize};
 
 use crate::highlight;
 use crate::highlight::theme::SyntaxTheme;
 use crate::theme::Theme;
 
+use crate::effects::LuneEffects;
 use crate::event::{AppCommand, AppEvent};
 use crate::focus::{FocusManager, PanelId};
 use crate::keybindings::Keymap;
@@ -42,6 +48,7 @@ use crate::widgets::git_panel::{self, GitPanelState};
 use crate::widgets::overlay::{self, NotificationLevel, OverlayState};
 use crate::widgets::status_bar::{self, StatusLineState};
 use crate::widgets::tab_bar::{self, TabManager};
+use crate::widgets::terminal;
 
 /// Global context — embeds the rat-salsa context and shared config.
 #[derive(Default)]
@@ -105,7 +112,7 @@ pub struct AppState {
     /// Sender for watcher events (passed to `FileWatcher` forwarding thread).
     watcher_tx: channel::Sender<WatchEvent>,
     /// Per-buffer syntax highlighters.
-    highlighters: HashMap<BufferId, Box<dyn Highlighter>>,
+    highlighters: FxHashMap<BufferId, Box<dyn Highlighter>>,
     /// Language detection registry.
     lang_registry: LanguageRegistry,
     /// Syntax color theme.
@@ -115,7 +122,7 @@ pub struct AppState {
     /// Git service (active when workspace is in a git repository).
     git_service: Option<GitService>,
     /// Per-buffer git gutter marks (cached).
-    gutter_marks: HashMap<BufferId, GutterMarks>,
+    gutter_marks: FxHashMap<BufferId, GutterMarks>,
     /// Git branch name for the status bar.
     pub git_branch: String,
     /// Git ahead/behind counts.
@@ -126,6 +133,18 @@ pub struct AppState {
     pub git_panel: GitPanelState,
     /// Last left-click info for double-click detection: (time, column, row).
     last_click: Option<(Instant, u16, u16)>,
+    /// Visual effects manager (tachyonfx).
+    pub effects: LuneEffects,
+    /// Timestamp of the last render (for effect timing).
+    last_render: Instant,
+    /// Whether focus has changed and the focus glow needs updating.
+    focus_dirty: bool,
+    /// AI session manager.
+    pub ai_manager: AiManager,
+    /// Last known AI terminal size (to avoid redundant resizes).
+    last_ai_term_size: Option<AiTermSize>,
+    /// Live Mode controller (diff tracking, accept/reject state).
+    pub live_mode: LiveModeController,
 }
 
 /// Which border is being dragged by the mouse.
@@ -164,17 +183,23 @@ impl AppState {
             watcher: None,
             watcher_rx,
             watcher_tx,
-            highlighters: HashMap::new(),
+            highlighters: FxHashMap::default(),
             lang_registry: LanguageRegistry::new(),
             syntax_theme: SyntaxTheme::dark(),
             theme: Theme::dark(),
             git_service: None,
-            gutter_marks: HashMap::new(),
+            gutter_marks: FxHashMap::default(),
             git_branch: String::new(),
             git_ahead: 0,
             git_behind: 0,
             git_panel: GitPanelState::new(),
             last_click: None,
+            effects: LuneEffects::new(),
+            last_render: Instant::now(),
+            focus_dirty: true,
+            ai_manager: AiManager::new(),
+            last_ai_term_size: None,
+            live_mode: LiveModeController::new(),
         }
     }
 
@@ -402,9 +427,10 @@ impl AppState {
             cursor_col,
             git_branch: self.build_git_branch_display(),
             encoding: "UTF-8".to_string(),
-            ai_status: String::new(), // TODO: AI integration
+            ai_status: self.build_ai_status(),
             file_type: self.detect_file_type(),
             message: self.status_message.clone(),
+            live_mode: self.build_live_mode_status(),
         }
     }
 
@@ -437,6 +463,46 @@ impl AppState {
             .unwrap_or_default()
     }
 
+    /// Build a short AI status string for the status bar.
+    fn build_ai_status(&self) -> String {
+        if self.ai_manager.is_empty() {
+            return String::new();
+        }
+        let count = self.ai_manager.session_count();
+        self.ai_manager.active_session().map_or_else(
+            || format!("{count} session(s)"),
+            |session| {
+                let name = session.kind().display_name();
+                let state = match session.state() {
+                    lune_ai::SessionState::Starting => "starting",
+                    lune_ai::SessionState::Running => "running",
+                    lune_ai::SessionState::Exited(0) => "exited",
+                    lune_ai::SessionState::Exited(_) => "exited!",
+                    lune_ai::SessionState::Error => "error",
+                };
+                if count > 1 {
+                    format!("{name} [{state}] ({count})")
+                } else {
+                    format!("{name} [{state}]")
+                }
+            },
+        )
+    }
+
+    /// Build a Live Mode status string for the status bar.
+    fn build_live_mode_status(&self) -> String {
+        if !self.live_mode.is_active() {
+            return String::new();
+        }
+        let hunks = self.live_mode.global_stats.total_hunks;
+        if hunks > 0 {
+            let files = self.live_mode.global_stats.total_files_changed;
+            format!("LIVE {hunks}Δ {files}F")
+        } else {
+            "LIVE".to_string()
+        }
+    }
+
     /// Re-run the highlighter for the active buffer after a text change.
     fn update_active_highlighter(&mut self) {
         if let Some(id) = self.active_buffer {
@@ -445,6 +511,80 @@ impl AppState {
             if let (Some(buf), Some(hl)) = (self.registry.get(id), self.highlighters.get_mut(&id)) {
                 hl.update(buf, None);
             }
+        }
+    }
+
+    /// Collect a snapshot of the current editor context for AI sessions.
+    ///
+    /// Gathers active file, cursor, selection, open tabs, workspace, and git
+    /// info into an [`EditorContext`] that can be encoded as env vars, JSON,
+    /// or CLI args.
+    fn collect_editor_context(&self) -> EditorContext {
+        let workspace_root = self.workspace.as_ref().map(|ws| ws.root().to_path_buf());
+
+        let active_file = self.active_buf().and_then(|buf| {
+            let path = buf.file_path.as_ref()?;
+            let language = {
+                let first_line = buf.line(0);
+                self.lang_registry
+                    .detect(path, first_line.as_deref())
+                    .map(|lid| lid.name().to_string())
+            };
+            let pos = &buf.cursor.primary.head;
+            Some(FileContext {
+                path: path.clone(),
+                language,
+                cursor_line: pos.line + 1,
+                cursor_col: pos.col + 1,
+                total_lines: buf.line_count(),
+            })
+        });
+
+        let open_tabs: Vec<TabContext> = self
+            .tabs
+            .iter()
+            .filter_map(|&id| {
+                self.registry.get(id).map(|buf| TabContext {
+                    path: buf.file_path.clone(),
+                    dirty: buf.is_dirty(),
+                })
+            })
+            .collect();
+
+        let selection = self.active_buf().and_then(|buf| {
+            let sel = &buf.cursor.primary;
+            if sel.is_cursor() {
+                return None;
+            }
+            let path = buf.file_path.as_ref()?;
+            let (start, end) = sel.ordered();
+            let text = extract_selection_text(buf, start, end);
+            Some(SelectionContext {
+                text,
+                file_path: path.clone(),
+                start_line: start.line + 1,
+                end_line: end.line + 1,
+            })
+        });
+
+        let git_status = self.git_service.as_ref().and_then(|git| {
+            git.status().ok().map(|status| GitStatusSummary {
+                branch: status.branch,
+                modified_files: status
+                    .files
+                    .iter()
+                    .filter(|f| !f.staged)
+                    .map(|f| f.path.clone())
+                    .collect(),
+            })
+        });
+
+        EditorContext {
+            workspace_root,
+            active_file,
+            open_tabs,
+            git_status,
+            selection,
         }
     }
 }
@@ -483,6 +623,19 @@ pub fn render(
     let splits = layout::compute_layout(area, &state.layout);
     state.last_splits = Some(splits.clone());
 
+    // Resize AI sessions to match the right panel area (minus header row).
+    if let Some(right_area) = splits.right {
+        if state.layout.show_ai_panel && !state.ai_manager.is_empty() {
+            let term_rows = right_area.height.saturating_sub(1).max(1);
+            let term_cols = right_area.width.max(1);
+            let new_size = AiTermSize::new(term_rows, term_cols);
+            if state.last_ai_term_size != Some(new_size) {
+                state.ai_manager.resize_all(new_size);
+                state.last_ai_term_size = Some(new_size);
+            }
+        }
+    }
+
     // Render left panel (file tree).
     if let Some(left_area) = splits.left {
         let ws_name = state.workspace.as_ref().map_or("EXPLORER", Workspace::name);
@@ -501,7 +654,7 @@ pub fn render(
     let editor_focused = state.focus.is_focused(PanelId::Editor);
     render_center(splits.center, buf, state, editor_focused);
 
-    // Render right panel (git panel or AI placeholder).
+    // Render right panel (git panel, AI terminal, or placeholder).
     if let Some(right_area) = splits.right {
         if state.layout.show_git_panel {
             let gp_focused = state.focus.is_focused(PanelId::GitPanel);
@@ -512,14 +665,51 @@ pub fn render(
                 gp_focused,
                 &state.theme,
             );
-        } else {
-            render_right_panel_placeholder(right_area, buf, &state.theme);
+        } else if state.layout.show_ai_panel {
+            let session = state.ai_manager.active_session();
+            terminal::render_ai_terminal(right_area, buf, session, &state.theme);
         }
     }
 
     // Render status bar.
     let status_state = state.build_status_line();
     status_bar::render_status_bar(splits.status, buf, &status_state, &state.theme);
+
+    // Update focus glow if focus changed.
+    if state.focus_dirty {
+        state.focus_dirty = false;
+        update_focus_glow(state);
+    }
+
+    // Apply focus glow effect on the active panel.
+    let active_panel = state.focus.active();
+    let accent = state.theme.accent;
+    let intensity = state.effects.focus_glow_intensity();
+
+    if intensity > 0.0 {
+        match active_panel {
+            PanelId::FileTree => {
+                if let Some(left_area) = splits.left {
+                    crate::effects::paint_inner_border(buf, left_area, accent, intensity);
+                }
+            }
+            PanelId::Editor => {
+                crate::effects::paint_inner_border(buf, splits.center, accent, intensity);
+            }
+            PanelId::AiTerminal | PanelId::GitPanel => {
+                if let Some(right_area) = splits.right {
+                    crate::effects::paint_inner_border(buf, right_area, accent, intensity);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Apply managed visual effects (tachyonfx) — modifies buffer cells in-place.
+    let now = Instant::now();
+    let elapsed = now.duration_since(state.last_render);
+    state.last_render = now;
+    state.effects.process(elapsed, buf, area);
 
     // Render overlays on top.
     overlay::render_overlay(area, buf, &mut state.overlay, &state.theme);
@@ -563,6 +753,15 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
     let active_gutter = state
         .active_buffer
         .and_then(|id| state.gutter_marks.get(&id));
+
+    // Build live diff overlay for the active buffer (if Live Mode is on).
+    let live_overlay = state.active_buffer.and_then(|id| {
+        state
+            .live_mode
+            .get_diff_state(id)
+            .map(|ds| editor_pane::build_live_overlay(ds, &state.theme))
+    });
+
     editor_pane::render_editor_pane(
         content_area,
         buf,
@@ -572,22 +771,9 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         highlighted.as_deref(),
         &state.syntax_theme,
         active_gutter,
+        live_overlay.as_ref(),
         &state.theme,
     );
-}
-
-/// Render a right panel placeholder (AI/Git).
-fn render_right_panel_placeholder(area: Rect, buf: &mut Buffer, _theme: &Theme) {
-    if area.height == 0 {
-        return;
-    }
-    let label = " AI TERMINAL";
-    Line::from(Span::from(label).bold()).render(Rect::new(area.x, area.y, area.width, 1), buf);
-
-    if area.height > 1 {
-        Line::from(Span::from(" (Coming in Plan 08)").dim())
-            .render(Rect::new(area.x, area.y + 1, area.width, 1), buf);
-    }
 }
 
 // ── Event handling ────────────────────────────────────────────────────
@@ -612,7 +798,7 @@ pub fn event(
         }
         AppEvent::Command(cmd) => Ok(handle_command(cmd, state)),
         AppEvent::Fs(fs_event) => Ok(handle_fs_event(fs_event, state)),
-        AppEvent::Ai(_) => Ok(Control::Continue),
+        AppEvent::Ai(_) => Ok(handle_ai_event(state)),
     }
 }
 
@@ -623,6 +809,13 @@ fn handle_fs_event(fs_event: &crate::event::FsEvent, state: &mut AppState) -> Co
         | crate::event::FsEvent::Created(p)
         | crate::event::FsEvent::Deleted(p) => p,
     };
+
+    // Feed file changes to Live Mode controller when active.
+    if state.live_mode.is_active() {
+        if let crate::event::FsEvent::Changed(changed_path) = fs_event {
+            feed_live_mode_change(changed_path, state);
+        }
+    }
 
     // Invalidate workspace cache for the parent directory and refresh.
     if let Some(ref mut ws) = state.workspace {
@@ -641,6 +834,44 @@ fn handle_fs_event(fs_event: &crate::event::FsEvent, state: &mut AppState) -> Co
     Control::Changed
 }
 
+/// Read a changed file from disk, update the Live Mode diff, and auto-follow.
+///
+/// When the controller returns a [`LiveChangeInfo`], we switch to the
+/// changed buffer's tab and scroll the viewport to the latest change.
+fn feed_live_mode_change(path: &Path, state: &mut AppState) {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::debug!(
+                "Live Mode: failed to read changed file {}: {e}",
+                path.display()
+            );
+            return;
+        }
+    };
+    let rope = Rope::from_str(&contents);
+    let Some(info) = state.live_mode.on_file_changed(path, rope) else {
+        return;
+    };
+
+    // Auto-follow: switch to the changed buffer and scroll to the change.
+    state.active_buffer = Some(info.buffer_id);
+    if let Some(buf) = state.registry.get_mut(info.buffer_id) {
+        buf.cursor.primary.head = Position::new(info.follow_line, 0);
+        buf.cursor.primary.anchor = buf.cursor.primary.head;
+    }
+}
+
+/// Handle AI session events (poll all sessions for new output).
+fn handle_ai_event(state: &mut AppState) -> Control<AppEvent> {
+    let changed = state.ai_manager.poll_all();
+    if changed {
+        Control::Changed
+    } else {
+        Control::Continue
+    }
+}
+
 /// Handle crossterm terminal events.
 fn handle_terminal_event(ct_event: &CtEvent, state: &mut AppState) -> Control<AppEvent> {
     match ct_event {
@@ -648,7 +879,12 @@ fn handle_terminal_event(ct_event: &CtEvent, state: &mut AppState) -> Control<Ap
             handle_key_event(key_event, state)
         }
         CtEvent::Mouse(mouse_event) => handle_mouse_event(*mouse_event, state),
-        CtEvent::Resize(_, _) => Control::Changed,
+        CtEvent::Resize(_, _) => {
+            // Resize AI sessions to match the new right panel area.
+            // The actual area will be computed on the next render;
+            // for now, trigger a re-render so the layout recomputes.
+            Control::Changed
+        }
         _ => Control::Continue,
     }
 }
@@ -671,10 +907,14 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         return Control::Event(AppEvent::Command(cmd.clone()));
     }
 
-    // 3. Escape: return to editor if in file tree or git panel, else normal mode.
+    // 3. Escape: return to editor if in file tree, git panel, or AI terminal, else normal mode.
     if key.code == KeyCode::Esc {
-        if state.focus.is_focused(PanelId::FileTree) || state.focus.is_focused(PanelId::GitPanel) {
+        if state.focus.is_focused(PanelId::FileTree)
+            || state.focus.is_focused(PanelId::GitPanel)
+            || state.focus.is_focused(PanelId::AiTerminal)
+        {
             state.focus.focus(PanelId::Editor);
+            state.focus_dirty = true;
             return Control::Changed;
         }
         state.vim.enter_normal();
@@ -682,7 +922,12 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         return Control::Changed;
     }
 
-    // 4. Route to file tree if focused.
+    // 4. Route to AI terminal if focused (forward all keys to PTY).
+    if state.focus.is_focused(PanelId::AiTerminal) {
+        return handle_ai_terminal_key(key, state);
+    }
+
+    // 4a. Route to file tree if focused.
     if state.focus.is_focused(PanelId::FileTree) {
         return handle_file_tree_key(key, state);
     }
@@ -736,6 +981,7 @@ fn handle_overlay_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
 fn close_overlay(state: &mut AppState) {
     state.overlay.close();
     state.focus.focus_return();
+    state.focus_dirty = true;
 }
 
 /// Handle keys in the command palette.
@@ -888,14 +1134,17 @@ fn handle_file_tree_set_expanded(state: &mut AppState, expanded: bool) -> Contro
 /// Cycle focus to the next visible pane.
 ///
 /// Builds a list of currently visible panels and advances to the next one
-/// in order: `FileTree` → Editor → `GitPanel` → (wrap). Panels that are
-/// not visible are skipped.
+/// in order: `FileTree` → Editor → `AiTerminal` → `GitPanel` → (wrap).
+/// Panels that are not visible are skipped.
 fn handle_focus_next_pane(state: &mut AppState) {
-    let mut panes = Vec::with_capacity(3);
+    let mut panes = Vec::with_capacity(4);
     if state.layout.show_file_tree {
         panes.push(PanelId::FileTree);
     }
     panes.push(PanelId::Editor);
+    if state.layout.show_ai_panel {
+        panes.push(PanelId::AiTerminal);
+    }
     if state.layout.show_git_panel {
         panes.push(PanelId::GitPanel);
     }
@@ -906,6 +1155,37 @@ fn handle_focus_next_pane(state: &mut AppState) {
         .position(|&p| p == current)
         .map_or(PanelId::Editor, |idx| panes[(idx + 1) % panes.len()]);
     state.focus.set_active(next);
+    state.focus_dirty = true;
+}
+
+/// Update the focus glow effect based on the currently focused panel.
+///
+/// Starts a glow on the newly focused panel and cancels glows on all
+/// other panels. Only applies to main content panels (`FileTree`, `Editor`,
+/// `GitPanel`) — overlays like `CommandPalette` don't get glow effects.
+fn update_focus_glow(state: &mut AppState) {
+    let active = state.focus.active();
+    let accent = state.theme.accent;
+
+    // Cancel all existing panel glows.
+    for &panel in &[
+        PanelId::FileTree,
+        PanelId::Editor,
+        PanelId::AiTerminal,
+        PanelId::GitPanel,
+    ] {
+        if panel != active {
+            state.effects.cancel_focus_glow(panel);
+        }
+    }
+
+    // Start glow on the active panel (if it's a content panel).
+    match active {
+        PanelId::FileTree | PanelId::Editor | PanelId::AiTerminal | PanelId::GitPanel => {
+            state.effects.start_focus_glow(active, accent);
+        }
+        _ => {} // Overlays/status bar don't get glow.
+    }
 }
 
 // ── Git panel key handling ────────────────────────────────────────
@@ -956,6 +1236,311 @@ fn toggle_selected_dir(state: &mut AppState) -> Control<AppEvent> {
         }
     }
     Control::Changed
+}
+
+// ── AI terminal key handling ──────────────────────────────────────
+
+/// Handle key events when the AI terminal is focused.
+///
+/// Translates crossterm key events to terminal byte sequences and
+/// forwards them to the active PTY session.
+fn handle_ai_terminal_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    let bytes = key_event_to_bytes(key);
+    if bytes.is_empty() {
+        return Control::Continue;
+    }
+    if let Some(session) = state.ai_manager.active_session_mut() {
+        if let Err(e) = session.send_input(&bytes) {
+            log::error!("Failed to send input to AI session: {e}");
+        }
+    }
+    Control::Changed
+}
+
+/// Translate a crossterm `KeyEvent` into raw terminal byte sequence(s).
+///
+/// Maps special keys to their VT/xterm escape sequences and control
+/// characters. Returns an empty vec for keys we don't handle.
+#[allow(clippy::too_many_lines)]
+fn key_event_to_bytes(key: &KeyEvent) -> Vec<u8> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+
+    match key.code {
+        KeyCode::Char(ch) => {
+            if ctrl {
+                // Ctrl+letter: control characters (0x01–0x1A).
+                let code = ch.to_ascii_lowercase();
+                if code.is_ascii_lowercase() {
+                    let byte = code as u8 - b'a' + 1;
+                    return vec![byte];
+                }
+            }
+            if alt {
+                // Alt+char: ESC prefix.
+                let mut bytes = vec![0x1b];
+                let mut char_buf = [0u8; 4];
+                bytes.extend_from_slice(ch.encode_utf8(&mut char_buf).as_bytes());
+                return bytes;
+            }
+            let mut char_buf = [0u8; 4];
+            ch.encode_utf8(&mut char_buf);
+            let len = ch.len_utf8();
+            char_buf[..len].to_vec()
+        }
+        KeyCode::Enter => vec![b'\r'],
+        KeyCode::Backspace => vec![0x7f],
+        KeyCode::Delete => b"\x1b[3~".to_vec(),
+        KeyCode::Tab => vec![b'\t'],
+        KeyCode::BackTab => b"\x1b[Z".to_vec(),
+        KeyCode::Esc => vec![0x1b],
+        KeyCode::Up => b"\x1b[A".to_vec(),
+        KeyCode::Down => b"\x1b[B".to_vec(),
+        KeyCode::Right => b"\x1b[C".to_vec(),
+        KeyCode::Left => b"\x1b[D".to_vec(),
+        KeyCode::Home => b"\x1b[H".to_vec(),
+        KeyCode::End => b"\x1b[F".to_vec(),
+        KeyCode::PageUp => b"\x1b[5~".to_vec(),
+        KeyCode::PageDown => b"\x1b[6~".to_vec(),
+        KeyCode::Insert => b"\x1b[2~".to_vec(),
+        KeyCode::F(n) => f_key_escape(n),
+        _ => Vec::new(),
+    }
+}
+
+/// Map F-key number to VT escape sequence.
+fn f_key_escape(n: u8) -> Vec<u8> {
+    match n {
+        1 => b"\x1bOP".to_vec(),
+        2 => b"\x1bOQ".to_vec(),
+        3 => b"\x1bOR".to_vec(),
+        4 => b"\x1bOS".to_vec(),
+        5 => b"\x1b[15~".to_vec(),
+        6 => b"\x1b[17~".to_vec(),
+        7 => b"\x1b[18~".to_vec(),
+        8 => b"\x1b[19~".to_vec(),
+        9 => b"\x1b[20~".to_vec(),
+        10 => b"\x1b[21~".to_vec(),
+        11 => b"\x1b[23~".to_vec(),
+        12 => b"\x1b[24~".to_vec(),
+        _ => Vec::new(),
+    }
+}
+
+/// Start a default shell session in the AI manager.
+fn start_default_ai_session(state: &mut AppState) {
+    let cwd = state.workspace.as_ref().map(|ws| ws.root().to_path_buf());
+    let size = state
+        .last_splits
+        .as_ref()
+        .and_then(|s| s.right)
+        .map_or_else(AiTermSize::default, |r| {
+            // Subtract 1 row for the header.
+            AiTermSize::new(r.height.saturating_sub(1).max(1), r.width.max(1))
+        });
+    match state
+        .ai_manager
+        .new_session(AiClientKind::Shell, cwd.as_deref(), &HashMap::new(), size)
+    {
+        Ok(_id) => {
+            log::info!("Started AI shell session");
+        }
+        Err(e) => {
+            log::error!("Failed to start AI session: {e}");
+            state.overlay.notify(
+                format!("Failed to start shell: {e}"),
+                crate::widgets::overlay::NotificationLevel::Error,
+            );
+        }
+    }
+}
+
+/// Start an AI session with editor context environment variables.
+///
+/// Collects the current editor context and passes it as `LUNE_CTX_*`
+/// env vars to the new shell session. If a session is already running,
+/// reuses it (context env vars are only set at spawn time).
+fn start_ai_session_with_context(state: &mut AppState) {
+    let ctx = state.collect_editor_context();
+    let env = ctx.to_env_vars();
+    let cwd = state.workspace.as_ref().map(|ws| ws.root().to_path_buf());
+    let size = state
+        .last_splits
+        .as_ref()
+        .and_then(|s| s.right)
+        .map_or_else(AiTermSize::default, |r| {
+            AiTermSize::new(r.height.saturating_sub(1).max(1), r.width.max(1))
+        });
+    match state
+        .ai_manager
+        .new_session(AiClientKind::Shell, cwd.as_deref(), &env, size)
+    {
+        Ok(_id) => {
+            log::info!("Started AI session with editor context");
+        }
+        Err(e) => {
+            log::error!("Failed to start AI session: {e}");
+            state.overlay.notify(
+                format!("Failed to start shell: {e}"),
+                NotificationLevel::Error,
+            );
+        }
+    }
+}
+
+/// Ensure the AI panel is open and focused, starting a context-aware
+/// session if none exists.
+fn ensure_ai_panel_open(state: &mut AppState) {
+    if !state.layout.show_ai_panel {
+        state.layout.toggle_ai_panel();
+    }
+    if state.ai_manager.is_empty() {
+        start_ai_session_with_context(state);
+    }
+    state.focus.focus(PanelId::AiTerminal);
+    state.focus_dirty = true;
+}
+
+/// Send a prompt string to the active AI session's PTY.
+fn send_prompt_to_ai(state: &mut AppState, prompt: &str) {
+    if let Some(session) = state.ai_manager.active_session_mut() {
+        // Send the prompt followed by Enter.
+        if let Err(e) = session.send_input(prompt.as_bytes()) {
+            log::error!("Failed to send prompt to AI: {e}");
+        }
+        if let Err(e) = session.send_input(b"\n") {
+            log::error!("Failed to send newline to AI: {e}");
+        }
+    }
+}
+
+/// Handle "Ask AI about selection" command.
+///
+/// Collects the current selection, opens the AI panel, and sends
+/// a contextual prompt.
+fn handle_ai_ask_selection(state: &mut AppState) -> Control<AppEvent> {
+    let ctx = state.collect_editor_context();
+    let selection_text = ctx
+        .selection
+        .as_ref()
+        .map(|s| s.text.clone())
+        .unwrap_or_default();
+
+    if selection_text.is_empty() {
+        state.overlay.notify(
+            "No text selected — select code first",
+            NotificationLevel::Warning,
+        );
+        return Control::Changed;
+    }
+
+    ensure_ai_panel_open(state);
+
+    let prompt = format!("Explain this code:\n\n{selection_text}");
+    send_prompt_to_ai(state, &prompt);
+    Control::Changed
+}
+
+/// Handle "Refactor file" command.
+///
+/// Opens the AI panel and sends a refactoring request with file context.
+fn handle_ai_refactor_file(state: &mut AppState) -> Control<AppEvent> {
+    let ctx = state.collect_editor_context();
+    let file_path = ctx
+        .active_file
+        .as_ref()
+        .map(|f| f.path.display().to_string())
+        .unwrap_or_default();
+
+    if file_path.is_empty() {
+        state.overlay.notify(
+            "No file open — open a file first",
+            NotificationLevel::Warning,
+        );
+        return Control::Changed;
+    }
+
+    ensure_ai_panel_open(state);
+
+    let prompt = format!("Refactor {file_path}");
+    send_prompt_to_ai(state, &prompt);
+    Control::Changed
+}
+
+/// Handle "Summarize git changes" command.
+///
+/// Opens the AI panel and sends a request to summarize the current
+/// git-tracked modifications.
+fn handle_ai_summarize_changes(state: &mut AppState) -> Control<AppEvent> {
+    let ctx = state.collect_editor_context();
+    let summary = ctx
+        .git_status
+        .as_ref()
+        .map(|g| {
+            use std::fmt::Write as _;
+            let mut s = format!("Branch: {}\nModified files:\n", g.branch);
+            for f in &g.modified_files {
+                let _ = writeln!(s, "  - {}", f.display());
+            }
+            s
+        })
+        .unwrap_or_default();
+
+    if summary.is_empty() {
+        state.overlay.notify(
+            "No git repository — open a workspace first",
+            NotificationLevel::Warning,
+        );
+        return Control::Changed;
+    }
+
+    ensure_ai_panel_open(state);
+
+    let prompt = format!("Summarize these changes:\n{summary}");
+    send_prompt_to_ai(state, &prompt);
+    Control::Changed
+}
+
+// ── Live Mode command handlers ────────────────────────────────────────
+
+/// Toggle Live Mode: Off ↔ On.
+///
+/// When entering On from Off, registers all open buffers with file paths
+/// as baselines. When entering Off, clears all tracking.
+fn handle_toggle_live_mode(state: &mut AppState) -> Control<AppEvent> {
+    let was_active = state.live_mode.is_active();
+    state.live_mode.toggle();
+
+    if state.live_mode.is_active() && !was_active {
+        // Entering live mode: register all open buffers with file paths.
+        register_all_buffers_for_live_mode(state);
+        state
+            .overlay
+            .notify("Live Mode: On", NotificationLevel::Info);
+    } else {
+        state
+            .overlay
+            .notify("Live Mode: Off", NotificationLevel::Info);
+    }
+
+    Control::Changed
+}
+
+/// Register all open buffers that have file paths for live tracking.
+fn register_all_buffers_for_live_mode(state: &mut AppState) {
+    let entries: Vec<(BufferId, PathBuf, Rope)> = state
+        .tabs
+        .iter()
+        .filter_map(|&id| {
+            let buf = state.registry.get(id)?;
+            let path = buf.file_path.clone()?;
+            Some((id, path, buf.rope().clone()))
+        })
+        .collect();
+
+    for (id, path, content) in entries {
+        state.live_mode.register_buffer(id, path, content);
+    }
 }
 
 /// Handle key events in insert mode — characters are inserted.
@@ -1078,17 +1663,29 @@ fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             Control::Continue
         }
         MouseEventKind::ScrollUp => {
-            state.viewport.scroll_up(3);
+            if state.focus.is_focused(PanelId::AiTerminal) {
+                if let Some(session) = state.ai_manager.active_session_mut() {
+                    session.scroll_up(3);
+                }
+            } else {
+                state.viewport.scroll_up(3);
+            }
             Control::Changed
         }
         MouseEventKind::ScrollDown => {
-            let total = state
-                .active_buf()
-                .map_or(0, lune_core::buffer::TextBuffer::line_count);
-            let height = state
-                .last_editor_content_area
-                .map_or(20, |a| a.height as usize);
-            state.viewport.scroll_down(3, total, height);
+            if state.focus.is_focused(PanelId::AiTerminal) {
+                if let Some(session) = state.ai_manager.active_session_mut() {
+                    session.scroll_down(3);
+                }
+            } else {
+                let total = state
+                    .active_buf()
+                    .map_or(0, lune_core::buffer::TextBuffer::line_count);
+                let height = state
+                    .last_editor_content_area
+                    .map_or(20, |a| a.height as usize);
+                state.viewport.scroll_down(3, total, height);
+            }
             Control::Changed
         }
         _ => Control::Continue,
@@ -1120,6 +1717,7 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
         if let Some(left_area) = splits.left {
             if point_in_rect(col, row, left_area) {
                 state.focus.focus(PanelId::FileTree);
+                state.focus_dirty = true;
                 let now = Instant::now();
                 let is_double = state.last_click.is_some_and(|(t, c, r)| {
                     c == col && r == row && now.duration_since(t).as_millis() < 500
@@ -1141,6 +1739,18 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             if let Some(right_area) = splits.right {
                 if point_in_rect(col, row, right_area) {
                     state.focus.focus(PanelId::GitPanel);
+                    state.focus_dirty = true;
+                    return Control::Changed;
+                }
+            }
+        }
+
+        // AI terminal area.
+        if state.layout.show_ai_panel {
+            if let Some(right_area) = splits.right {
+                if point_in_rect(col, row, right_area) {
+                    state.focus.focus(PanelId::AiTerminal);
+                    state.focus_dirty = true;
                     return Control::Changed;
                 }
             }
@@ -1168,6 +1778,11 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
         let has_git = state
             .active_buffer
             .is_some_and(|id| state.gutter_marks.contains_key(&id));
+        let has_live = state.live_mode.is_active()
+            && state
+                .active_buffer
+                .and_then(|id| state.live_mode.get_diff_state(id))
+                .is_some_and(|ds| !ds.hunks.is_empty());
         if let Some(pos) = editor_pane::click_to_position(
             col,
             row,
@@ -1175,8 +1790,10 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             &state.viewport,
             total_lines,
             has_git,
+            has_live,
         ) {
             state.focus.set_active(PanelId::Editor);
+            state.focus_dirty = true;
             if let Some(buf) = state.active_buf_mut() {
                 let clamped_line = pos.line.min(buf.line_count().saturating_sub(1));
                 let clamped_col = pos.col.min(buf.line_len(clamped_line).saturating_sub(1));
@@ -1437,6 +2054,12 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             Control::Changed
         }
         AppCommand::GitDiscardConfirmed(path) => handle_git_discard_confirmed(path, state),
+        // AI commands.
+        AppCommand::AiAskSelection => handle_ai_ask_selection(state),
+        AppCommand::AiRefactorFile => handle_ai_refactor_file(state),
+        AppCommand::AiSummarizeChanges => handle_ai_summarize_changes(state),
+        // Live Mode commands.
+        AppCommand::ToggleLiveMode => handle_toggle_live_mode(state),
     }
 }
 
@@ -1450,10 +2073,21 @@ fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEv
             } else {
                 state.focus.set_active(PanelId::Editor);
             }
+            state.focus_dirty = true;
             Control::Changed
         }
         AppCommand::ToggleAiPanel => {
             state.layout.toggle_ai_panel();
+            if state.layout.show_ai_panel {
+                // Start a shell session on first toggle if none exist.
+                if state.ai_manager.is_empty() {
+                    start_default_ai_session(state);
+                }
+                state.focus.focus(PanelId::AiTerminal);
+            } else {
+                state.focus.set_active(PanelId::Editor);
+            }
+            state.focus_dirty = true;
             Control::Changed
         }
         AppCommand::ToggleGitPanel => {
@@ -1465,6 +2099,7 @@ fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEv
             } else {
                 state.focus.set_active(PanelId::Editor);
             }
+            state.focus_dirty = true;
             Control::Changed
         }
         AppCommand::FocusNextPane => {
@@ -1474,6 +2109,7 @@ fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEv
         AppCommand::OpenCommandPalette => {
             state.overlay.open_command_palette();
             state.focus.focus(PanelId::CommandPalette);
+            state.focus_dirty = true;
             Control::Changed
         }
         AppCommand::OpenFilePicker => {
@@ -1483,6 +2119,7 @@ fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEv
             );
             state.overlay.open_file_picker(&start_dir);
             state.focus.focus(PanelId::CommandPalette); // Reuse overlay focus
+            state.focus_dirty = true;
             Control::Changed
         }
         _ => Control::Continue,
@@ -1588,6 +2225,7 @@ fn handle_open_file(path: &std::path::Path, state: &mut AppState) -> Control<App
     match state.open_file(path) {
         Ok(_) => {
             state.focus.focus(PanelId::Editor);
+            state.focus_dirty = true;
             state.status_message = format!("Opened: {}", path.display());
         }
         Err(e) => {
@@ -1682,6 +2320,7 @@ fn handle_git_discard(state: &mut AppState) -> Control<AppEvent> {
         AppCommand::GitDiscardConfirmed(file.path),
     );
     state.focus.focus(PanelId::CommandPalette); // Use overlay focus
+    state.focus_dirty = true;
     Control::Changed
 }
 
@@ -1771,6 +2410,68 @@ impl rat_salsa::poll::PollEvents<AppEvent, Error> for PollFileWatcher {
     }
 }
 
+// ── AI session poll integration ───────────────────────────────────────
+
+/// Event source that polls the AI session manager for output and
+/// converts changes to `AppEvent::Ai(_)`.
+///
+/// Unlike `PollFileWatcher`, this doesn't use a separate channel — it
+/// directly calls `ai_manager.poll_all()` which drains the per-session
+/// crossbeam channels and feeds bytes to each session's vt100 parser.
+///
+/// Because rat-salsa passes `state` to the event handler separately,
+/// we use a shared `AiManager` pointer pattern: the manager lives in
+/// `AppState` and this poller just signals "something changed".
+pub struct PollAiSessions {
+    /// Whether the last poll found changes.
+    has_changes: bool,
+}
+
+impl PollAiSessions {
+    /// Create a new AI session poller.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { has_changes: false }
+    }
+}
+
+impl Default for PollAiSessions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl rat_salsa::poll::PollEvents<AppEvent, Error> for PollAiSessions {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn poll(&mut self) -> Result<bool, Error> {
+        // We can't access AppState here, so we always claim we have
+        // an event to read. The `read()` method will emit an AI event
+        // that triggers `event()`, which calls `poll_all()` on the
+        // actual manager. This is a lightweight approach: every poll
+        // cycle we signal to drain the AI channels.
+        //
+        // This works because rat-salsa calls poll() frequently (every
+        // cycle), and the event handler will be a no-op if there's
+        // actually nothing to drain.
+        self.has_changes = true;
+        Ok(true)
+    }
+
+    fn read(&mut self) -> Result<Control<AppEvent>, Error> {
+        if self.has_changes {
+            self.has_changes = false;
+            Ok(Control::Event(AppEvent::Ai(
+                crate::event::AiEvent::OutputChanged,
+            )))
+        } else {
+            Ok(Control::Continue)
+        }
+    }
+}
+
 /// Run the Lune Editor TUI event loop.
 ///
 /// # Errors
@@ -1790,8 +2491,488 @@ pub fn run(state: &mut AppState) -> Result<(), Error> {
         RunConfig::default()?
             .poll(PollCrossterm)
             .poll(PollTimers::default())
-            .poll(PollFileWatcher::new(watcher_rx)),
+            .poll(PollFileWatcher::new(watcher_rx))
+            .poll(PollAiSessions::new()),
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui_core::layout::Rect;
+
+    /// Helper: create a fresh `AppState` and open a temporary file.
+    fn state_with_file() -> (AppState, tempfile::NamedTempFile) {
+        let mut state = AppState::new();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "line one\nline two\nline three\n").unwrap();
+        state.open_file(tmp.path()).unwrap();
+        (state, tmp)
+    }
+
+    /// Helper: create a state with multiple open tabs.
+    fn state_with_tabs(n: usize) -> (AppState, Vec<tempfile::NamedTempFile>) {
+        let mut state = AppState::new();
+        let mut files = Vec::new();
+        for i in 0..n {
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(tmp.path(), format!("file {i}\n")).unwrap();
+            state.open_file(tmp.path()).unwrap();
+            files.push(tmp);
+        }
+        (state, files)
+    }
+
+    // ── AppState construction ─────────────────────────────────────
+
+    #[test]
+    fn new_state_has_no_active_buffer() {
+        let state = AppState::new();
+        assert!(state.active_buffer.is_none());
+        assert!(state.tabs.is_empty());
+        assert!(state.active_buf().is_none());
+    }
+
+    #[test]
+    fn default_equals_new() {
+        let a = AppState::new();
+        let b = AppState::default();
+        assert_eq!(a.tabs.len(), b.tabs.len());
+        assert_eq!(a.active_buffer, b.active_buffer);
+    }
+
+    // ── open_file ─────────────────────────────────────────────────
+
+    #[test]
+    fn open_file_sets_active() {
+        let (state, _tmp) = state_with_file();
+        assert!(state.active_buffer.is_some());
+        assert_eq!(state.tabs.len(), 1);
+        assert!(state.active_buf().is_some());
+    }
+
+    #[test]
+    fn open_same_file_twice_reuses_id() {
+        let mut state = AppState::new();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "hello").unwrap();
+        let id1 = state.open_file(tmp.path()).unwrap();
+        let id2 = state.open_file(tmp.path()).unwrap();
+        assert_eq!(id1, id2);
+        assert_eq!(state.tabs.len(), 1);
+    }
+
+    #[test]
+    fn open_nonexistent_file_returns_error() {
+        let mut state = AppState::new();
+        let result = state.open_file(std::path::Path::new("/nonexistent/path/file.txt"));
+        assert!(result.is_err());
+    }
+
+    // ── cycle_tab ─────────────────────────────────────────────────
+
+    #[test]
+    fn cycle_tab_forward() {
+        let (mut state, _files) = state_with_tabs(3);
+        let tabs = state.tabs.clone();
+        assert_eq!(state.active_buffer, Some(tabs[2]));
+        state.cycle_tab(1);
+        assert_eq!(state.active_buffer, Some(tabs[0]));
+    }
+
+    #[test]
+    fn cycle_tab_backward() {
+        let (mut state, _files) = state_with_tabs(3);
+        let tabs = state.tabs.clone();
+        state.active_buffer = Some(tabs[0]);
+        state.cycle_tab(-1);
+        assert_eq!(state.active_buffer, Some(tabs[2]));
+    }
+
+    #[test]
+    fn cycle_tab_empty_noop() {
+        let mut state = AppState::new();
+        state.cycle_tab(1);
+        assert!(state.active_buffer.is_none());
+    }
+
+    #[test]
+    fn cycle_tab_single_stays() {
+        let (mut state, _tmp) = state_with_file();
+        let active = state.active_buffer;
+        state.cycle_tab(1);
+        assert_eq!(state.active_buffer, active);
+        state.cycle_tab(-1);
+        assert_eq!(state.active_buffer, active);
+    }
+
+    // ── close_active_tab / close_tab_by_id ────────────────────────
+
+    #[test]
+    fn close_active_tab_removes_tab() {
+        let (mut state, _files) = state_with_tabs(3);
+        let tabs = state.tabs.clone();
+        state.active_buffer = Some(tabs[1]);
+        state.close_active_tab();
+        assert_eq!(state.tabs.len(), 2);
+        assert!(!state.tabs.contains(&tabs[1]));
+        assert!(state.active_buffer.is_some());
+    }
+
+    #[test]
+    fn close_last_tab_sets_none() {
+        let (mut state, _tmp) = state_with_file();
+        state.close_active_tab();
+        assert!(state.active_buffer.is_none());
+        assert!(state.tabs.is_empty());
+    }
+
+    #[test]
+    fn close_tab_by_id_specific() {
+        let (mut state, _files) = state_with_tabs(3);
+        let tabs = state.tabs.clone();
+        close_tab_by_id(&mut state, tabs[0]);
+        assert_eq!(state.tabs.len(), 2);
+        assert!(!state.tabs.contains(&tabs[0]));
+    }
+
+    // ── point_in_rect ─────────────────────────────────────────────
+
+    #[test]
+    fn point_in_rect_inside() {
+        let r = Rect::new(10, 20, 30, 15);
+        assert!(point_in_rect(10, 20, r));
+        assert!(point_in_rect(25, 30, r));
+        assert!(point_in_rect(39, 34, r));
+    }
+
+    #[test]
+    fn point_in_rect_outside() {
+        let r = Rect::new(10, 20, 30, 15);
+        assert!(!point_in_rect(9, 20, r));
+        assert!(!point_in_rect(40, 20, r));
+        assert!(!point_in_rect(10, 19, r));
+        assert!(!point_in_rect(10, 35, r));
+    }
+
+    #[test]
+    fn point_in_rect_zero_size() {
+        let r = Rect::new(5, 5, 0, 0);
+        assert!(!point_in_rect(5, 5, r));
+    }
+
+    // ── handle_focus_next_pane ────────────────────────────────────
+
+    #[test]
+    fn focus_cycles_editor_only() {
+        let mut state = AppState::new();
+        state.layout.show_file_tree = false;
+        state.layout.show_git_panel = false;
+        state.focus.set_active(PanelId::Editor);
+        handle_focus_next_pane(&mut state);
+        assert_eq!(state.focus.active(), PanelId::Editor);
+    }
+
+    #[test]
+    fn focus_cycles_with_file_tree() {
+        let mut state = AppState::new();
+        state.layout.show_file_tree = true;
+        state.layout.show_git_panel = false;
+        state.focus.set_active(PanelId::Editor);
+        handle_focus_next_pane(&mut state);
+        assert_eq!(state.focus.active(), PanelId::FileTree);
+        handle_focus_next_pane(&mut state);
+        assert_eq!(state.focus.active(), PanelId::Editor);
+    }
+
+    #[test]
+    fn focus_cycles_all_panels() {
+        let mut state = AppState::new();
+        state.layout.show_file_tree = true;
+        state.layout.show_git_panel = true;
+        state.focus.set_active(PanelId::FileTree);
+        handle_focus_next_pane(&mut state);
+        assert_eq!(state.focus.active(), PanelId::Editor);
+        handle_focus_next_pane(&mut state);
+        assert_eq!(state.focus.active(), PanelId::GitPanel);
+        handle_focus_next_pane(&mut state);
+        assert_eq!(state.focus.active(), PanelId::FileTree);
+    }
+
+    // ── build_status_line ─────────────────────────────────────────
+
+    #[test]
+    fn build_status_line_no_buffer() {
+        let state = AppState::new();
+        let status = state.build_status_line();
+        assert!(status.file_path.is_empty());
+        assert!(!status.dirty);
+        assert_eq!(status.cursor_line, 0);
+    }
+
+    #[test]
+    fn build_status_line_with_buffer() {
+        let (state, _tmp) = state_with_file();
+        let status = state.build_status_line();
+        assert!(!status.file_path.is_empty());
+        assert!(!status.dirty);
+        assert_eq!(status.cursor_line, 1);
+        assert_eq!(status.cursor_col, 1);
+    }
+
+    // ── build_git_branch_display ──────────────────────────────────
+
+    #[test]
+    fn git_branch_empty() {
+        let state = AppState::new();
+        assert!(state.build_git_branch_display().is_empty());
+    }
+
+    #[test]
+    fn git_branch_with_ahead_behind() {
+        let mut state = AppState::new();
+        state.git_branch = "main".to_string();
+        state.git_ahead = 2;
+        state.git_behind = 1;
+        let display = state.build_git_branch_display();
+        assert!(display.contains("main"));
+        assert!(display.contains("↑2"));
+        assert!(display.contains("↓1"));
+    }
+
+    #[test]
+    fn git_branch_no_ahead_behind() {
+        let mut state = AppState::new();
+        state.git_branch = "feature".to_string();
+        assert_eq!(state.build_git_branch_display(), "feature");
+    }
+
+    // ── detect_file_type ──────────────────────────────────────────
+
+    #[test]
+    fn detect_file_type_rust() {
+        let mut state = AppState::new();
+        let tmp = tempfile::Builder::new().suffix(".rs").tempfile().unwrap();
+        std::fs::write(tmp.path(), "fn main() {}").unwrap();
+        state.open_file(tmp.path()).unwrap();
+        assert_eq!(state.detect_file_type().to_lowercase(), "rust");
+    }
+
+    #[test]
+    fn detect_file_type_no_buffer() {
+        let state = AppState::new();
+        assert!(state.detect_file_type().is_empty());
+    }
+
+    // ── handle_command dispatch ────────────────────────────────────
+
+    #[test]
+    fn command_quit_returns_quit() {
+        let mut state = AppState::new();
+        assert!(matches!(
+            handle_command(&AppCommand::Quit, &mut state),
+            Control::Quit
+        ));
+    }
+
+    #[test]
+    fn command_force_quit_returns_quit() {
+        let mut state = AppState::new();
+        assert!(matches!(
+            handle_command(&AppCommand::ForceQuit, &mut state),
+            Control::Quit
+        ));
+    }
+
+    #[test]
+    fn command_close_tab() {
+        let (mut state, _files) = state_with_tabs(2);
+        let _ = handle_command(&AppCommand::CloseTab, &mut state);
+        assert_eq!(state.tabs.len(), 1);
+    }
+
+    #[test]
+    fn command_next_prev_tab() {
+        let (mut state, _files) = state_with_tabs(3);
+        let tabs = state.tabs.clone();
+        state.active_buffer = Some(tabs[0]);
+        let _ = handle_command(&AppCommand::NextTab, &mut state);
+        assert_eq!(state.active_buffer, Some(tabs[1]));
+        let _ = handle_command(&AppCommand::PrevTab, &mut state);
+        assert_eq!(state.active_buffer, Some(tabs[0]));
+    }
+
+    #[test]
+    fn command_enter_modes() {
+        let mut state = AppState::new();
+        let _ = handle_command(&AppCommand::EnterInsertMode, &mut state);
+        assert_eq!(state.vim.mode, VimMode::Insert);
+        let _ = handle_command(&AppCommand::EnterNormalMode, &mut state);
+        assert_eq!(state.vim.mode, VimMode::Normal);
+        let _ = handle_command(&AppCommand::EnterVisualMode, &mut state);
+        assert_eq!(state.vim.mode, VimMode::Visual);
+    }
+
+    // ── error handler ─────────────────────────────────────────────
+
+    #[test]
+    fn error_handler_updates_state() {
+        let mut state = AppState::new();
+        let mut global = LuneGlobal::default();
+        let err = anyhow::anyhow!("test error");
+        let result = error(err, &mut state, &mut global).unwrap();
+        assert!(matches!(result, Control::Changed));
+        assert_eq!(state.error_count, 1);
+        assert!(state.last_error.contains("test error"));
+    }
+
+    // ── init ──────────────────────────────────────────────────────
+
+    #[test]
+    fn init_returns_ok() {
+        let mut state = AppState::new();
+        let mut global = LuneGlobal::default();
+        assert!(init(&mut state, &mut global).is_ok());
+    }
+
+    // ── event dispatch ────────────────────────────────────────────
+
+    #[test]
+    fn event_ai_without_sessions_is_continue() {
+        let mut state = AppState::new();
+        let mut global = LuneGlobal::default();
+        let ai_event = AppEvent::Ai(crate::event::AiEvent::OutputChanged);
+        let result = event(&ai_event, &mut state, &mut global).unwrap();
+        // No sessions → poll_all() returns false → Continue.
+        assert!(matches!(result, Control::Continue));
+    }
+
+    #[test]
+    fn event_command_quit() {
+        let mut state = AppState::new();
+        let mut global = LuneGlobal::default();
+        let cmd_event = AppEvent::Command(AppCommand::Quit);
+        let result = event(&cmd_event, &mut state, &mut global).unwrap();
+        assert!(matches!(result, Control::Quit));
+    }
+
+    // ── helpers ───────────────────────────────────────────────────
+
+    #[test]
+    fn apply_motion_without_buffer_returns_changed() {
+        let mut state = AppState::new();
+        let result = apply_motion(&mut state, |_buf| {});
+        assert!(matches!(result, Control::Changed));
+    }
+
+    #[test]
+    fn apply_buf_edit_without_buffer_does_not_panic() {
+        let mut state = AppState::new();
+        apply_buf_edit(&mut state, TextBuffer::undo);
+    }
+
+    #[test]
+    fn close_overlay_clears_active() {
+        let mut state = AppState::new();
+        state.overlay.open_command_palette();
+        assert!(state.overlay.is_active());
+        close_overlay(&mut state);
+        assert!(!state.overlay.is_active());
+    }
+
+    // ── handle_save ───────────────────────────────────────────────
+
+    #[test]
+    fn handle_save_with_file() {
+        let (mut state, _tmp) = state_with_file();
+        if let Some(buf) = state.active_buf_mut() {
+            buf.insert(Position::new(0, 0), "x");
+        }
+        let result = handle_save(&mut state);
+        assert!(matches!(result, Control::Changed));
+        assert!(state.status_message.contains("Saved"));
+    }
+
+    #[test]
+    fn handle_save_no_buffer() {
+        let mut state = AppState::new();
+        let result = handle_save(&mut state);
+        assert!(matches!(result, Control::Changed));
+    }
+
+    // ── collect_editor_context ──────────────────────────────────────
+
+    #[test]
+    fn collect_context_empty_state() {
+        let state = AppState::new();
+        let ctx = state.collect_editor_context();
+        assert!(ctx.workspace_root.is_none());
+        assert!(ctx.active_file.is_none());
+        assert!(ctx.open_tabs.is_empty());
+        assert!(ctx.selection.is_none());
+        assert!(ctx.git_status.is_none());
+    }
+
+    #[test]
+    fn collect_context_with_file() {
+        let (state, _tmp) = state_with_file();
+        let ctx = state.collect_editor_context();
+        assert!(ctx.active_file.is_some());
+        let file = ctx.active_file.unwrap();
+        assert_eq!(file.cursor_line, 1);
+        assert_eq!(file.cursor_col, 1);
+        assert!(file.total_lines > 0);
+        assert!(!ctx.open_tabs.is_empty());
+    }
+
+    #[test]
+    fn collect_context_env_vars_with_file() {
+        let (state, _tmp) = state_with_file();
+        let ctx = state.collect_editor_context();
+        let env = ctx.to_env_vars();
+        assert!(env.contains_key("LUNE_CTX_FILE"));
+        assert!(env.contains_key("LUNE_CTX_LINE"));
+        assert!(env.contains_key("LUNE_CTX_COL"));
+    }
+
+    // ── AI command handlers ─────────────────────────────────────────
+
+    #[test]
+    fn ai_ask_selection_no_selection_warns() {
+        let mut state = AppState::new();
+        let result = handle_ai_ask_selection(&mut state);
+        assert!(matches!(result, Control::Changed));
+        // Should have a notification about no selection.
+        assert!(!state.overlay.notifications.is_empty());
+    }
+
+    #[test]
+    fn ai_refactor_no_file_warns() {
+        let mut state = AppState::new();
+        let result = handle_ai_refactor_file(&mut state);
+        assert!(matches!(result, Control::Changed));
+        assert!(!state.overlay.notifications.is_empty());
+    }
+
+    #[test]
+    fn ai_summarize_no_git_warns() {
+        let mut state = AppState::new();
+        let result = handle_ai_summarize_changes(&mut state);
+        assert!(matches!(result, Control::Changed));
+        assert!(!state.overlay.notifications.is_empty());
+    }
+
+    #[test]
+    fn ai_commands_dispatch() {
+        let mut state = AppState::new();
+        // All three should return Changed (either warn or proceed).
+        let r1 = handle_command(&AppCommand::AiAskSelection, &mut state);
+        assert!(matches!(r1, Control::Changed));
+        let r2 = handle_command(&AppCommand::AiRefactorFile, &mut state);
+        assert!(matches!(r2, Control::Changed));
+        let r3 = handle_command(&AppCommand::AiSummarizeChanges, &mut state);
+        assert!(matches!(r3, Control::Changed));
+    }
 }

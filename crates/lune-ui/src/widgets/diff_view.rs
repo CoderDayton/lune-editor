@@ -5,11 +5,13 @@
 
 use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
-use ratatui_core::style::{Color, Modifier, Style, Stylize};
+use ratatui_core::style::{Modifier, Style, Stylize};
 use ratatui_core::text::{Line, Span};
 use ratatui_core::widgets::Widget;
 
 use lune_git::diff::{DiffLineKind, FileDiff};
+
+use crate::theme::Theme;
 
 /// Display mode for the diff view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -109,7 +111,7 @@ impl DiffViewState {
 
 /// Render the diff view in unified mode.
 #[allow(clippy::cast_possible_truncation)]
-pub fn render_diff_view(area: Rect, buf: &mut Buffer, state: &DiffViewState) {
+pub fn render_diff_view(area: Rect, buf: &mut Buffer, state: &DiffViewState, theme: &Theme) {
     if area.height == 0 || area.width == 0 {
         return;
     }
@@ -122,150 +124,186 @@ pub fn render_diff_view(area: Rect, buf: &mut Buffer, state: &DiffViewState) {
 
     // Title.
     let title = format!(" {} ", diff.path.display());
-    Line::from(Span::from(title).bold().fg(Color::White))
+    Line::from(Span::from(title).bold().fg(theme.fg))
         .render(Rect::new(area.x, area.y, area.width, 1), buf);
 
-    let view_height = (area.height - 1) as usize;
+    let view_area = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
 
     match state.mode {
-        DiffViewMode::Unified => {
-            render_unified(
-                area.x,
-                area.y + 1,
-                area.width,
-                view_height,
-                diff,
-                state,
-                buf,
-            );
-        }
-        DiffViewMode::SideBySide => {
-            render_side_by_side(
-                area.x,
-                area.y + 1,
-                area.width,
-                view_height,
-                diff,
-                state,
-                buf,
-            );
-        }
+        DiffViewMode::Unified => render_unified(view_area, diff, state, buf, theme),
+        DiffViewMode::SideBySide => render_side_by_side(view_area, diff, state, buf, theme),
     }
 }
 
 /// Render unified diff.
+///
+/// Iterates directly over hunks/lines, counting logical rows to find the
+/// scroll offset, then renders at most `height` rows — no intermediate Vec.
 #[allow(clippy::cast_possible_truncation)]
 fn render_unified(
-    x: u16,
-    start_y: u16,
-    width: u16,
-    height: usize,
+    area: Rect,
     diff: &FileDiff,
     state: &DiffViewState,
     buf: &mut Buffer,
+    theme: &Theme,
 ) {
-    // Flatten hunks into a list of lines with their styles.
-    let mut flat_lines: Vec<(String, Style)> = Vec::new();
+    let (x, start_y, width, height) = (area.x, area.y, area.width, area.height as usize);
+    let scroll = state.scroll;
 
-    for (hunk_idx, hunk) in diff.hunks.iter().enumerate() {
-        let header_style = if hunk_idx == state.current_hunk {
-            Style::new()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-        } else {
-            Style::new().fg(Color::Cyan)
-        };
-        flat_lines.push((format!(" {}", hunk.header), header_style));
+    // Logical row counter across all hunks.
+    let mut logical_row: usize = 0;
+    let mut rendered: usize = 0;
 
-        for line in &hunk.lines {
-            let (prefix, style) = match line.kind {
-                DiffLineKind::Addition => {
-                    ("+", Style::new().fg(Color::Green).bg(Color::Rgb(0, 40, 0)))
-                }
-                DiffLineKind::Deletion => {
-                    ("-", Style::new().fg(Color::Red).bg(Color::Rgb(40, 0, 0)))
-                }
-                DiffLineKind::Context => (" ", Style::default()),
+    'outer: for (hunk_idx, hunk) in diff.hunks.iter().enumerate() {
+        // --- hunk header row ---
+        if logical_row >= scroll {
+            let row = logical_row - scroll;
+            if row >= height {
+                break;
+            }
+            let header_style = if hunk_idx == state.current_hunk {
+                Style::new()
+                    .fg(theme.diff_hunk_fg)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                Style::new().fg(theme.diff_hunk_fg)
             };
-            let text = format!("{prefix}{}", line.content.trim_end_matches('\n'));
-            flat_lines.push((text, style));
+            let label = format!(" {}", hunk.header);
+            let truncated: String = label.chars().take(width as usize).collect();
+            Line::from(Span::styled(truncated, header_style))
+                .render(Rect::new(x, start_y + row as u16, width, 1), buf);
+            rendered += 1;
+        }
+        logical_row += 1;
+
+        // --- diff lines ---
+        for line in &hunk.lines {
+            if logical_row >= scroll {
+                let row = logical_row - scroll;
+                if row >= height {
+                    break 'outer;
+                }
+                let (prefix, style) = match line.kind {
+                    DiffLineKind::Addition => (
+                        "+",
+                        Style::new().fg(theme.diff_add_fg).bg(theme.diff_add_bg),
+                    ),
+                    DiffLineKind::Deletion => (
+                        "-",
+                        Style::new().fg(theme.diff_del_fg).bg(theme.diff_del_bg),
+                    ),
+                    DiffLineKind::Context => (" ", Style::default()),
+                };
+                let text = format!("{prefix}{}", line.content.trim_end_matches('\n'));
+                let truncated: String = text.chars().take(width as usize).collect();
+                Line::from(Span::styled(truncated, style))
+                    .render(Rect::new(x, start_y + row as u16, width, 1), buf);
+                rendered += 1;
+            }
+            logical_row += 1;
         }
     }
-
-    // Render visible lines.
-    for row in 0..height {
-        let line_idx = state.scroll + row;
-        let y = start_y + row as u16;
-
-        if line_idx >= flat_lines.len() {
-            break;
-        }
-
-        let (text, style) = &flat_lines[line_idx];
-        let truncated: String = text.chars().take(width as usize).collect();
-        let span = Span::styled(truncated, *style);
-        Line::from(span).render(Rect::new(x, y, width, 1), buf);
-    }
+    let _ = rendered; // used for clarity
 }
 
 /// Render side-by-side diff.
+///
+/// Builds paired rows on-the-fly within a small window buffer rather than
+/// pre-allocating the entire flattened list. Only rows in the visible window
+/// (scroll..scroll+height) are materialised.
 #[allow(clippy::cast_possible_truncation)]
 fn render_side_by_side(
-    x: u16,
-    start_y: u16,
-    width: u16,
-    height: usize,
+    area: Rect,
     diff: &FileDiff,
     state: &DiffViewState,
     buf: &mut Buffer,
+    theme: &Theme,
 ) {
+    let (x, start_y, width, height) = (area.x, area.y, area.width, area.height as usize);
+    if height == 0 {
+        return;
+    }
     let half_width = (width / 2) as usize;
     let left_x = x;
     let right_x = x + half_width as u16;
+    let scroll = state.scroll;
 
-    // Build paired lines: (old_text, new_text) for each row.
-    let mut paired: Vec<(Option<String>, Option<String>)> = Vec::new();
+    // We materialise only the visible window.
+    // paired_window[i] = (left, right) for logical row (scroll + i).
+    // Capacity: at most `height` rows.
+    let mut paired_window: Vec<(Option<String>, Option<String>)> = Vec::with_capacity(height);
+
+    // Walk through all logical rows until we have filled the window.
+    let mut logical_row: usize = 0;
+    // We may need to back-fill the right side of a deletion row, so we track
+    // whether the last window entry is an unpaired deletion.
+    let window_end = scroll + height;
 
     for hunk in &diff.hunks {
-        paired.push((Some(hunk.header.clone()), Some(hunk.header.clone())));
+        // Hunk header row.
+        if logical_row >= window_end {
+            break;
+        }
+        if logical_row >= scroll {
+            paired_window.push((Some(hunk.header.clone()), Some(hunk.header.clone())));
+        }
+        logical_row += 1;
 
         for line in &hunk.lines {
-            let content = line.content.trim_end_matches('\n').to_owned();
+            if logical_row >= window_end {
+                break;
+            }
+            let in_window = logical_row >= scroll;
+            let content = line.content.trim_end_matches('\n');
             match line.kind {
                 DiffLineKind::Context => {
-                    paired.push((Some(content.clone()), Some(content)));
+                    if in_window {
+                        paired_window.push((Some(content.to_owned()), Some(content.to_owned())));
+                    }
+                    logical_row += 1;
                 }
                 DiffLineKind::Deletion => {
-                    paired.push((Some(content), None));
+                    if in_window {
+                        paired_window.push((Some(content.to_owned()), None));
+                    }
+                    logical_row += 1;
                 }
                 DiffLineKind::Addition => {
-                    // Try to pair with the last unpaired deletion.
-                    if let Some(last) = paired.last_mut() {
-                        if last.1.is_none() {
-                            last.1 = Some(content);
-                            continue;
+                    // Try to pair with the last unpaired deletion in the window.
+                    let paired = if in_window {
+                        if let Some(last) = paired_window.last_mut() {
+                            if last.1.is_none() {
+                                last.1 = Some(content.to_owned());
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
                         }
+                    } else {
+                        false
+                    };
+                    if !paired {
+                        if in_window {
+                            paired_window.push((None, Some(content.to_owned())));
+                        }
+                        logical_row += 1;
                     }
-                    paired.push((None, Some(content)));
+                    // If paired, we don't advance logical_row (the row was already counted).
                 }
             }
         }
     }
 
-    for row in 0..height {
-        let line_idx = state.scroll + row;
+    // Render the collected window rows.
+    for (row, (left, right)) in paired_window.iter().enumerate() {
         let y = start_y + row as u16;
-
-        if line_idx >= paired.len() {
-            break;
-        }
-
-        let (left, right) = &paired[line_idx];
 
         // Left side.
         if let Some(text) = left {
             let truncated: String = text.chars().take(half_width.saturating_sub(1)).collect();
-            let style = Style::new().fg(Color::Red);
+            let style = Style::new().fg(theme.diff_del_fg);
             Line::from(Span::styled(truncated, style))
                 .render(Rect::new(left_x, y, half_width as u16, 1), buf);
         }
@@ -281,7 +319,7 @@ fn render_side_by_side(
         // Right side.
         if let Some(text) = right {
             let truncated: String = text.chars().take(half_width.saturating_sub(1)).collect();
-            let style = Style::new().fg(Color::Green);
+            let style = Style::new().fg(theme.diff_add_fg);
             Line::from(Span::styled(truncated, style))
                 .render(Rect::new(right_x, y, half_width as u16, 1), buf);
         }
@@ -291,6 +329,7 @@ fn render_side_by_side(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Theme;
     use lune_git::diff::{DiffHunk, DiffLine};
     use std::path::PathBuf;
 
@@ -414,7 +453,7 @@ mod tests {
 
         let area = Rect::new(0, 0, 80, 20);
         let mut buf = Buffer::empty(area);
-        render_diff_view(area, &mut buf, &state);
+        render_diff_view(area, &mut buf, &state, &Theme::dark());
     }
 
     #[test]
@@ -425,7 +464,7 @@ mod tests {
 
         let area = Rect::new(0, 0, 80, 20);
         let mut buf = Buffer::empty(area);
-        render_diff_view(area, &mut buf, &state);
+        render_diff_view(area, &mut buf, &state, &Theme::dark());
     }
 
     #[test]
@@ -433,6 +472,6 @@ mod tests {
         let state = DiffViewState::default();
         let area = Rect::new(0, 0, 80, 20);
         let mut buf = Buffer::empty(area);
-        render_diff_view(area, &mut buf, &state);
+        render_diff_view(area, &mut buf, &state, &Theme::dark());
     }
 }

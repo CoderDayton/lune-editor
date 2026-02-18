@@ -134,6 +134,10 @@ pub struct Theme {
     /// Foreground color for diff hunk headers (`@@`).
     pub diff_hunk_fg: Color,
 
+    // ── Live Mode overlay ─────────────────────────────────────────
+    /// Background tint for lines in the currently visible change region.
+    pub live_change_bg: Color,
+
     // ── Tab bar ───────────────────────────────────────────────────
     /// Style for the active tab in a focused pane.
     pub tab_active_focused: Style,
@@ -229,6 +233,9 @@ impl Theme {
             diff_del_fg: Color::Red,
             diff_del_bg: Color::Rgb(40, 0, 0),
             diff_hunk_fg: Color::Cyan,
+
+            // Live Mode overlay
+            live_change_bg: Color::Rgb(30, 40, 60),
 
             // Tab bar
             tab_active_focused: Style::new().fg(accent).add_modifier(Modifier::BOLD),

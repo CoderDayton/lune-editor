@@ -50,15 +50,18 @@ pub enum FsEvent {
     Deleted(PathBuf),
 }
 
-/// AI session events (from PTY manager, future).
+/// AI session events (from `PollAiSessions`).
 #[derive(Debug)]
 pub enum AiEvent {
-    /// Output from the AI session.
-    Output { session_id: u64, text: String },
-    /// AI session ended.
-    SessionEnded { session_id: u64 },
-    /// Error in AI session.
-    Error { session_id: u64, message: String },
+    /// One or more sessions produced output (screen changed).
+    OutputChanged,
+    /// A session exited.
+    SessionExited {
+        /// The session that exited.
+        session_id: lune_ai::AiSessionId,
+        /// Exit code (negative = unknown/error).
+        code: i32,
+    },
 }
 
 /// High-level application commands decoupled from keybindings.
@@ -151,4 +154,61 @@ pub enum AppCommand {
     GitDiscardConfirmed(PathBuf),
     /// Refresh git status (manual trigger).
     GitRefresh,
+
+    // ── AI commands ──────────────────────────────────────────────────
+    /// Ask the AI about the current selection (sends selection context).
+    AiAskSelection,
+    /// Ask the AI to refactor the current file (sends file context).
+    AiRefactorFile,
+    /// Ask the AI to summarize git changes.
+    AiSummarizeChanges,
+
+    // ── Live Mode commands ────────────────────────────────────────────
+    /// Toggle Live Mode: Off ↔ On.
+    ToggleLiveMode,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui_crossterm::crossterm::event::{Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn app_event_from_crossterm() {
+        let ct = CtEvent::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        let app_event = AppEvent::from(ct);
+        assert!(matches!(app_event, AppEvent::Terminal(_)));
+    }
+
+    #[test]
+    fn app_command_eq() {
+        assert_eq!(AppCommand::Quit, AppCommand::Quit);
+        assert_ne!(AppCommand::Quit, AppCommand::Save);
+        assert_eq!(AppCommand::NextTab, AppCommand::NextTab);
+    }
+
+    #[test]
+    fn app_command_clone() {
+        let cmd = AppCommand::OpenFile(std::path::PathBuf::from("/test"));
+        let clone = cmd.clone();
+        assert_eq!(cmd, clone);
+    }
+
+    #[test]
+    fn fs_event_variants() {
+        let _changed = FsEvent::Changed(std::path::PathBuf::from("/a"));
+        let _created = FsEvent::Created(std::path::PathBuf::from("/b"));
+        let _deleted = FsEvent::Deleted(std::path::PathBuf::from("/c"));
+    }
+
+    #[test]
+    fn ai_event_variants() {
+        let output = AiEvent::OutputChanged;
+        assert!(matches!(output, AiEvent::OutputChanged));
+        let exited = AiEvent::SessionExited {
+            session_id: lune_ai::AiSessionId::nil(),
+            code: 0,
+        };
+        assert!(matches!(exited, AiEvent::SessionExited { code: 0, .. }));
+    }
 }

@@ -216,9 +216,15 @@ impl TreeSitterHighlighter {
 impl Highlighter for TreeSitterHighlighter {
     fn update(&mut self, buffer: &TextBuffer, _edit_range: Option<(usize, usize)>) {
         // Re-cache source bytes and line offsets.
-        // The `tree_sitter_highlight` crate handles parsing internally,
-        // so we cache the source + offsets here for `highlight_lines()`.
-        self.source = buffer.text().into_bytes();
+        // Build Vec<u8> directly from rope chunks to avoid the intermediate
+        // String allocation that `buffer.text().into_bytes()` would incur.
+        let rope = buffer.rope();
+        let byte_len = rope.len_bytes();
+        self.source.clear();
+        self.source.reserve(byte_len);
+        for chunk in rope.chunks() {
+            self.source.extend_from_slice(chunk.as_bytes());
+        }
         self.line_byte_offsets = compute_line_byte_offsets(&self.source);
     }
 
@@ -267,12 +273,10 @@ impl Highlighter for TreeSitterHighlighter {
                     let current_style = style_stack.last().copied();
                     if let Some(style) = current_style {
                         add_spans_for_byte_range(
-                            start,
-                            end,
+                            start..end,
                             style,
                             &self.line_byte_offsets,
-                            start_line,
-                            end_line,
+                            start_line..end_line,
                             &mut result,
                         );
                     }
@@ -298,16 +302,15 @@ fn compute_line_byte_offsets(source: &[u8]) -> Vec<usize> {
 }
 
 /// Given a byte range and a style, add spans to the appropriate lines in `result`.
-#[allow(clippy::too_many_arguments)]
 fn add_spans_for_byte_range(
-    byte_start: usize,
-    byte_end: usize,
+    byte_range: Range<usize>,
     style: HighlightStyle,
     line_byte_offsets: &[usize],
-    view_start_line: usize,
-    view_end_line: usize,
+    view_lines: Range<usize>,
     result: &mut [HighlightedLine],
 ) {
+    let (byte_start, byte_end) = (byte_range.start, byte_range.end);
+    let (view_start_line, view_end_line) = (view_lines.start, view_lines.end);
     if byte_start >= byte_end {
         return;
     }
@@ -361,19 +364,27 @@ fn add_spans_for_byte_range(
 }
 
 /// Check if a language has tree-sitter support.
+///
+/// Derived from the same match arms as [`load_highlight_config`] to stay
+/// in sync without maintaining a duplicate list.
 pub fn has_tree_sitter_support(lang_id: LanguageId) -> bool {
-    lang_id == lang::RUST
-        || lang_id == lang::PYTHON
-        || lang_id == lang::JAVASCRIPT
-        || lang_id == lang::JSX
-        || lang_id == lang::TYPESCRIPT
-        || lang_id == lang::TSX
-        || lang_id == lang::JSON
-        || lang_id == lang::C
-        || lang_id == lang::GO
-        || lang_id == lang::HTML
-        || lang_id == lang::CSS
-        || lang_id == lang::SHELL
+    // The set of supported languages is defined by load_highlight_config's
+    // match arms. We keep a const array here derived from that same set.
+    const SUPPORTED: &[LanguageId] = &[
+        lang::RUST,
+        lang::PYTHON,
+        lang::JAVASCRIPT,
+        lang::JSX,
+        lang::TYPESCRIPT,
+        lang::TSX,
+        lang::JSON,
+        lang::C,
+        lang::GO,
+        lang::HTML,
+        lang::CSS,
+        lang::SHELL,
+    ];
+    SUPPORTED.contains(&lang_id)
 }
 
 #[cfg(test)]

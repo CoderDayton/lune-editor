@@ -370,20 +370,9 @@ fn render_entry(
         theme.bg
     };
 
-    let line = Line::from(spans);
+    Line::from(spans).render(area, buf);
 
-    // Fill background for selection highlight.
-    if is_selected {
-        for x in area.x..area.x + area.width {
-            if let Some(cell) = buf.cell_mut((x, area.y)) {
-                cell.set_bg(bg);
-            }
-        }
-    }
-
-    line.render(area, buf);
-
-    // Re-apply selection background to rendered cells.
+    // Apply selection background over rendered cells (single pass).
     if is_selected {
         for x in area.x..area.x + area.width {
             if let Some(cell) = buf.cell_mut((x, area.y)) {

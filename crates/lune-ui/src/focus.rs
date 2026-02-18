@@ -5,7 +5,7 @@
 //! the command palette returns focus to the previously focused panel).
 
 /// Identifies a focusable panel in the UI.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub enum PanelId {
     /// The file tree sidebar.
     FileTree,

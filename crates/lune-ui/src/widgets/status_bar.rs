@@ -38,6 +38,8 @@ pub struct StatusLineState {
     pub file_type: String,
     /// Transient status message (takes priority over file path).
     pub message: String,
+    /// Live Mode status string (e.g., "LIVE: Preview 3 hunks").
+    pub live_mode: String,
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────
@@ -66,6 +68,9 @@ pub fn render_status_bar(area: Rect, buf: &mut Buffer, status: &StatusLineState,
 
     // Build right-side segments.
     let mut right_parts: Vec<&str> = Vec::new();
+    if !status.live_mode.is_empty() {
+        right_parts.push(&status.live_mode);
+    }
     if !status.git_branch.is_empty() {
         right_parts.push(&status.git_branch);
     }
