@@ -139,7 +139,7 @@ lune ~/my-project --vim
 ```bash
 lune /path/to/repo
 # Git panel shows staged/unstaged · press s/u to stage/unstage
-# Alt+Tab to diff view before committing
+# Open diff view from git panel (d key) before committing
 ```
 
 **AI-assisted refactoring**
@@ -179,7 +179,7 @@ sort_dirs_first = true
 show_hidden = false
 
 [ai]
-default_client = "claude"   # requires ANTHROPIC_API_KEY in env
+default_client = "claude"   # any CLI AI tool: claude, aider, etc.
 live_mode_enabled = false
 
 theme = "Lune Dark"
@@ -254,17 +254,19 @@ Chord bindings (`ctrl+k ctrl+0`) are supported.
 
 ## AI Integration
 
-Lune ships a native AI manager backed by Claude. It runs in a PTY session so it can execute commands and see terminal output alongside your code.
+Lune ships a native AI manager that launches any CLI AI tool (`claude`, `aider`, etc.) in a PTY session so it can execute commands and see terminal output alongside your code.
 
-**Setup:**
+**Setup:** Install your preferred CLI AI tool (`claude`, `aider`, etc.) and ensure it's on your `PATH`. Lune launches it as a subprocess — auth is handled by the client itself.
+
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
 lune ~/my-project
 ```
 
-**Live Mode** (`Ctrl+`` `): streams your editor context (open file, cursor position, visible lines) to the AI in real time. Suggestions appear inline; press `Tab` to accept, `Esc` to reject.
+**Live Mode** (`Ctrl+`` `): streams your editor context (open file, cursor position, visible lines) to the AI session in real time.
 
-**Point query** (`Ctrl+Shift+A`): send a selection or question to the AI. Response appears in the AI panel split.
+**Point query** (`Ctrl+Shift+A`): opens the AI prompt. Your current selection is automatically included as context — just type your question.
+
+Lune launches the AI client as a subprocess in the embedded terminal using your local install (e.g. `claude`, `aider`, or any CLI tool). No API key configuration inside Lune is required — the client handles auth however it normally does.
 
 To add a custom AI client, implement the `AiClient` trait in `crates/lune-ai/src/client.rs` and add a variant to `AiClientKind`.
 
