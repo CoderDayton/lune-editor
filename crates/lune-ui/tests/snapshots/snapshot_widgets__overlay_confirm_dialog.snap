@@ -1,0 +1,20 @@
+---
+source: crates/lune-ui/tests/snapshot_widgets.rs
+assertion_line: 667
+expression: buffer_to_text(&buf)
+---
+
+
+
+
+
+
+
+
+                    ╭ Confirm ─────────────────────────────╮
+                    │ Discard unsaved changes?             │
+                    │                                      │
+                    │ Press Enter to confirm, Esc to cancel│
+                    │                                      │
+                    │                                      │
+                    ╰──────────────────────────────────────╯

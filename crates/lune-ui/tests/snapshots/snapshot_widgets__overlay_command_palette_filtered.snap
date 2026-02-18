@@ -1,0 +1,17 @@
+---
+source: crates/lune-ui/tests/snapshot_widgets.rs
+assertion_line: 651
+expression: buffer_to_text(&buf)
+---
+
+
+
+                ╭ Command Palette ─────────────────────────────╮
+                │> sav                                         │
+                │──────────────────────────────────────────────│
+                │  Save                                        │
+                │  Save All                                    │
+                │                                              │
+                │                                              │
+                │                                              │
+                ╰──────────────────────────────────────────────╯

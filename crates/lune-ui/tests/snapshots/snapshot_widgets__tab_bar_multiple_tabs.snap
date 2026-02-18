@@ -1,0 +1,6 @@
+---
+source: crates/lune-ui/tests/snapshot_widgets.rs
+assertion_line: 220
+expression: buffer_to_text(&buf)
+---
+ main.rs x │ lib.rs [+] x │ utils.rs ●5 x │ config.rs [+] ●12 x

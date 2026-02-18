@@ -1,0 +1,19 @@
+---
+source: crates/lune-ui/tests/snapshot_widgets.rs
+assertion_line: 266
+expression: buffer_to_text(&buf)
+---
+
+
+
+
+
+
+                        Lune Editor
+
+                 Open a file to get started
+
+                  Ctrl+P  Command Palette
+                  Ctrl+B  Toggle File Tree
+                  Ctrl+`  Toggle AI Panel
+                        Ctrl+Q  Quit

@@ -1,0 +1,17 @@
+---
+source: crates/lune-ui/tests/snapshot_widgets.rs
+assertion_line: 523
+expression: buffer_to_text(&buf)
+---
+ src/main.rs
+ @@ -1,5 +1,6 @@
+ fn main() {
+-    println!("old");
++    println!("new");
++    println!("extra");
+     let x = 42;
+ }
+ @@ -10,3 +11,4 @@
+ fn helper() {
++    // TODO: implement
+ }

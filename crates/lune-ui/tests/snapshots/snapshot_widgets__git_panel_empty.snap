@@ -1,0 +1,13 @@
+---
+source: crates/lune-ui/tests/snapshot_widgets.rs
+assertion_line: 619
+expression: buffer_to_text(&buf)
+---
+╭ SOURCE CONTROL
+│ No changes
+│
+│
+│
+│
+│
+╰

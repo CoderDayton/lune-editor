@@ -1,0 +1,17 @@
+---
+source: crates/lune-ui/tests/snapshot_widgets.rs
+assertion_line: 634
+expression: buffer_to_text(&buf)
+---
+
+
+
+                ╭ Command Palette ─────────────────────────────╮
+                │>                                             │
+                │──────────────────────────────────────────────│
+                │  Change Language: C                          │
+                │  Change Language: C++                        │
+                │  Change Language: CSS                        │
+                │  Change Language: Go                         │
+                │  Change Language: HTML                       │
+                ╰──────────────────────────────────────────────╯
