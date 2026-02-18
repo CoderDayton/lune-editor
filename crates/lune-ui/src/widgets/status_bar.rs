@@ -16,6 +16,9 @@ use crate::vim::VimMode;
 // ── Status line state ─────────────────────────────────────────────────
 
 /// Collected state for the status bar (built from `AppState` each frame).
+///
+/// Uses `&'static str` for the encoding field to avoid a per-frame heap
+/// allocation for a constant value.
 #[derive(Clone, Debug, Default)]
 pub struct StatusLineState {
     /// Vim mode label ("NORMAL", "INSERT", "VISUAL", etc.).
@@ -30,8 +33,8 @@ pub struct StatusLineState {
     pub cursor_col: usize,
     /// Git branch name (empty if not in a repo).
     pub git_branch: String,
-    /// File encoding (default "UTF-8").
-    pub encoding: String,
+    /// File encoding — always a static string (e.g. `"UTF-8"`).
+    pub encoding: &'static str,
     /// AI status string (e.g., "AI: Connected").
     pub ai_status: String,
     /// File type label (e.g., "Rust", "Markdown").
@@ -51,7 +54,10 @@ pub fn render_status_bar(area: Rect, buf: &mut Buffer, status: &StatusLineState,
         return;
     }
 
-    let mode_label = mode_string(status.mode);
+    // Always show Normal/Insert indicator so users know when typing is
+    // blocked.  The full mode set (VISUAL, V-LINE, COMMAND) is only
+    // reachable when vim keybindings are enabled.
+    let mode_label: &str = mode_string(status.mode);
     let dirty_mark = if status.dirty { " [+]" } else { "" };
 
     let left_text = if status.message.is_empty() {
@@ -75,7 +81,7 @@ pub fn render_status_bar(area: Rect, buf: &mut Buffer, status: &StatusLineState,
         right_parts.push(&status.git_branch);
     }
     if !status.encoding.is_empty() {
-        right_parts.push(&status.encoding);
+        right_parts.push(status.encoding);
     }
     if !status.file_type.is_empty() {
         right_parts.push(&status.file_type);
@@ -87,26 +93,29 @@ pub fn render_status_bar(area: Rect, buf: &mut Buffer, status: &StatusLineState,
 
     // Calculate spacing.
     let mode_width = mode_label.len() as u16;
+    let separator = if mode_label.is_empty() { "" } else { " " };
     let left_width = left_text.len() as u16;
     let cursor_width = cursor_text.len() as u16;
     let right_width = right_text.len() as u16;
 
-    let fixed_width = mode_width + 1 + left_width + cursor_width + 1 + right_width;
+    let fixed_width =
+        mode_width + separator.len() as u16 + left_width + cursor_width + 1 + right_width;
     let padding = area.width.saturating_sub(fixed_width) as usize;
 
     // Split padding: put cursor info roughly centered.
     let left_pad = padding / 2;
     let right_pad = padding - left_pad;
 
-    let spans = vec![
-        Span::styled(mode_label, theme.status_mode),
-        Span::from(" "),
-        Span::from(left_text),
-        Span::from(" ".repeat(left_pad)),
-        Span::from(cursor_text),
-        Span::from(" ".repeat(right_pad)),
-        Span::styled(right_text, theme.status_info),
-    ];
+    let mut spans = Vec::with_capacity(7);
+    if !mode_label.is_empty() {
+        spans.push(Span::styled(mode_label, theme.status_mode));
+        spans.push(Span::from(" "));
+    }
+    spans.push(Span::from(left_text));
+    spans.push(Span::from(" ".repeat(left_pad)));
+    spans.push(Span::from(cursor_text));
+    spans.push(Span::from(" ".repeat(right_pad)));
+    spans.push(Span::styled(right_text, theme.status_info));
 
     Line::from(spans).style(theme.status_bg).render(area, buf);
 }

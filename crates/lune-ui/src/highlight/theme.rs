@@ -9,6 +9,7 @@ use ratatui_core::style::{Color, Modifier, Style};
 // ── Syntax theme ──────────────────────────────────────────────────────
 
 /// Maps `HighlightStyle` categories to ratatui `Style` values.
+#[derive(Clone)]
 pub struct SyntaxTheme {
     styles: [Style; STYLE_COUNT],
 }
@@ -46,6 +47,38 @@ impl SyntaxTheme {
         Self { styles }
     }
 
+    /// Create a light theme suitable for light-background terminals.
+    #[must_use]
+    pub fn light() -> Self {
+        let mut styles = [Style::default(); STYLE_COUNT];
+
+        styles[HighlightStyle::Keyword as usize] = Style::new()
+            .fg(Color::Rgb(0, 0, 180))
+            .add_modifier(Modifier::BOLD);
+        styles[HighlightStyle::Type as usize] = Style::new().fg(Color::Rgb(0, 120, 120));
+        styles[HighlightStyle::Function as usize] = Style::new().fg(Color::Rgb(120, 60, 0));
+        styles[HighlightStyle::String as usize] = Style::new().fg(Color::Rgb(0, 120, 0));
+        styles[HighlightStyle::Comment as usize] = Style::new()
+            .fg(Color::Rgb(130, 130, 130))
+            .add_modifier(Modifier::ITALIC);
+        styles[HighlightStyle::Number as usize] = Style::new().fg(Color::Rgb(140, 0, 140));
+        styles[HighlightStyle::Operator as usize] = Style::new().fg(Color::Rgb(60, 60, 60));
+        styles[HighlightStyle::Punctuation as usize] = Style::new().fg(Color::Rgb(100, 100, 100));
+        styles[HighlightStyle::Variable as usize] = Style::new().fg(Color::Rgb(180, 40, 40));
+        styles[HighlightStyle::Constant as usize] = Style::new()
+            .fg(Color::Rgb(140, 0, 140))
+            .add_modifier(Modifier::BOLD);
+        styles[HighlightStyle::Attribute as usize] = Style::new().fg(Color::Rgb(160, 100, 0));
+        styles[HighlightStyle::Namespace as usize] = Style::new().fg(Color::Rgb(0, 100, 100));
+        styles[HighlightStyle::Error as usize] = Style::new()
+            .fg(Color::Rgb(200, 0, 0))
+            .add_modifier(Modifier::UNDERLINED);
+        styles[HighlightStyle::Embedded as usize] = Style::new().fg(Color::Rgb(0, 100, 0));
+        styles[HighlightStyle::Default as usize] = Style::default();
+
+        Self { styles }
+    }
+
     /// Resolve a `HighlightStyle` to a ratatui `Style`.
     #[must_use]
     pub fn resolve(&self, hl: HighlightStyle) -> Style {
@@ -54,6 +87,14 @@ impl SyntaxTheme {
             self.styles[idx]
         } else {
             Style::default()
+        }
+    }
+
+    /// Override the style for a specific `HighlightStyle` category.
+    pub const fn set(&mut self, hl: HighlightStyle, style: Style) {
+        let idx = hl as usize;
+        if idx < self.styles.len() {
+            self.styles[idx] = style;
         }
     }
 }

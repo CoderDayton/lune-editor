@@ -166,6 +166,18 @@ pub enum AppCommand {
     // ── Live Mode commands ────────────────────────────────────────────
     /// Toggle Live Mode: Off ↔ On.
     ToggleLiveMode,
+
+    // ── Theme commands ──────────────────────────────────────────────
+    /// Switch to the next theme in the registry.
+    NextTheme,
+    /// Switch to the previous theme in the registry.
+    PrevTheme,
+
+    // ── Settings commands ────────────────────────────────────────────
+    /// Open the global config file in the editor.
+    OpenSettings,
+    /// Open the keybindings config file in the editor.
+    OpenKeybindings,
 }
 
 #[cfg(test)]

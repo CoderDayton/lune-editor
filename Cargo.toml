@@ -59,6 +59,10 @@ vt100 = "0.16"
 # Serialization / config
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+bincode = { version = "2", features = ["serde"] }
+
+# Embedded database (reactive state persistence)
+sled = "0.34"
 
 # Error handling
 anyhow = "1"
@@ -76,6 +80,9 @@ tempfile = "3"
 
 # Hashing — FxHash for internal (non-DoS-risk) keys
 rustc-hash = "2"
+
+# Stack-allocated small collections
+smallvec = "1.15"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

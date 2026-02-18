@@ -6,7 +6,7 @@
 
 use std::ops::Range;
 
-use lune_core::highlight::{HighlightStyle, HighlightedLine, Highlighter, StyledSpan};
+use lune_core::highlight::{HighlightStyle, HighlightedLine, Highlighter, SpanVec, StyledSpan};
 use lune_core::language::{lang, LanguageId};
 use lune_core::prelude::TextBuffer;
 use regex::Regex;
@@ -43,8 +43,8 @@ impl RegexHighlighter {
     }
 
     /// Highlight a single line of text, producing non-overlapping spans.
-    fn highlight_line(&self, line_text: &str) -> Vec<StyledSpan> {
-        let mut spans: Vec<StyledSpan> = Vec::new();
+    fn highlight_line(&self, line_text: &str) -> SpanVec {
+        let mut spans = SpanVec::new();
 
         for rule in &self.rules {
             for mat in rule.pattern.find_iter(line_text) {
@@ -68,13 +68,30 @@ impl RegexHighlighter {
 
 impl Highlighter for RegexHighlighter {
     fn update(&mut self, buffer: &TextBuffer, _edit_range: Option<(usize, usize)>) {
-        self.lines.clear();
-        for i in 0..buffer.line_count() {
-            self.lines.push(buffer.line(i).unwrap_or_default());
+        let new_count = buffer.line_count();
+        let old_count = self.lines.len();
+
+        if new_count == old_count {
+            // Same line count: only replace lines whose content changed.
+            // This avoids re-allocating Strings for unchanged lines (the
+            // common case during single-line edits).
+            for i in 0..new_count {
+                let new_line = buffer.line(i).unwrap_or_default();
+                if self.lines[i] != new_line {
+                    self.lines[i] = new_line;
+                }
+            }
+        } else {
+            // Line count changed — full rebuild (lines were added/removed).
+            self.lines.clear();
+            self.lines.reserve(new_count);
+            for i in 0..new_count {
+                self.lines.push(buffer.line(i).unwrap_or_default());
+            }
         }
     }
 
-    fn highlight_lines(&self, line_range: Range<usize>) -> Vec<HighlightedLine> {
+    fn highlight_lines(&mut self, line_range: Range<usize>) -> Vec<HighlightedLine> {
         let start = line_range.start.min(self.lines.len());
         let end = line_range.end.min(self.lines.len());
 

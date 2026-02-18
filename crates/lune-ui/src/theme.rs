@@ -22,7 +22,7 @@ use ratatui_core::style::{Color, Modifier, Style};
 ///
 /// The default set uses rounded corners which produce a softer look than
 /// sharp box-drawing characters.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BorderChars {
     pub top_left: char,
     pub top_right: char,
@@ -60,7 +60,7 @@ impl Default for BorderChars {
 /// Every color, style, and border character used by widgets is stored here.
 /// Construct with [`Theme::dark()`] for the built-in dark theme, or build
 /// a custom instance for alternative color schemes.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Theme {
     // ── Borders ───────────────────────────────────────────────────
     /// Unicode border character set.
@@ -145,6 +145,8 @@ pub struct Theme {
     pub tab_active_unfocused: Style,
     /// Style for inactive (background) tabs.
     pub tab_inactive: Style,
+    /// Style for the live mode hunk-count badge (`●3`) on tabs with changes.
+    pub tab_live_badge: Style,
 
     // ── Status bar ────────────────────────────────────────────────
     /// Style for the mode indicator segment (e.g. NORMAL, INSERT).
@@ -243,6 +245,7 @@ impl Theme {
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::REVERSED),
             tab_inactive: Style::new().fg(Color::DarkGray),
+            tab_live_badge: Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
 
             // Status bar
             status_mode: Style::new()
@@ -264,6 +267,100 @@ impl Theme {
             overlay_dir_fg: Color::Cyan,
             overlay_file_fg: Color::White,
             overlay_hint_fg: Color::DarkGray,
+
+            // Welcome screen
+            welcome_title: Style::new().add_modifier(Modifier::BOLD),
+            welcome_text: Style::new().add_modifier(Modifier::DIM),
+        }
+    }
+
+    /// Built-in light theme.
+    ///
+    /// Designed for terminals with a light background. Uses darker
+    /// foreground colors and lighter accent tones.
+    pub const fn light() -> Self {
+        let accent = Color::Rgb(30, 100, 200);
+
+        Self {
+            // Borders
+            border_chars: BorderChars::rounded(),
+            border_focused: accent,
+            border_unfocused: Color::Gray,
+
+            // General UI
+            accent,
+            bg: Color::Reset,
+            fg: Color::Rgb(30, 30, 30),
+            fg_dim: Color::Gray,
+            fg_muted: Color::DarkGray,
+            selection_bg: Color::Rgb(200, 220, 245),
+
+            // Editor
+            editor_cursor_normal: Style::new().add_modifier(Modifier::REVERSED),
+            editor_cursor_insert: Style::new()
+                .fg(Color::Rgb(30, 30, 30))
+                .add_modifier(Modifier::UNDERLINED),
+            editor_gutter_active: Style::new()
+                .fg(Color::Rgb(30, 30, 30))
+                .add_modifier(Modifier::BOLD),
+            editor_gutter_inactive: Style::new().fg(Color::Gray),
+            editor_gutter_separator: Color::Rgb(200, 200, 200),
+
+            // File tree
+            tree_dir_fg: Color::Rgb(0, 80, 180),
+            tree_file_fg: Color::Rgb(30, 30, 30),
+            tree_symlink_fg: Color::Rgb(0, 140, 140),
+            tree_selected_bg: Color::Rgb(220, 230, 245),
+
+            // Git status
+            git_added: Color::Rgb(0, 130, 0),
+            git_modified: Color::Rgb(180, 130, 0),
+            git_deleted: Color::Rgb(200, 30, 30),
+            git_conflicted: Color::Rgb(160, 0, 160),
+            git_renamed: Color::Rgb(0, 140, 140),
+            git_untracked: Color::Gray,
+            git_ignored: Color::Rgb(180, 180, 180),
+
+            // Diff view
+            diff_add_fg: Color::Rgb(0, 130, 0),
+            diff_add_bg: Color::Rgb(220, 245, 220),
+            diff_del_fg: Color::Rgb(200, 30, 30),
+            diff_del_bg: Color::Rgb(255, 225, 225),
+            diff_hunk_fg: Color::Rgb(0, 140, 140),
+
+            // Live Mode overlay
+            live_change_bg: Color::Rgb(230, 240, 255),
+
+            // Tab bar
+            tab_active_focused: Style::new().fg(accent).add_modifier(Modifier::BOLD),
+            tab_active_unfocused: Style::new()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::REVERSED),
+            tab_inactive: Style::new().fg(Color::Gray),
+            tab_live_badge: Style::new()
+                .fg(Color::Rgb(0, 140, 140))
+                .add_modifier(Modifier::BOLD),
+
+            // Status bar
+            status_mode: Style::new()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::REVERSED),
+            status_info: Style::new().add_modifier(Modifier::DIM),
+            status_bg: Style::new().add_modifier(Modifier::REVERSED),
+
+            // Notifications
+            notif_info: Color::Rgb(0, 130, 0),
+            notif_warn: Color::Rgb(180, 130, 0),
+            notif_error: Color::Rgb(200, 30, 30),
+
+            // Overlay / popup
+            overlay_border: Color::Rgb(60, 60, 60),
+            overlay_selected: Style::new()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::REVERSED),
+            overlay_dir_fg: Color::Rgb(0, 140, 140),
+            overlay_file_fg: Color::Rgb(30, 30, 30),
+            overlay_hint_fg: Color::Gray,
 
             // Welcome screen
             welcome_title: Style::new().add_modifier(Modifier::BOLD),
@@ -297,13 +394,18 @@ mod tests {
 
     #[test]
     fn default_theme_is_dark() {
-        let default = Theme::default();
-        let dark = Theme::dark();
-        // Spot-check a few fields — full equality requires PartialEq on Style.
-        assert_eq!(default.accent, dark.accent);
-        assert_eq!(default.bg, dark.bg);
-        assert_eq!(default.git_added, dark.git_added);
-        assert_eq!(default.overlay_border, dark.overlay_border);
+        assert_eq!(Theme::default(), Theme::dark());
+    }
+
+    #[test]
+    fn dark_and_light_differ() {
+        assert_ne!(Theme::dark(), Theme::light());
+    }
+
+    #[test]
+    fn light_theme_accent_matches_border_focused() {
+        let t = Theme::light();
+        assert_eq!(t.accent, t.border_focused);
     }
 
     #[test]
@@ -355,8 +457,17 @@ mod tests {
 
     #[test]
     fn const_construction() {
-        // Verify the theme can be constructed in a const context.
-        const THEME: Theme = Theme::dark();
-        assert_eq!(THEME.accent, Color::Rgb(80, 130, 220));
+        // Verify both themes can be constructed in a const context.
+        const DARK: Theme = Theme::dark();
+        const LIGHT: Theme = Theme::light();
+        assert_eq!(DARK.accent, Color::Rgb(80, 130, 220));
+        assert_eq!(LIGHT.accent, Color::Rgb(30, 100, 200));
+    }
+
+    #[test]
+    fn theme_is_copy() {
+        let a = Theme::dark();
+        let b = a; // Copy, not move
+        assert_eq!(a, b);
     }
 }

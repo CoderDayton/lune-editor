@@ -130,6 +130,66 @@ pub struct ViewportState {
     pub top_line: usize,
     /// Horizontal scroll offset (0-based column).
     pub left_col: usize,
+    /// Cached line content for the visible viewport.
+    pub line_cache: LineCache,
+}
+
+/// Viewport-scoped line content cache.
+///
+/// Caches the `String` result of `rope.line(idx).to_string()` for each visible
+/// line. Invalidated when the buffer revision changes or the viewport scrolls.
+/// In the common case (cursor blink, no edit, no scroll), this eliminates
+/// ~80 `String` heap allocations per frame.
+#[derive(Clone, Debug, Default)]
+pub struct LineCache {
+    /// Cached line strings, indexed by `line_idx - top_line`.
+    lines: Vec<String>,
+    /// The `top_line` at which this cache was built.
+    top_line: usize,
+    /// Number of lines cached (= viewport height at cache time).
+    count: usize,
+    /// Buffer revision when the cache was built.
+    revision: u64,
+}
+
+impl LineCache {
+    /// Prepare the cache for a new frame with the given viewport parameters.
+    ///
+    /// If the revision and viewport haven't changed, this is a no-op (O(1)).
+    /// Otherwise, re-fetches all visible lines from the buffer.
+    pub fn prepare(&mut self, top_line: usize, height: usize, buffer: &TextBuffer) {
+        let revision = buffer.revision();
+        if revision == self.revision && top_line == self.top_line && height == self.count {
+            return; // Cache is still valid.
+        }
+
+        self.lines.clear();
+        self.lines.reserve(height);
+        let total = buffer.line_count();
+        for i in 0..height {
+            let line_idx = top_line + i;
+            if line_idx < total {
+                self.lines.push(buffer.line(line_idx).unwrap_or_default());
+            } else {
+                self.lines.push(String::new());
+            }
+        }
+        self.top_line = top_line;
+        self.count = height;
+        self.revision = revision;
+    }
+
+    /// Get a cached line by absolute line index.
+    /// Must be called after `prepare()`.
+    #[inline]
+    pub fn get(&self, line_idx: usize) -> &str {
+        let idx = line_idx - self.top_line;
+        if idx < self.lines.len() {
+            &self.lines[idx]
+        } else {
+            ""
+        }
+    }
 }
 
 impl ViewportState {
@@ -250,6 +310,11 @@ pub fn render_editor_pane(
     let cursor = &text_buf.cursor.primary.head;
     viewport.scroll_to_cursor(cursor.line, cursor.col, viewport_height, content_width);
 
+    // Prepare the line cache: re-fetches only if revision or viewport changed.
+    viewport
+        .line_cache
+        .prepare(viewport.top_line, viewport_height, text_buf);
+
     let selection = {
         let sel = &text_buf.cursor.primary;
         if sel.head == sel.anchor {
@@ -259,6 +324,10 @@ pub fn render_editor_pane(
             Some((start, end))
         }
     };
+
+    // Reusable format buffer for line numbers — avoids a `format!()` heap
+    // allocation per visible line.
+    let mut line_num_buf = String::with_capacity(16);
 
     for row in 0..viewport_height {
         let line_idx = viewport.top_line + row;
@@ -288,6 +357,7 @@ pub fn render_editor_pane(
                 gw,
                 line_idx,
                 cursor.line == line_idx,
+                &mut line_num_buf,
                 buf,
                 theme,
             );
@@ -295,11 +365,14 @@ pub fn render_editor_pane(
             // Look up highlighted spans for this line.
             let hl_line = highlighted.and_then(|lines| lines.iter().find(|hl| hl.line == line_idx));
 
+            // Fetch the line from the cache (already prepared above).
+            let cached_line = viewport.line_cache.get(line_idx);
+
             render_line_content(
                 area.x + total_gutter,
                 y,
                 content_width,
-                text_buf,
+                cached_line,
                 line_idx,
                 viewport.left_col,
                 cursor,
@@ -330,21 +403,32 @@ pub fn render_editor_pane(
 }
 
 /// Render a line number in the gutter.
-#[allow(clippy::cast_possible_truncation)]
+///
+/// Reuses `fmt_buf` across calls to avoid a `format!()` heap allocation per
+/// visible line (typically ~80 allocations/frame eliminated).
+#[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
 fn render_line_number(
     x: u16,
     y: u16,
     gw: u16,
     line_idx: usize,
     is_current: bool,
+    fmt_buf: &mut String,
     buf: &mut Buffer,
     theme: &Theme,
 ) {
-    let num_str = format!("{:>width$} ", line_idx + 1, width = (gw - 1) as usize);
+    use std::fmt::Write;
+    fmt_buf.clear();
+    let _ = write!(
+        fmt_buf,
+        "{:>width$} ",
+        line_idx + 1,
+        width = (gw - 1) as usize
+    );
     let span = if is_current {
-        Span::styled(num_str, theme.editor_gutter_active)
+        Span::styled(fmt_buf.as_str(), theme.editor_gutter_active)
     } else {
-        Span::styled(num_str, theme.editor_gutter_inactive)
+        Span::styled(fmt_buf.as_str(), theme.editor_gutter_inactive)
     };
     Line::from(span).render(Rect::new(x, y, gw, 1), buf);
 }
@@ -388,7 +472,14 @@ fn render_live_gutter(
     buf: &mut Buffer,
 ) {
     if let Some(info) = overlay.get(line_idx) {
-        let ch = String::from(info.marker);
+        // Map known marker chars to static strings to avoid a per-line
+        // `String::from(char)` heap allocation.
+        let ch: &str = match info.marker {
+            '+' => "+",
+            '−' | '-' => "−",
+            '~' => "~",
+            _ => return,
+        };
         let span = Span::styled(ch, Style::new().fg(info.marker_color));
         Line::from(span).render(Rect::new(x, y, LIVE_GUTTER_WIDTH, 1), buf);
     }
@@ -418,12 +509,15 @@ fn apply_live_bg_tint(
 }
 
 /// Render the text content of a single line with cursor, selection, and syntax highlighting.
+///
+/// `cached_line` is the pre-fetched line content from the `LineCache`,
+/// avoiding a `rope.line().to_string()` heap allocation per line per frame.
 #[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
 fn render_line_content(
     x: u16,
     y: u16,
     width: usize,
-    text_buf: &TextBuffer,
+    cached_line: &str,
     line_idx: usize,
     left_col: usize,
     cursor: &Position,
@@ -434,8 +528,7 @@ fn render_line_content(
     buf: &mut Buffer,
     ui_theme: &Theme,
 ) {
-    let line_owned = text_buf.line(line_idx).unwrap_or_default();
-    let line_text = line_owned.trim_end_matches('\n').trim_end_matches('\r');
+    let line_text = cached_line.trim_end_matches('\n').trim_end_matches('\r');
 
     // Apply horizontal scroll.
     let visible_text: String = line_text.chars().skip(left_col).take(width).collect();
@@ -734,6 +827,7 @@ mod tests {
         let mut vp = ViewportState {
             top_line: 10,
             left_col: 0,
+            ..ViewportState::default()
         };
         vp.scroll_up(5);
         assert_eq!(vp.top_line, 5);
@@ -774,6 +868,7 @@ mod tests {
         let vp = ViewportState {
             top_line: 50,
             left_col: 10,
+            ..ViewportState::default()
         };
         let gw = gutter_width(200);
         let pos = click_to_position(gw + 5, 3, area, &vp, 200, false, false);

@@ -22,8 +22,10 @@ use ratatui_crossterm::crossterm::event::{
 
 use lune_core::prelude::*;
 use lune_core::ropey::Rope;
+use lune_core::settings::Settings;
 use lune_core::watcher::{FileWatcher, WatchEvent};
 use lune_core::workspace::EntryKind;
+use lune_core::workspace_state::make_relative;
 use lune_git::{GitService, GutterMarks};
 
 use lune_ai::context::{
@@ -35,6 +37,7 @@ use lune_ai::{AiClientKind, AiManager, LiveModeController, TermSize as AiTermSiz
 use crate::highlight;
 use crate::highlight::theme::SyntaxTheme;
 use crate::theme::Theme;
+use crate::theme_config::ThemeRegistry;
 
 use crate::effects::LuneEffects;
 use crate::event::{AppCommand, AppEvent};
@@ -81,6 +84,10 @@ pub struct AppState {
     pub keymap: Keymap,
     /// Vim mode state.
     pub vim: VimState,
+    /// Whether vim keybindings are enabled. When `false`, only Normal↔Insert
+    /// mode switching is active (Escape blocks typing, `i` resumes);
+    /// `Visual`, `VisualLine`, and `Command` modes are disabled.
+    pub vim_enabled: bool,
     /// Status bar message.
     pub status_message: String,
     /// Error count.
@@ -115,10 +122,12 @@ pub struct AppState {
     highlighters: FxHashMap<BufferId, Box<dyn Highlighter>>,
     /// Language detection registry.
     lang_registry: LanguageRegistry,
-    /// Syntax color theme.
+    /// Syntax color theme (copied from active theme in registry for fast access).
     syntax_theme: SyntaxTheme,
-    /// UI design tokens (colors, borders, styles).
+    /// UI design tokens (copied from active theme in registry for fast access).
     pub theme: Theme,
+    /// Theme registry — holds all loaded themes for instant switching.
+    pub theme_registry: ThemeRegistry,
     /// Git service (active when workspace is in a git repository).
     git_service: Option<GitService>,
     /// Per-buffer git gutter marks (cached).
@@ -145,6 +154,16 @@ pub struct AppState {
     last_ai_term_size: Option<AiTermSize>,
     /// Live Mode controller (diff tracking, accept/reject state).
     pub live_mode: LiveModeController,
+    /// Whether the AI thinking effect is currently active.
+    ai_thinking_active: bool,
+    /// Notification count at last render (for detecting new notifications).
+    last_notification_count: usize,
+    /// Config directory paths (for settings/recovery/workspace state I/O).
+    ///
+    /// Set after construction via [`AppState::set_config_paths`].
+    config_paths: Option<lune_core::config::ConfigPaths>,
+    /// Cached settings for hot-reload comparison and re-application.
+    cached_settings: Option<Settings>,
 }
 
 /// Which border is being dragged by the mouse.
@@ -168,6 +187,7 @@ impl AppState {
             focus: FocusManager::new(),
             keymap: Keymap::default_global(),
             vim: VimState::new(),
+            vim_enabled: false, // default off; set by apply_settings()
             status_message: String::new(),
             error_count: 0,
             last_error: String::new(),
@@ -187,6 +207,7 @@ impl AppState {
             lang_registry: LanguageRegistry::new(),
             syntax_theme: SyntaxTheme::dark(),
             theme: Theme::dark(),
+            theme_registry: ThemeRegistry::new(),
             git_service: None,
             gutter_marks: FxHashMap::default(),
             git_branch: String::new(),
@@ -200,7 +221,213 @@ impl AppState {
             ai_manager: AiManager::new(),
             last_ai_term_size: None,
             live_mode: LiveModeController::new(),
+            ai_thinking_active: false,
+            last_notification_count: 0,
+            config_paths: None,
+            cached_settings: None,
         }
+    }
+
+    /// Switch the active theme from the registry and update cached copies.
+    ///
+    /// Call this instead of modifying `theme` or `syntax_theme` directly.
+    /// The registry performs the lookup; we cache the results into the
+    /// flat `theme` and `syntax_theme` fields for zero-cost access during
+    /// rendering.
+    pub fn apply_active_theme(&mut self) {
+        self.theme = *self.theme_registry.current_theme();
+        self.syntax_theme = self.theme_registry.current_syntax().clone();
+    }
+
+    /// Switch to the next theme in the registry, wrapping around.
+    pub fn next_theme(&mut self) {
+        self.theme_registry.next();
+        self.apply_active_theme();
+    }
+
+    /// Switch to the previous theme in the registry, wrapping around.
+    pub fn prev_theme(&mut self) {
+        self.theme_registry.prev();
+        self.apply_active_theme();
+    }
+
+    /// Apply loaded [`Settings`] to the application state.
+    ///
+    /// Should be called once after construction and settings loading,
+    /// before the event loop starts.  Maps settings fields onto the
+    /// corresponding `AppState` fields (layout, vim mode, effects, theme).
+    pub fn apply_settings(&mut self, settings: &Settings) {
+        // Layout / UI
+        self.layout.show_file_tree = settings.ui.show_file_tree;
+        self.layout
+            .set_file_tree_width_pct(settings.ui.file_tree_width_pct);
+        self.layout
+            .set_right_panel_width_pct(settings.ui.right_panel_width_pct);
+
+        if !settings.ui.effects_enabled {
+            self.effects.disable_all();
+        }
+
+        // Editor / vim
+        self.vim_enabled = settings.editor.vim_mode;
+        if self.vim_enabled {
+            self.vim.enter_normal();
+        } else {
+            // Non-vim mode: start in Insert so keystrokes type text by default.
+            // User can still Escape → Normal to block typing, then `i` to resume.
+            self.vim.enter_insert();
+        }
+
+        // Theme — try to switch by name from the settings.
+        if self.theme_registry.switch_by_name(&settings.theme) {
+            self.apply_active_theme();
+        }
+
+        // Cache the settings for hot-reload comparison.
+        self.cached_settings = Some(settings.clone());
+    }
+
+    /// Store resolved config paths on the state for use by settings/recovery
+    /// commands and autosave.
+    pub fn set_config_paths(&mut self, config_paths: lune_core::config::ConfigPaths) {
+        self.config_paths = Some(config_paths);
+    }
+
+    /// Borrow the cached config paths, if any.
+    #[must_use]
+    pub const fn config_paths(&self) -> Option<&lune_core::config::ConfigPaths> {
+        self.config_paths.as_ref()
+    }
+
+    /// Collect the current workspace state for persistence.
+    ///
+    /// Returns `None` if no workspace is open.  File paths in the
+    /// returned state are stored relative to the workspace root.
+    #[must_use]
+    pub fn collect_workspace_state(&self) -> Option<WorkspaceState> {
+        let ws = self.workspace.as_ref()?;
+        let root = ws.root().to_path_buf();
+        let mut wstate = WorkspaceState::new(root.clone());
+
+        // Open files (relative paths).
+        wstate.open_files = self
+            .tabs
+            .iter()
+            .filter_map(|&id| {
+                let buf = self.registry.get(id)?;
+                let path = buf.file_path.as_ref()?;
+                Some(make_relative(path, &root))
+            })
+            .collect();
+
+        // Active file (relative).
+        wstate.active_file = self.active_buf().and_then(|buf| {
+            let path = buf.file_path.as_ref()?;
+            Some(make_relative(path, &root))
+        });
+
+        // Cursor positions keyed by relative path.
+        for &id in &self.tabs {
+            if let Some(buf) = self.registry.get(id) {
+                if let Some(ref path) = buf.file_path {
+                    let rel = make_relative(path, &root);
+                    let pos = &buf.cursor.primary.head;
+                    wstate.cursor_positions.insert(rel, (pos.line, pos.col));
+                }
+            }
+        }
+
+        // Layout.
+        wstate.show_file_tree = self.layout.show_file_tree;
+        wstate.file_tree_width_pct = self.layout.file_tree_width_pct;
+        wstate.show_right_panel = self.layout.show_right_panel();
+        wstate.right_panel_width_pct = self.layout.right_panel_width_pct;
+
+        Some(wstate)
+    }
+
+    /// Restore workspace state: open files, set cursors, restore layout.
+    ///
+    /// Skips files that no longer exist.  Must be called after
+    /// `open_workspace()` so the workspace root is set.
+    pub fn restore_workspace_state(&mut self, wstate: &WorkspaceState) {
+        let Some(ref ws) = self.workspace else {
+            return;
+        };
+        let root = ws.root().to_path_buf();
+
+        // Restore layout.
+        self.layout.show_file_tree = wstate.show_file_tree;
+        self.layout
+            .set_file_tree_width_pct(wstate.file_tree_width_pct);
+        self.layout
+            .set_right_panel_width_pct(wstate.right_panel_width_pct);
+
+        // Open files in order.
+        for rel in &wstate.open_files {
+            let abs = root.join(rel);
+            if abs.exists() {
+                if let Err(e) = self.open_file(&abs) {
+                    log::warn!("restore: failed to open {}: {e}", abs.display());
+                }
+            }
+        }
+
+        // Restore active file.
+        if let Some(ref active_rel) = wstate.active_file {
+            let abs = root.join(active_rel);
+            // Find the buffer ID for this path and make it active.
+            for &id in &self.tabs {
+                if self
+                    .registry
+                    .get(id)
+                    .and_then(|b| b.file_path.as_ref())
+                    .is_some_and(|p| *p == abs)
+                {
+                    self.active_buffer = Some(id);
+                    break;
+                }
+            }
+        }
+
+        // Restore cursor positions.
+        for (rel, &(line, col)) in &wstate.cursor_positions {
+            let abs = root.join(rel);
+            for &id in &self.tabs {
+                if self
+                    .registry
+                    .get(id)
+                    .and_then(|b| b.file_path.as_ref())
+                    .is_some_and(|p| *p == abs)
+                {
+                    if let Some(buf) = self.registry.get_mut(id) {
+                        let clamped_line = line.min(buf.line_count().saturating_sub(1));
+                        let clamped_col = col.min(buf.line_len(clamped_line).saturating_sub(1));
+                        buf.cursor = CursorState::at(Position::new(clamped_line, clamped_col));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Collect dirty buffer contents for crash recovery autosave.
+    ///
+    /// Returns `(original_path, content)` pairs for all dirty buffers
+    /// that have a file path.
+    #[must_use]
+    pub fn collect_dirty_buffers(&self) -> Vec<(PathBuf, String)> {
+        self.tabs
+            .iter()
+            .filter_map(|&id| {
+                let buf = self.registry.get(id)?;
+                if !buf.is_dirty() {
+                    return None;
+                }
+                let path = buf.file_path.clone()?;
+                Some((path, buf.text()))
+            })
+            .collect()
     }
 
     /// Open a file and make it the active tab.
@@ -426,7 +653,7 @@ impl AppState {
             cursor_line,
             cursor_col,
             git_branch: self.build_git_branch_display(),
-            encoding: "UTF-8".to_string(),
+            encoding: "UTF-8",
             ai_status: self.build_ai_status(),
             file_type: self.detect_file_type(),
             message: self.status_message.clone(),
@@ -614,10 +841,26 @@ pub fn render(
     // Prune expired notifications.
     state.overlay.prune_notifications();
 
-    // Sync tab manager from registry.
-    state
-        .tab_mgr
-        .sync_from_registry(&state.tabs, state.active_buffer, &state.registry);
+    // Trigger notification flash when new notifications appear.
+    let current_count = state.overlay.notifications.len();
+    if current_count > state.last_notification_count {
+        state.effects.start_notification_flash();
+    }
+    state.last_notification_count = current_count;
+
+    // Sync tab manager from registry (include live hunk counts).
+    let live_hunks = build_live_hunk_map(&state.live_mode);
+    let live_hunks_ref = if live_hunks.is_empty() {
+        None
+    } else {
+        Some(&live_hunks)
+    };
+    state.tab_mgr.sync_from_registry(
+        &state.tabs,
+        state.active_buffer,
+        &state.registry,
+        live_hunks_ref,
+    );
 
     // Compute layout.
     let splits = layout::compute_layout(area, &state.layout);
@@ -744,7 +987,7 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         let end = state.viewport.top_line + viewport_height + 50;
         state
             .highlighters
-            .get(&id)
+            .get_mut(&id)
             .map(|hl| hl.highlight_lines(top..end))
     });
 
@@ -817,6 +1060,11 @@ fn handle_fs_event(fs_event: &crate::event::FsEvent, state: &mut AppState) -> Co
         }
     }
 
+    // Hot-reload settings when config.toml is modified.
+    if let crate::event::FsEvent::Changed(changed_path) = fs_event {
+        check_settings_hot_reload(changed_path, state);
+    }
+
     // Invalidate workspace cache for the parent directory and refresh.
     if let Some(ref mut ws) = state.workspace {
         if let Some(parent) = path.parent() {
@@ -832,6 +1080,60 @@ fn handle_fs_event(fs_event: &crate::event::FsEvent, state: &mut AppState) -> Co
     state.refresh_git();
 
     Control::Changed
+}
+
+/// Detect changes to `config.toml` and hot-reload settings.
+///
+/// Compares the changed path's filename against known config files.
+/// If it matches, re-loads the settings file and re-applies to state.
+fn check_settings_hot_reload(changed_path: &Path, state: &mut AppState) {
+    let Some(ref cp) = state.config_paths else {
+        return;
+    };
+
+    let settings_file = cp.settings_file();
+    if changed_path != settings_file {
+        return;
+    }
+
+    // Attempt to re-load and re-apply settings.
+    match Settings::load(&settings_file) {
+        Ok(new_settings) => {
+            // Only re-apply if the settings actually changed.
+            if state.cached_settings.as_ref() != Some(&new_settings) {
+                state.apply_settings(&new_settings);
+                state
+                    .overlay
+                    .notify("Settings reloaded", NotificationLevel::Info);
+            }
+        }
+        Err(e) => {
+            state.overlay.notify(
+                format!("Settings reload failed: {e}"),
+                NotificationLevel::Error,
+            );
+        }
+    }
+}
+
+/// Build a map of `BufferId → hunk count` from the live mode controller.
+///
+/// Used to populate tab badges showing per-file change counts.
+fn build_live_hunk_map(ctrl: &LiveModeController) -> HashMap<BufferId, usize> {
+    if !ctrl.is_active() {
+        return HashMap::new();
+    }
+    ctrl.tracked_buffers
+        .iter()
+        .filter_map(|(&id, state)| {
+            let count = state.hunks.len();
+            if count > 0 {
+                Some((id, count))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Read a changed file from disk, update the Live Mode diff, and auto-follow.
@@ -854,6 +1156,9 @@ fn feed_live_mode_change(path: &Path, state: &mut AppState) {
         return;
     };
 
+    // Trigger diff pulse effect (brightness flash on new hunks).
+    state.effects.start_diff_pulse(state.theme.diff_add_fg);
+
     // Auto-follow: switch to the changed buffer and scroll to the change.
     state.active_buffer = Some(info.buffer_id);
     if let Some(buf) = state.registry.get_mut(info.buffer_id) {
@@ -865,6 +1170,22 @@ fn feed_live_mode_change(path: &Path, state: &mut AppState) {
 /// Handle AI session events (poll all sessions for new output).
 fn handle_ai_event(state: &mut AppState) -> Control<AppEvent> {
     let changed = state.ai_manager.poll_all();
+
+    // Detect AI thinking state transitions: start/stop the effect
+    // when any active session transitions to/from Running.
+    let is_running = state
+        .ai_manager
+        .active_session()
+        .is_some_and(|s| s.state() == lune_ai::SessionState::Running);
+
+    if is_running && !state.ai_thinking_active {
+        state.ai_thinking_active = true;
+        state.effects.start_ai_thinking(state.theme.accent);
+    } else if !is_running && state.ai_thinking_active {
+        state.ai_thinking_active = false;
+        state.effects.cancel_ai_thinking();
+    }
+
     if changed {
         Control::Changed
     } else {
@@ -917,6 +1238,7 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
             state.focus_dirty = true;
             return Control::Changed;
         }
+        // Escape always enters Normal mode (blocks typing regardless of vim_enabled).
         state.vim.enter_normal();
         state.status_message.clear();
         return Control::Changed;
@@ -938,11 +1260,22 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
     }
 
     // 5. Route based on vim mode.
+    // Normal/Insert switching always works (Escape → Normal blocks typing,
+    // `i` → Insert allows typing). Visual, VisualLine, and Command modes
+    // are only reachable when vim keybindings are enabled; if somehow
+    // entered while vim is disabled, fall back to Insert.
     match state.vim.mode {
         VimMode::Insert => handle_insert_mode(key, state),
         VimMode::Normal => handle_normal_mode(key, state),
-        VimMode::Visual | VimMode::VisualLine => handle_visual_mode(key, state),
-        VimMode::Command => Control::Continue, // TODO: command-line mode
+        VimMode::Visual | VimMode::VisualLine if state.vim_enabled => {
+            handle_visual_mode(key, state)
+        }
+        VimMode::Command if state.vim_enabled => Control::Continue, // TODO: command-line mode
+        // vim disabled but in Visual/Command — snap back to Insert.
+        _ => {
+            state.vim.enter_insert();
+            handle_insert_mode(key, state)
+        }
     }
 }
 
@@ -1856,7 +2189,15 @@ fn handle_mouse_drag(mouse: MouseEvent, state: &mut AppState) -> Control<AppEven
 /// Apply a vim action to the editor state.
 fn apply_vim_action(action: &VimAction, state: &mut AppState) -> Control<AppEvent> {
     match action {
-        VimAction::ModeChanged(_) => Control::Changed,
+        VimAction::ModeChanged(mode) => {
+            // When vim is disabled, only Normal↔Insert transitions are allowed.
+            // Block Visual/VisualLine/Command and snap back to Normal.
+            if !state.vim_enabled && !matches!(mode, VimMode::Normal | VimMode::Insert) {
+                state.vim.enter_normal();
+                return Control::Continue;
+            }
+            Control::Changed
+        }
         VimAction::MoveLeft(n) => apply_motion(state, |buf| {
             move_n(buf, *n, false, TextBuffer::move_left);
         }),
@@ -2060,6 +2401,26 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
         AppCommand::AiSummarizeChanges => handle_ai_summarize_changes(state),
         // Live Mode commands.
         AppCommand::ToggleLiveMode => handle_toggle_live_mode(state),
+        // Theme commands.
+        AppCommand::NextTheme => {
+            state.next_theme();
+            let name = state.theme_registry.current_name().to_owned();
+            state
+                .overlay
+                .notify(format!("Theme: {name}"), NotificationLevel::Info);
+            Control::Changed
+        }
+        AppCommand::PrevTheme => {
+            state.prev_theme();
+            let name = state.theme_registry.current_name().to_owned();
+            state
+                .overlay
+                .notify(format!("Theme: {name}"), NotificationLevel::Info);
+            Control::Changed
+        }
+        AppCommand::OpenSettings | AppCommand::OpenKeybindings => {
+            handle_open_config_file(cmd, state)
+        }
     }
 }
 
@@ -2074,6 +2435,9 @@ fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEv
                 state.focus.set_active(PanelId::Editor);
             }
             state.focus_dirty = true;
+            state
+                .effects
+                .start_panel_transition(PanelId::FileTree, state.theme.accent);
             Control::Changed
         }
         AppCommand::ToggleAiPanel => {
@@ -2088,6 +2452,9 @@ fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEv
                 state.focus.set_active(PanelId::Editor);
             }
             state.focus_dirty = true;
+            state
+                .effects
+                .start_panel_transition(PanelId::AiTerminal, state.theme.accent);
             Control::Changed
         }
         AppCommand::ToggleGitPanel => {
@@ -2100,6 +2467,9 @@ fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEv
                 state.focus.set_active(PanelId::Editor);
             }
             state.focus_dirty = true;
+            state
+                .effects
+                .start_panel_transition(PanelId::GitPanel, state.theme.accent);
             Control::Changed
         }
         AppCommand::FocusNextPane => {
@@ -2236,6 +2606,62 @@ fn handle_open_file(path: &std::path::Path, state: &mut AppState) -> Control<App
         }
     }
     Control::Changed
+}
+
+/// Handle `OpenSettings` / `OpenKeybindings`: open the config file in the editor.
+///
+/// If the file doesn't exist yet, creates it with sensible defaults.
+fn handle_open_config_file(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
+    let Some(ref cp) = state.config_paths else {
+        state
+            .overlay
+            .notify("Config directory not available", NotificationLevel::Error);
+        return Control::Changed;
+    };
+
+    let (path, default_content) = match cmd {
+        AppCommand::OpenSettings => (
+            cp.settings_file(),
+            toml::to_string_pretty(&Settings::default()).unwrap_or_default(),
+        ),
+        AppCommand::OpenKeybindings => (
+            cp.keybindings_file(),
+            "# Keybinding overrides\n\
+             # Format: \"key_combo\" = \"command\"\n\
+             #\n\
+             # [normal]\n\
+             # \"ctrl+s\" = \"save\"\n\
+             # \"ctrl+shift+p\" = \"command_palette\"\n\
+             #\n\
+             # [vim.normal]\n\
+             # \"g d\" = \"go_to_definition\"\n"
+                .to_owned(),
+        ),
+        _ => return Control::Continue,
+    };
+
+    // Ensure the config directory exists.
+    if let Err(e) = cp.ensure_dirs() {
+        state.overlay.notify(
+            format!("Failed to create config dirs: {e}"),
+            NotificationLevel::Error,
+        );
+        return Control::Changed;
+    }
+
+    // Create the file with defaults if it doesn't exist.
+    if !path.exists() {
+        if let Err(e) = std::fs::write(&path, &default_content) {
+            state.overlay.notify(
+                format!("Failed to create {}: {e}", path.display()),
+                NotificationLevel::Error,
+            );
+            return Control::Changed;
+        }
+    }
+
+    // Open the file in the editor.
+    handle_open_file(&path, state)
 }
 
 /// Handle the `ChangeLanguage` command: re-assign the highlighter for the active buffer.

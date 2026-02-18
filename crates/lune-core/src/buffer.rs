@@ -57,8 +57,21 @@ pub struct TextBuffer {
     redo_stack: UndoStack,
     /// Current revision number (increments on each edit).
     current_revision: RevisionId,
-    /// Revision at last save.
-    last_saved_revision: RevisionId,
+
+    /// Signed distance from the save point in the undo history.
+    ///
+    /// - `0` means the buffer content matches the last saved state.
+    /// - Positive: N forward edits past save.
+    /// - Negative: N undos past save.
+    ///
+    /// When a new edit is made while `save_distance < 0` (i.e. the redo
+    /// stack has been forked), the save point is unreachable and
+    /// `save_point_lost` is set to `true`.
+    save_distance: isize,
+    /// Set to `true` when the undo history has been forked past the save
+    /// point, making it impossible to return to the saved state via
+    /// undo/redo alone.  Cleared on save or reload.
+    save_point_lost: bool,
 
     /// When `Some`, we are inside a `begin_transaction` / `commit_transaction`
     /// block. Ops accumulate here until committed.
@@ -81,7 +94,8 @@ impl TextBuffer {
             undo_stack: UndoStack::new(),
             redo_stack: UndoStack::new(),
             current_revision: 0,
-            last_saved_revision: 0,
+            save_distance: 0,
+            save_point_lost: false,
             pending_ops: None,
             pending_cursor_before: None,
         }
@@ -165,9 +179,15 @@ impl TextBuffer {
     }
 
     /// Whether the buffer has been modified since last save.
+    ///
+    /// Uses a signed distance from the save point in the undo history.
+    /// Undoing all changes back to the saved state correctly reports
+    /// the buffer as clean (`save_distance == 0`).  If the undo history
+    /// is forked (new edit after undo past save), the save point is
+    /// unreachable and the buffer stays dirty until the next save.
     #[must_use]
     pub const fn is_dirty(&self) -> bool {
-        self.current_revision != self.last_saved_revision
+        self.save_point_lost || self.save_distance != 0
     }
 
     /// Current revision number.
@@ -212,6 +232,8 @@ impl TextBuffer {
         let char_idx = self.pos_to_char(pos);
         self.rope.insert(char_idx, text);
         self.current_revision += 1;
+        self.check_save_point_before_edit();
+        self.save_distance += 1;
 
         let text: Arc<str> = Arc::from(text);
         let op = EditOp::Insert {
@@ -242,6 +264,8 @@ impl TextBuffer {
         let deleted_text: Arc<str> = Arc::from(self.rope.slice(start_idx..end_idx).to_string());
         self.rope.remove(start_idx..end_idx);
         self.current_revision += 1;
+        self.check_save_point_before_edit();
+        self.save_distance += 1;
 
         let op = EditOp::Delete {
             start: lo,
@@ -336,6 +360,8 @@ impl TextBuffer {
         }
         self.cursor = txn.cursor_before.clone();
         self.current_revision += 1;
+        // Move one step closer to (or past) the save point.
+        self.save_distance -= 1;
         self.redo_stack.push(txn);
         true
     }
@@ -354,8 +380,23 @@ impl TextBuffer {
         }
         self.cursor = txn.cursor_after.clone();
         self.current_revision += 1;
+        // Move one step away from the save point (back toward where we were).
+        self.save_distance += 1;
         self.undo_stack.push(txn);
         true
+    }
+
+    /// Check whether making a new edit will fork the undo history past the
+    /// save point.  Must be called BEFORE incrementing `save_distance`.
+    ///
+    /// If the redo stack is non-empty and we are currently behind or at the
+    /// save point (`save_distance <= 0`), clearing the redo stack (which
+    /// happens when a new edit is recorded) will remove the only path back
+    /// to the saved state — so we mark the save point as lost.
+    fn check_save_point_before_edit(&mut self) {
+        if !self.save_point_lost && !self.redo_stack.is_empty() && self.save_distance < 0 {
+            self.save_point_lost = true;
+        }
     }
 
     /// Apply an edit op directly to the rope without recording it.
@@ -495,7 +536,9 @@ impl TextBuffer {
         self.rope
             .write_to(&mut writer)
             .with_context(|| format!("writing {}", path.display()))?;
-        self.last_saved_revision = self.current_revision;
+        // Reset save-point tracking: we are now at the save point.
+        self.save_distance = 0;
+        self.save_point_lost = false;
         Ok(())
     }
 
@@ -516,7 +559,9 @@ impl TextBuffer {
         self.redo_stack = UndoStack::new();
         self.cursor = CursorState::default();
         self.current_revision += 1;
-        self.last_saved_revision = self.current_revision;
+        // Reload = fresh save point.
+        self.save_distance = 0;
+        self.save_point_lost = false;
         Ok(())
     }
 
@@ -912,6 +957,114 @@ mod tests {
         assert!(!buf.is_dirty());
         buf.insert(Position::new(0, 0), "x");
         assert!(buf.is_dirty());
+    }
+
+    #[test]
+    fn undo_back_to_saved_is_clean() {
+        let mut buf = TextBuffer::from_text("hello");
+        assert!(!buf.is_dirty());
+        buf.insert(Position::new(0, 5), " world");
+        assert!(buf.is_dirty());
+        // Undo the insert — content is back to "hello".
+        assert!(buf.undo());
+        assert!(
+            !buf.is_dirty(),
+            "buffer should be clean after undoing all edits"
+        );
+    }
+
+    #[test]
+    fn undo_redo_returns_to_dirty() {
+        let mut buf = TextBuffer::from_text("hello");
+        buf.insert(Position::new(0, 5), "!");
+        assert!(buf.is_dirty());
+        assert!(buf.undo());
+        assert!(!buf.is_dirty());
+        // Redo re-applies — dirty again.
+        assert!(buf.redo());
+        assert!(buf.is_dirty());
+    }
+
+    #[test]
+    fn multiple_undos_back_to_saved() {
+        let mut buf = TextBuffer::from_text("a");
+        buf.insert(Position::new(0, 1), "b");
+        buf.insert(Position::new(0, 2), "c");
+        assert!(buf.is_dirty());
+        assert!(buf.undo()); // remove "c"
+        assert!(buf.is_dirty()); // still dirty ("ab" != "a")
+        assert!(buf.undo()); // remove "b"
+        assert!(!buf.is_dirty()); // clean ("a" == "a")
+    }
+
+    #[test]
+    fn undo_to_saved_then_new_edit_is_still_trackable() {
+        // Undo back to save point, then make a different edit.
+        // Since the save point is at distance 0 and the new edit brings
+        // us to distance 1, undoing the new edit returns to 0 (clean).
+        let mut buf = TextBuffer::from_text("a");
+        buf.insert(Position::new(0, 1), "b");
+        assert!(buf.undo()); // back to "a" — clean
+        assert!(!buf.is_dirty());
+        buf.insert(Position::new(0, 1), "x"); // "ax"
+        assert!(buf.is_dirty());
+        assert!(buf.undo()); // back to "a" — clean
+        assert!(!buf.is_dirty());
+    }
+
+    #[test]
+    fn new_edit_after_undo_past_save_loses_save_point() {
+        // Save at "ab", then undo past save to "a", then make a new edit.
+        // The redo stack (containing "b") is cleared, making the save
+        // point ("ab") unreachable.
+        let dir = std::env::temp_dir().join("lune_test_fork");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("fork_test.txt");
+        std::fs::write(&path, "ab").unwrap();
+
+        let mut buf = TextBuffer::from_file(&path).unwrap();
+        assert!(!buf.is_dirty()); // "ab" on disk = clean
+                                  // Undo is empty, so insert then save to establish save point.
+        buf.insert(Position::new(0, 2), "c"); // "abc"
+        buf.save().unwrap(); // save point at "abc"
+        assert!(!buf.is_dirty());
+
+        // Now undo past the save point.
+        assert!(buf.undo()); // "ab" — save_distance = -1
+        assert!(buf.is_dirty()); // we're behind the save point
+                                 // Make a new edit — forks history, redo stack cleared.
+        buf.insert(Position::new(0, 2), "x"); // "abx"
+        assert!(buf.is_dirty());
+        // Undo the "x" — content is "ab", save_distance = -1 again,
+        // but save_point_lost = true because redo stack was forked.
+        assert!(buf.undo());
+        assert!(
+            buf.is_dirty(),
+            "save point should be lost after history fork"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_resets_dirty_tracking() {
+        let dir = std::env::temp_dir().join("lune_test_save_dirty");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("dirty_test.txt");
+        std::fs::write(&path, "original").unwrap();
+
+        let mut buf = TextBuffer::from_file(&path).unwrap();
+        buf.insert(Position::new(0, 0), "X");
+        assert!(buf.is_dirty());
+        buf.save().unwrap();
+        assert!(!buf.is_dirty());
+        // Edit after save, then undo — should be clean again.
+        buf.insert(Position::new(0, 0), "Y");
+        assert!(buf.is_dirty());
+        assert!(buf.undo());
+        assert!(!buf.is_dirty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── File I/O ──────────────────────────────────────────────────────

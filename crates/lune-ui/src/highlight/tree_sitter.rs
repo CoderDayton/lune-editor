@@ -182,6 +182,10 @@ fn load_highlight_config(lang_id: LanguageId) -> Option<HighlightConfiguration> 
 ///
 /// Parses the full buffer on creation, then supports incremental updates.
 /// Line byte offsets are cached and recomputed only on `update()`.
+///
+/// Maintains a generation-stamped highlight cache so that `highlight_lines`
+/// can return the previous result when the buffer hasn't changed and the
+/// requested range is contained within the cached range.
 pub struct TreeSitterHighlighter {
     /// The highlight configuration for this language.
     config: HighlightConfiguration,
@@ -191,6 +195,17 @@ pub struct TreeSitterHighlighter {
     line_byte_offsets: Vec<usize>,
     /// Language identifier.
     language_id: LanguageId,
+    /// Reusable tree-sitter highlighter instance (avoids re-allocation each
+    /// call to `highlight_lines`).
+    ts_highlighter: tree_sitter_highlight::Highlighter,
+    /// Monotonic generation counter, incremented on every `update()`.
+    generation: u64,
+    /// Cached highlight result from the last `highlight_lines()` call.
+    cached_result: Vec<HighlightedLine>,
+    /// The generation at which the cache was computed.
+    cached_generation: u64,
+    /// The line range that the cache covers.
+    cached_range: Range<usize>,
 }
 
 impl TreeSitterHighlighter {
@@ -204,6 +219,11 @@ impl TreeSitterHighlighter {
             source: Vec::new(),
             line_byte_offsets: vec![0],
             language_id,
+            ts_highlighter: tree_sitter_highlight::Highlighter::new(),
+            generation: 0,
+            cached_result: Vec::new(),
+            cached_generation: u64::MAX, // force miss on first call
+            cached_range: 0..0,
         })
     }
 
@@ -215,6 +235,9 @@ impl TreeSitterHighlighter {
 
 impl Highlighter for TreeSitterHighlighter {
     fn update(&mut self, buffer: &TextBuffer, _edit_range: Option<(usize, usize)>) {
+        // Bump generation to invalidate the highlight cache.
+        self.generation = self.generation.wrapping_add(1);
+
         // Re-cache source bytes and line offsets.
         // Build Vec<u8> directly from rope chunks to avoid the intermediate
         // String allocation that `buffer.text().into_bytes()` would incur.
@@ -228,7 +251,7 @@ impl Highlighter for TreeSitterHighlighter {
         self.line_byte_offsets = compute_line_byte_offsets(&self.source);
     }
 
-    fn highlight_lines(&self, line_range: Range<usize>) -> Vec<HighlightedLine> {
+    fn highlight_lines(&mut self, line_range: Range<usize>) -> Vec<HighlightedLine> {
         if self.source.is_empty() {
             return line_range.map(HighlightedLine::new).collect();
         }
@@ -243,9 +266,23 @@ impl Highlighter for TreeSitterHighlighter {
             return Vec::new();
         }
 
-        // Run the tree-sitter highlighter over the full source.
-        let mut ts_hl = tree_sitter_highlight::Highlighter::new();
-        let Ok(events) = ts_hl.highlight(&self.config, &self.source, None, |_| None) else {
+        // Cache hit: same generation and requested range is within the cached range.
+        if self.cached_generation == self.generation
+            && start_line >= self.cached_range.start
+            && end_line <= self.cached_range.end
+        {
+            let offset = start_line - self.cached_range.start;
+            let len = end_line - start_line;
+            return self.cached_result[offset..offset + len].to_vec();
+        }
+
+        // Cache miss — recompute.
+        // Reuse the cached `ts_highlighter` instance to avoid re-allocating
+        // its internal buffers on every call.
+        let Ok(events) = self
+            .ts_highlighter
+            .highlight(&self.config, &self.source, None, |_| None)
+        else {
             return (start_line..end_line).map(HighlightedLine::new).collect();
         };
 
@@ -283,6 +320,11 @@ impl Highlighter for TreeSitterHighlighter {
                 }
             }
         }
+
+        // Store result in cache for next frame.
+        self.cached_result.clone_from(&result);
+        self.cached_generation = self.generation;
+        self.cached_range = start_line..end_line;
 
         result
     }

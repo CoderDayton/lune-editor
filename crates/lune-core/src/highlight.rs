@@ -6,6 +6,8 @@
 
 use std::ops::Range;
 
+use smallvec::SmallVec;
+
 use crate::buffer::TextBuffer;
 
 // ── Highlight style categories ────────────────────────────────────────
@@ -89,32 +91,39 @@ impl StyledSpan {
 
 // ── Highlighted line ──────────────────────────────────────────────────
 
+/// Most lines have fewer than 8 styled spans; this threshold keeps them
+/// entirely on the stack, avoiding a heap allocation per line per frame.
+pub type SpanVec = SmallVec<[StyledSpan; 8]>;
+
 /// A single line with its styled spans.
 ///
 /// Spans are sorted by `start_col` and do not overlap.
+/// Uses `SmallVec<[StyledSpan; 8]>` so lines with ≤8 spans incur zero
+/// heap allocation (8 × 24 bytes = 192 bytes inline).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HighlightedLine {
     /// The 0-based line index in the buffer.
     pub line: usize,
     /// Styled spans, sorted by `start_col`, non-overlapping.
-    pub spans: Vec<StyledSpan>,
+    pub spans: SpanVec,
 }
 
 impl HighlightedLine {
     /// Create a new highlighted line with no spans.
     #[inline]
     #[must_use]
-    pub const fn new(line: usize) -> Self {
+    pub fn new(line: usize) -> Self {
         Self {
             line,
-            spans: Vec::new(),
+            spans: SpanVec::new(),
         }
     }
 
     /// Create a highlighted line from a vec of spans.
     #[inline]
     #[must_use]
-    pub const fn with_spans(line: usize, spans: Vec<StyledSpan>) -> Self {
+    #[allow(clippy::missing_const_for_fn)] // SmallVec has no const-compatible move
+    pub fn with_spans(line: usize, spans: SpanVec) -> Self {
         Self { line, spans }
     }
 
@@ -144,7 +153,10 @@ pub trait Highlighter: Send {
     ///
     /// The range is `[line_range.start, line_range.end)` (0-based).
     /// Returns one `HighlightedLine` per line in the range.
-    fn highlight_lines(&self, line_range: Range<usize>) -> Vec<HighlightedLine>;
+    ///
+    /// Takes `&mut self` so implementations can reuse internal buffers
+    /// (e.g. the tree-sitter highlighter instance) across calls.
+    fn highlight_lines(&mut self, line_range: Range<usize>) -> Vec<HighlightedLine>;
 }
 
 // ── Null highlighter ──────────────────────────────────────────────────
@@ -157,7 +169,7 @@ pub struct NullHighlighter;
 impl Highlighter for NullHighlighter {
     fn update(&mut self, _buffer: &TextBuffer, _edit_range: Option<(usize, usize)>) {}
 
-    fn highlight_lines(&self, line_range: Range<usize>) -> Vec<HighlightedLine> {
+    fn highlight_lines(&mut self, line_range: Range<usize>) -> Vec<HighlightedLine> {
         line_range.map(HighlightedLine::new).collect()
     }
 }
@@ -190,7 +202,7 @@ mod tests {
 
     #[test]
     fn highlighted_line_with_spans() {
-        let spans = vec![
+        let spans: SpanVec = smallvec::smallvec![
             StyledSpan::new(0, 2, HighlightStyle::Keyword),
             StyledSpan::new(3, 8, HighlightStyle::Function),
         ];

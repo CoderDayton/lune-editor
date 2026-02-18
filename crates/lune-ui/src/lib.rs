@@ -16,5 +16,6 @@ pub mod highlight;
 pub mod keybindings;
 pub mod layout;
 pub mod theme;
+pub mod theme_config;
 pub mod vim;
 pub mod widgets;
