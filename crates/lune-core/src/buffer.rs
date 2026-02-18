@@ -4,6 +4,7 @@
 //! [`ropey::Rope`] and provides position-aware insert/delete/replace
 //! operations, undo/redo, cursor management, and dirty tracking.
 
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -12,6 +13,8 @@ use uuid::Uuid;
 
 use crate::position::{CursorState, Position, Selection};
 use crate::undo::{end_position_after_insert, EditOp, RevisionId, Transaction, UndoStack};
+
+use std::sync::Arc;
 
 /// Unique identifier for a buffer.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -95,12 +98,20 @@ impl TextBuffer {
 
     /// Create a buffer by reading a file.
     ///
+    /// Uses `Rope::from_reader` to stream directly from disk, avoiding
+    /// an intermediate full-file `String` allocation.
+    ///
     /// # Errors
     /// Returns an error if the file cannot be read.
     pub fn from_file(path: &Path) -> Result<Self> {
-        let content =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let mut buf = Self::from_text(&content);
+        let file =
+            std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let rope = Rope::from_reader(BufReader::new(file))
+            .with_context(|| format!("reading {}", path.display()))?;
+        let mut buf = Self {
+            rope,
+            ..Self::new()
+        };
         buf.file_path = Some(path.to_path_buf());
         Ok(buf)
     }
@@ -108,12 +119,14 @@ impl TextBuffer {
     // ── Accessors ─────────────────────────────────────────────────────
 
     /// Number of lines in the buffer (always >= 1).
+    #[inline]
     #[must_use]
     pub fn line_count(&self) -> usize {
         self.rope.len_lines()
     }
 
     /// Total number of characters in the buffer.
+    #[inline]
     #[must_use]
     pub fn char_count(&self) -> usize {
         self.rope.len_chars()
@@ -130,6 +143,7 @@ impl TextBuffer {
 
     /// Get the character count of a given line (0-based), including any
     /// trailing newline. Returns 0 if out of bounds.
+    #[inline]
     #[must_use]
     pub fn line_len(&self, idx: usize) -> usize {
         if idx >= self.rope.len_lines() {
@@ -168,6 +182,7 @@ impl TextBuffer {
     ///
     /// Clamps to valid range. Returns `None` only if the buffer is empty
     /// and position is non-zero.
+    #[inline]
     #[must_use]
     pub fn pos_to_char(&self, pos: Position) -> usize {
         let line = pos.line.min(self.rope.len_lines().saturating_sub(1));
@@ -179,6 +194,7 @@ impl TextBuffer {
     }
 
     /// Convert a rope char index to a `Position`.
+    #[inline]
     #[must_use]
     pub fn char_to_pos(&self, char_idx: usize) -> Position {
         let idx = char_idx.min(self.rope.len_chars());
@@ -197,13 +213,14 @@ impl TextBuffer {
         self.rope.insert(char_idx, text);
         self.current_revision += 1;
 
+        let text: Arc<str> = Arc::from(text);
         let op = EditOp::Insert {
             pos,
-            text: text.to_string(),
+            text: Arc::clone(&text),
         };
 
         // Move cursor to end of inserted text.
-        let end = end_position_after_insert(pos, text);
+        let end = end_position_after_insert(pos, &text);
         self.cursor = CursorState::at(end);
 
         self.record_op(op.clone());
@@ -222,7 +239,7 @@ impl TextBuffer {
         let start_idx = self.pos_to_char(lo);
         let end_idx = self.pos_to_char(hi);
 
-        let deleted_text: String = self.rope.slice(start_idx..end_idx).to_string();
+        let deleted_text: Arc<str> = Arc::from(self.rope.slice(start_idx..end_idx).to_string());
         self.rope.remove(start_idx..end_idx);
         self.current_revision += 1;
 
@@ -465,35 +482,36 @@ impl TextBuffer {
 
     /// Save the buffer to its associated file path.
     ///
+    /// Uses `rope.write_to()` to stream directly to disk, avoiding
+    /// an intermediate full-buffer `String` allocation.
+    ///
     /// # Errors
     /// Returns an error if the buffer has no file path or if writing fails.
     pub fn save(&mut self) -> Result<()> {
-        let path = self
-            .file_path
-            .as_ref()
-            .context("buffer has no file path")?
-            .clone();
-        let text = self.rope.to_string();
-        std::fs::write(&path, &text).with_context(|| format!("writing {}", path.display()))?;
+        let path = self.file_path.as_ref().context("buffer has no file path")?;
+        let file =
+            std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
+        let mut writer = std::io::BufWriter::new(file);
+        self.rope
+            .write_to(&mut writer)
+            .with_context(|| format!("writing {}", path.display()))?;
         self.last_saved_revision = self.current_revision;
         Ok(())
     }
 
     /// Reload the buffer contents from disk.
     ///
-    /// Resets undo/redo history and cursor position.
+    /// Resets undo/redo history and cursor position. Streams from disk
+    /// via `Rope::from_reader` to avoid a full-file `String` allocation.
     ///
     /// # Errors
     /// Returns an error if the buffer has no file path or if reading fails.
     pub fn reload(&mut self) -> Result<()> {
-        let path = self
-            .file_path
-            .as_ref()
-            .context("buffer has no file path")?
-            .clone();
-        let content = std::fs::read_to_string(&path)
+        let path = self.file_path.as_ref().context("buffer has no file path")?;
+        let file =
+            std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        self.rope = Rope::from_reader(BufReader::new(file))
             .with_context(|| format!("reading {}", path.display()))?;
-        self.rope = Rope::from_str(&content);
         self.undo_stack = UndoStack::new();
         self.redo_stack = UndoStack::new();
         self.cursor = CursorState::default();
@@ -505,15 +523,25 @@ impl TextBuffer {
     // ── Private helpers ───────────────────────────────────────────────
 
     /// Line length excluding trailing newline characters.
+    ///
+    /// Avoids allocating a `String` by counting trailing `\n`/`\r` chars
+    /// directly from the rope slice.
+    #[inline]
     fn line_len_no_newline(&self, line_idx: usize) -> usize {
         if line_idx >= self.rope.len_lines() {
             return 0;
         }
         let line = self.rope.line(line_idx);
         let len = line.len_chars();
-        let s = line.to_string();
-        let trimmed = s.trim_end_matches(&['\n', '\r'][..]);
-        len - (s.len() - trimmed.len())
+        let mut trailing = 0;
+        for ch in line.chars_at(len).reversed() {
+            if ch == '\n' || ch == '\r' {
+                trailing += 1;
+            } else {
+                break;
+            }
+        }
+        len - trailing
     }
 
     /// Update the primary cursor head. If `extend` is false, anchor follows.

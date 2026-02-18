@@ -19,6 +19,7 @@ pub struct Position {
 
 impl Position {
     /// Create a new position.
+    #[inline]
     #[must_use]
     pub const fn new(line: usize, col: usize) -> Self {
         Self { line, col }
@@ -26,12 +27,14 @@ impl Position {
 }
 
 impl Ord for Position {
+    #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         self.line.cmp(&other.line).then(self.col.cmp(&other.col))
     }
 }
 
 impl PartialOrd for Position {
+    #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
@@ -52,6 +55,7 @@ pub struct Selection {
 
 impl Selection {
     /// Create a collapsed selection (cursor) at the given position.
+    #[inline]
     #[must_use]
     pub const fn cursor(pos: Position) -> Self {
         Self {
@@ -61,12 +65,14 @@ impl Selection {
     }
 
     /// Create a selection spanning from `anchor` to `head`.
+    #[inline]
     #[must_use]
     pub const fn new(anchor: Position, head: Position) -> Self {
         Self { anchor, head }
     }
 
     /// Returns `true` if the selection is collapsed (no text selected).
+    #[inline]
     #[must_use]
     pub fn is_cursor(&self) -> bool {
         self.anchor == self.head
@@ -74,6 +80,7 @@ impl Selection {
 
     /// Returns the selection bounds in document order: `(start, end)` where
     /// `start <= end`.
+    #[inline]
     #[must_use]
     pub fn ordered(&self) -> (Position, Position) {
         if self.anchor <= self.head {
@@ -85,6 +92,7 @@ impl Selection {
 
     /// Returns `true` if `pos` falls within this selection (inclusive of
     /// start, exclusive of end).
+    #[inline]
     #[must_use]
     pub fn contains(&self, pos: Position) -> bool {
         let (start, end) = self.ordered();
@@ -104,6 +112,7 @@ pub struct CursorState {
 
 impl CursorState {
     /// Create a cursor state with a single cursor at the given position.
+    #[inline]
     #[must_use]
     pub const fn at(pos: Position) -> Self {
         Self {
@@ -113,6 +122,7 @@ impl CursorState {
     }
 
     /// Create a cursor state from a primary selection.
+    #[inline]
     #[must_use]
     pub const fn from_selection(sel: Selection) -> Self {
         Self {

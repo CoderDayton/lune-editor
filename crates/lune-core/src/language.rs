@@ -3,7 +3,7 @@
 //! Maps file extensions and shebangs to [`LanguageId`] values, enabling
 //! downstream crates to select the appropriate highlighter or grammar.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::Path;
 
 // ── Language ID ────────────────────────────────────────────────────────
@@ -67,95 +67,85 @@ pub mod lang {
 /// Maps file extensions and shebangs to `LanguageId`.
 pub struct LanguageRegistry {
     /// Extension (without dot) to language ID.
-    extension_map: HashMap<&'static str, LanguageId>,
+    extension_map: FxHashMap<&'static str, LanguageId>,
     /// Shebang interpreter name to language ID.
-    shebang_map: HashMap<&'static str, LanguageId>,
+    shebang_map: FxHashMap<&'static str, LanguageId>,
 }
 
 impl LanguageRegistry {
     /// Build the default registry with common language mappings.
     #[must_use]
     pub fn new() -> Self {
-        let mut ext = HashMap::new();
-        let mut shebang = HashMap::new();
+        const EXTENSIONS: &[(&str, LanguageId)] = &[
+            // Rust
+            ("rs", lang::RUST),
+            // Python
+            ("py", lang::PYTHON),
+            ("pyi", lang::PYTHON),
+            ("pyw", lang::PYTHON),
+            // JavaScript / TypeScript
+            ("js", lang::JAVASCRIPT),
+            ("mjs", lang::JAVASCRIPT),
+            ("cjs", lang::JAVASCRIPT),
+            ("jsx", lang::JSX),
+            ("ts", lang::TYPESCRIPT),
+            ("mts", lang::TYPESCRIPT),
+            ("cts", lang::TYPESCRIPT),
+            ("tsx", lang::TSX),
+            // Data formats
+            ("json", lang::JSON),
+            ("jsonc", lang::JSON),
+            ("toml", lang::TOML),
+            ("yaml", lang::YAML),
+            ("yml", lang::YAML),
+            // Markdown
+            ("md", lang::MARKDOWN),
+            ("mdx", lang::MARKDOWN),
+            ("markdown", lang::MARKDOWN),
+            // C / C++
+            ("c", lang::C),
+            ("h", lang::C),
+            ("cpp", lang::CPP),
+            ("cxx", lang::CPP),
+            ("cc", lang::CPP),
+            ("hpp", lang::CPP),
+            ("hxx", lang::CPP),
+            // Go
+            ("go", lang::GO),
+            // Web
+            ("html", lang::HTML),
+            ("htm", lang::HTML),
+            ("css", lang::CSS),
+            ("scss", lang::CSS),
+            // Shell
+            ("sh", lang::SHELL),
+            ("bash", lang::SHELL),
+            ("zsh", lang::SHELL),
+            ("fish", lang::SHELL),
+            // Lua
+            ("lua", lang::LUA),
+            // Ruby
+            ("rb", lang::RUBY),
+            // Java
+            ("java", lang::JAVA),
+            // Plain text
+            ("txt", lang::PLAIN_TEXT),
+        ];
 
-        // Rust
-        ext.insert("rs", lang::RUST);
-
-        // Python
-        ext.insert("py", lang::PYTHON);
-        ext.insert("pyi", lang::PYTHON);
-        ext.insert("pyw", lang::PYTHON);
-        shebang.insert("python", lang::PYTHON);
-        shebang.insert("python3", lang::PYTHON);
-
-        // JavaScript / TypeScript
-        ext.insert("js", lang::JAVASCRIPT);
-        ext.insert("mjs", lang::JAVASCRIPT);
-        ext.insert("cjs", lang::JAVASCRIPT);
-        ext.insert("jsx", lang::JSX);
-        ext.insert("ts", lang::TYPESCRIPT);
-        ext.insert("mts", lang::TYPESCRIPT);
-        ext.insert("cts", lang::TYPESCRIPT);
-        ext.insert("tsx", lang::TSX);
-        shebang.insert("node", lang::JAVASCRIPT);
-
-        // Data formats
-        ext.insert("json", lang::JSON);
-        ext.insert("jsonc", lang::JSON);
-        ext.insert("toml", lang::TOML);
-        ext.insert("yaml", lang::YAML);
-        ext.insert("yml", lang::YAML);
-
-        // Markdown
-        ext.insert("md", lang::MARKDOWN);
-        ext.insert("mdx", lang::MARKDOWN);
-        ext.insert("markdown", lang::MARKDOWN);
-
-        // C / C++
-        ext.insert("c", lang::C);
-        ext.insert("h", lang::C);
-        ext.insert("cpp", lang::CPP);
-        ext.insert("cxx", lang::CPP);
-        ext.insert("cc", lang::CPP);
-        ext.insert("hpp", lang::CPP);
-        ext.insert("hxx", lang::CPP);
-
-        // Go
-        ext.insert("go", lang::GO);
-
-        // Web
-        ext.insert("html", lang::HTML);
-        ext.insert("htm", lang::HTML);
-        ext.insert("css", lang::CSS);
-        ext.insert("scss", lang::CSS);
-
-        // Shell
-        ext.insert("sh", lang::SHELL);
-        ext.insert("bash", lang::SHELL);
-        ext.insert("zsh", lang::SHELL);
-        ext.insert("fish", lang::SHELL);
-        shebang.insert("bash", lang::SHELL);
-        shebang.insert("sh", lang::SHELL);
-        shebang.insert("zsh", lang::SHELL);
-
-        // Lua
-        ext.insert("lua", lang::LUA);
-        shebang.insert("lua", lang::LUA);
-
-        // Ruby
-        ext.insert("rb", lang::RUBY);
-        shebang.insert("ruby", lang::RUBY);
-
-        // Java
-        ext.insert("java", lang::JAVA);
-
-        // Plain text
-        ext.insert("txt", lang::PLAIN_TEXT);
+        const SHEBANGS: &[(&str, LanguageId)] = &[
+            ("python", lang::PYTHON),
+            ("python3", lang::PYTHON),
+            ("node", lang::JAVASCRIPT),
+            ("bash", lang::SHELL),
+            ("sh", lang::SHELL),
+            ("zsh", lang::SHELL),
+            ("lua", lang::LUA),
+            ("ruby", lang::RUBY),
+        ];
 
         Self {
-            extension_map: ext,
-            shebang_map: shebang,
+            extension_map: EXTENSIONS.iter().copied().collect(),
+            shebang_map: SHEBANGS.iter().copied().collect(),
         }
     }
 

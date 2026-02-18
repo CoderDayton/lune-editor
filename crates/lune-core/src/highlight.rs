@@ -62,6 +62,7 @@ pub struct StyledSpan {
 
 impl StyledSpan {
     /// Create a new styled span.
+    #[inline]
     #[must_use]
     pub const fn new(start_col: usize, end_col: usize, style: HighlightStyle) -> Self {
         Self {
@@ -72,12 +73,14 @@ impl StyledSpan {
     }
 
     /// Width in columns.
+    #[inline]
     #[must_use]
     pub const fn width(&self) -> usize {
         self.end_col - self.start_col
     }
 
     /// Whether this span is empty (zero width).
+    #[inline]
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.start_col >= self.end_col
@@ -99,6 +102,7 @@ pub struct HighlightedLine {
 
 impl HighlightedLine {
     /// Create a new highlighted line with no spans.
+    #[inline]
     #[must_use]
     pub const fn new(line: usize) -> Self {
         Self {
@@ -108,12 +112,14 @@ impl HighlightedLine {
     }
 
     /// Create a highlighted line from a vec of spans.
+    #[inline]
     #[must_use]
     pub const fn with_spans(line: usize, spans: Vec<StyledSpan>) -> Self {
         Self { line, spans }
     }
 
     /// Whether this line has no highlight spans.
+    #[inline]
     #[must_use]
     pub fn is_plain(&self) -> bool {
         self.spans.is_empty()

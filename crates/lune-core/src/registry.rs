@@ -3,7 +3,7 @@
 //! The registry ensures that each file path maps to at most one buffer,
 //! preventing duplicate opens.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -14,9 +14,9 @@ use crate::buffer::{BufferId, TextBuffer};
 #[derive(Debug, Default)]
 pub struct BufferRegistry {
     /// Buffers indexed by their unique ID.
-    buffers: HashMap<BufferId, TextBuffer>,
+    buffers: FxHashMap<BufferId, TextBuffer>,
     /// Reverse lookup: file path → buffer ID.
-    path_index: HashMap<PathBuf, BufferId>,
+    path_index: FxHashMap<PathBuf, BufferId>,
 }
 
 impl BufferRegistry {

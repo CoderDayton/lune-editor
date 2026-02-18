@@ -6,7 +6,7 @@
 //! - Cache invalidation (for file watcher integration)
 //! - File operations (create, rename, delete, move)
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -19,7 +19,7 @@ pub struct Workspace {
     /// Display name (last component of root path).
     name: String,
     /// Cached directory listings, keyed by directory path.
-    tree_cache: HashMap<PathBuf, Vec<DirEntry>>,
+    tree_cache: FxHashMap<PathBuf, Vec<DirEntry>>,
     /// Whether to include hidden files (dotfiles).
     show_hidden: bool,
 }
@@ -108,18 +108,20 @@ impl Workspace {
         Ok(Self {
             root,
             name,
-            tree_cache: HashMap::new(),
+            tree_cache: FxHashMap::default(),
             show_hidden: false,
         })
     }
 
     /// The absolute root path of the workspace.
+    #[inline]
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
 
     /// The display name of the workspace.
+    #[inline]
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
@@ -254,29 +256,18 @@ impl Workspace {
     /// Set the expansion state of a directory entry.
     /// Returns `true` if the entry was found and updated.
     pub fn set_expanded(&mut self, dir: &Path, expanded: bool) -> bool {
-        let Some(parent) = dir.parent() else {
-            return false;
-        };
-        let Some(entries) = self.tree_cache.get_mut(parent) else {
-            return false;
-        };
-        for entry in entries {
-            if entry.path == dir {
-                if let EntryKind::Directory {
-                    expanded: ref mut exp,
-                } = entry.kind
-                {
-                    *exp = expanded;
-                    return true;
-                }
-            }
-        }
-        false
+        self.modify_expanded(dir, |_| expanded).is_some()
     }
 
     /// Toggle the expansion state of a directory entry.
     /// Returns the new expansion state, or `None` if not found.
     pub fn toggle_expanded(&mut self, dir: &Path) -> Option<bool> {
+        self.modify_expanded(dir, |cur| !cur)
+    }
+
+    /// Apply `f` to the expansion state of a directory entry, returning
+    /// the new state. Shared implementation for `set_expanded`/`toggle_expanded`.
+    fn modify_expanded(&mut self, dir: &Path, f: impl FnOnce(bool) -> bool) -> Option<bool> {
         let parent = dir.parent()?;
         let entries = self.tree_cache.get_mut(parent)?;
         for entry in entries {
@@ -285,7 +276,7 @@ impl Workspace {
                     expanded: ref mut exp,
                 } = entry.kind
                 {
-                    *exp = !*exp;
+                    *exp = f(*exp);
                     return Some(*exp);
                 }
             }
@@ -347,12 +338,14 @@ fn read_dir_sorted(dir: &Path, show_hidden: bool) -> Result<Vec<DirEntry>> {
     }
 
     // Sort: directories first, then files; alphabetical within each group.
+    // Uses char-by-char case-insensitive comparison to avoid allocating
+    // two temporary Strings per comparison (was O(N log N) allocs).
     entries.sort_by(|a, b| {
         let a_is_dir = matches!(a.kind, EntryKind::Directory { .. });
         let b_is_dir = matches!(b.kind, EntryKind::Directory { .. });
         b_is_dir
             .cmp(&a_is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| cmp_ignore_ascii_case(&a.name, &b.name))
     });
 
     Ok(entries)
@@ -394,6 +387,38 @@ fn flatten_dir(
     }
 
     Ok(())
+}
+
+/// Case-insensitive ASCII string comparison without allocating.
+///
+/// Falls back to Unicode lowercasing only for non-ASCII chars (rare for
+/// typical file names).
+fn cmp_ignore_ascii_case(a: &str, b: &str) -> std::cmp::Ordering {
+    let mut a_chars = a.chars();
+    let mut b_chars = b.chars();
+    loop {
+        match (a_chars.next(), b_chars.next()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (Some(ac), Some(bc)) => {
+                // Fast path for ASCII (the common case for filenames).
+                let ord = if ac.is_ascii() && bc.is_ascii() {
+                    ac.to_ascii_lowercase().cmp(&bc.to_ascii_lowercase())
+                } else {
+                    // Fallback: compare lowercased chars (may yield
+                    // multiple chars per input, but for single-char
+                    // comparison this is fine).
+                    let al = ac.to_lowercase().next().unwrap_or(ac);
+                    let bl = bc.to_lowercase().next().unwrap_or(bc);
+                    al.cmp(&bl)
+                };
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

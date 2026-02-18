@@ -10,6 +10,7 @@
 //! - **Diff**: Change detection via the `similar` crate
 
 pub mod buffer;
+pub mod diff;
 pub mod highlight;
 pub mod language;
 pub mod position;
@@ -22,6 +23,9 @@ pub mod workspace;
 /// Convenient re-exports of the most commonly used types.
 pub mod prelude {
     pub use crate::buffer::{BufferId, TextBuffer};
+    pub use crate::diff::{
+        InlineHighlight, LiveDiffLine, LiveDiffLineKind, LiveHunk, LiveHunkKind,
+    };
     pub use crate::highlight::{HighlightStyle, HighlightedLine, Highlighter, StyledSpan};
     pub use crate::language::{LanguageId, LanguageRegistry};
     pub use crate::position::{CursorState, Position, Selection};

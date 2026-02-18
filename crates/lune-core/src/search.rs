@@ -51,30 +51,43 @@ impl TextBuffer {
             return state;
         }
 
+        // Allocate the text once (unavoidable — we need a contiguous &str
+        // for `str::find`). Avoid the previous redundant `.clone()`.
         let text = self.text();
         let (search_text, search_query);
 
         if case_sensitive {
-            search_text = text.clone();
-            search_query = query.to_string();
+            // Borrow `text` directly — no clone needed.
+            search_text = std::borrow::Cow::Borrowed(text.as_str());
+            search_query = std::borrow::Cow::Borrowed(query);
         } else {
-            search_text = text.to_lowercase();
-            search_query = query.to_lowercase();
+            search_text = std::borrow::Cow::Owned(text.to_lowercase());
+            search_query = std::borrow::Cow::Owned(query.to_lowercase());
         }
 
+        // Maintain a running char count to avoid the O(n*m) re-scan from
+        // byte 0 on every match.  We track the char count up to the
+        // current `byte_offset` and only count newly-advanced bytes.
         let mut byte_offset = 0;
-        while let Some(found) = search_text[byte_offset..].find(&search_query) {
+        let mut char_offset = 0;
+
+        while let Some(found) = search_text[byte_offset..].find(&*search_query) {
             let match_start_byte = byte_offset + found;
             let match_end_byte = match_start_byte + search_query.len();
 
-            // Convert byte offsets to char offsets, then to positions.
-            let start_char = text[..match_start_byte].chars().count();
-            let end_char = text[..match_end_byte].chars().count();
+            // Count chars only in the gap since last position — O(n) total.
+            char_offset += text[byte_offset..match_start_byte].chars().count();
+            let start_char = char_offset;
+            let match_chars = text[match_start_byte..match_end_byte].chars().count();
+            let end_char = start_char + match_chars;
 
             let start_pos = self.char_to_pos(start_char);
             let end_pos = self.char_to_pos(end_char);
 
             state.matches.push((start_pos, end_pos));
+
+            // Advance running counters to match end.
+            char_offset = end_char;
             byte_offset = match_end_byte;
         }
 
