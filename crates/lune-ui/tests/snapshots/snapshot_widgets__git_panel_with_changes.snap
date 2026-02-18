@@ -2,15 +2,15 @@
 source: crates/lune-ui/tests/snapshot_widgets.rs
 expression: buffer_to_text(&buf)
 ---
-│ SOURCE CONTROL
-│ Staged Changes (2)
-│ M src/main.rs
-│ A src/new_file.rs
-│ Changes (2)
-│ M src/lib.rs
-│ U temp.txt
-│
-│
-│
-│
-│
+┌ SOURCE CONTROL ─────────────────┐
+│ Staged Changes (2)              │
+│ M src/main.rs                   │
+│ A src/new_file.rs               │
+│ Changes (2)                     │
+│ M src/lib.rs                    │
+│ U temp.txt                      │
+│                                 │
+│                                 │
+│                                 │
+│                                 │
+└─────────────────────────────────┘

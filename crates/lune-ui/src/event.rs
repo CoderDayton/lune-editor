@@ -95,8 +95,8 @@ pub enum AppCommand {
     // ── Panel toggles ─────────────────────────────────────────────
     /// Toggle the file tree sidebar.
     ToggleFileTree,
-    /// Toggle the AI terminal panel.
-    ToggleAiPanel,
+    /// Toggle the bottom terminal panel.
+    ToggleTerminal,
     /// Toggle the git panel.
     ToggleGitPanel,
     /// Open the command palette overlay.

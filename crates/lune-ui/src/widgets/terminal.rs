@@ -4,7 +4,9 @@
 //! colors and attributes to ratatui styles. Also renders the cursor
 //! position and a session status header.
 
-use crate::primitives::{Buffer, Color, Line, Modifier, Rect, Span, Style, Stylize, Widget};
+use crate::primitives::{
+    Block, BorderType, Borders, Buffer, Color, Line, Modifier, Rect, Span, Style, Stylize, Widget,
+};
 
 use lune_ai::session::{AiSessionId, SessionState};
 
@@ -276,19 +278,114 @@ pub fn render_ai_terminal(
     }
 }
 
-/// Render a placeholder when no AI session is active.
+/// Render the bottom terminal panel with Block border and tab labels.
+///
+/// `sessions` is the list of all sessions for the tab labels.
+/// `session` is the currently active session to render.
+/// `is_focused` controls the border color (focused vs unfocused).
+#[allow(clippy::cast_possible_truncation)]
+pub fn render_terminal_panel(
+    area: Rect,
+    buf: &mut Buffer,
+    sessions: &[(AiSessionId, String, SessionState)],
+    session: Option<&lune_ai::AiSession>,
+    is_focused: bool,
+    theme: &Theme,
+) {
+    if area.height < 2 || area.width < 4 {
+        return;
+    }
+
+    // Build tab labels as the Block title.
+    let title_spans = build_tab_title_spans(
+        sessions,
+        session.map(lune_ai::AiSession::id),
+        is_focused,
+        theme,
+    );
+
+    let border_color = if is_focused {
+        theme.border_focused
+    } else {
+        theme.border_unfocused
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .title(Line::from(title_spans))
+        .style(Style::new().fg(border_color));
+    let inner = block.inner(area);
+    block.render(area, buf);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    match session {
+        Some(session) => {
+            let show_cursor = session.state() == SessionState::Running;
+            render_terminal_screen(
+                inner,
+                buf,
+                session.screen(),
+                session.scroll_offset(),
+                show_cursor,
+                theme,
+            );
+        }
+        None => {
+            render_no_session_placeholder(inner, buf, theme);
+        }
+    }
+}
+
+/// Build styled `Span`s for the Block title line showing session tabs.
+fn build_tab_title_spans(
+    sessions: &[(AiSessionId, String, SessionState)],
+    active_id: Option<AiSessionId>,
+    is_focused: bool,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    if sessions.is_empty() {
+        return vec![Span::styled(" Terminal ".to_string(), Style::default())];
+    }
+
+    let mut spans = Vec::with_capacity(sessions.len() * 2 + 1);
+    spans.push(Span::from(" "));
+    for (i, (id, name, state)) in sessions.iter().enumerate() {
+        let is_active = Some(*id) == active_id;
+        let state_mark = match state {
+            SessionState::Running => " [Running]",
+            SessionState::Starting => " [Starting]",
+            SessionState::Exited(0) => " [Exited]",
+            SessionState::Exited(_) | SessionState::Error => " [Exited !]",
+        };
+        let label = format!("{name}{state_mark}");
+        let style = if is_active {
+            if is_focused {
+                theme.tab_active_focused
+            } else {
+                theme.tab_active_unfocused
+            }
+        } else {
+            theme.tab_inactive
+        };
+        spans.push(Span::styled(label, style));
+        if i + 1 < sessions.len() {
+            spans.push(Span::styled(" │ ".to_string(), Style::default().dim()));
+        }
+    }
+    spans.push(Span::from(" "));
+    spans
+}
+
+/// Render a placeholder when no session is active.
 fn render_no_session_placeholder(area: Rect, buf: &mut Buffer, theme: &Theme) {
-    let header_bg = theme.selection_bg;
-    let header_style = Style::default().fg(theme.fg).bg(header_bg);
-
-    // Header.
-    Line::from(Span::styled(" AI Terminal", header_style))
-        .render(Rect::new(area.x, area.y, area.width, 1), buf);
-
-    if area.height > 2 {
-        let msg = " Press Ctrl+` to start a session";
+    if area.height > 1 {
+        let msg = "Press Ctrl+J to start a session";
         Line::from(Span::styled(msg, Style::default().fg(theme.fg_dim)))
-            .render(Rect::new(area.x, area.y + 2, area.width, 1), buf);
+            .render(Rect::new(area.x, area.y + 1, area.width, 1), buf);
     }
 }
 
@@ -326,11 +423,30 @@ mod tests {
         let theme = Theme::dark();
         render_ai_terminal(area, &mut buf, &[], None, &theme);
 
-        // Should contain "AI Terminal" in the header.
-        let header_text: String = (0..area.width)
+        // No sessions: should show the placeholder on row 1.
+        let row1_text: String = (0..area.width)
+            .filter_map(|x| buf.cell((x, 1)).map(|c| c.symbol().to_string()))
+            .collect();
+        assert!(
+            row1_text.contains("Ctrl+J"),
+            "Expected placeholder with Ctrl+J in row 1: {row1_text:?}"
+        );
+    }
+
+    #[test]
+    fn render_terminal_panel_with_block() {
+        let (area, mut buf) = make_buffer(60, 15);
+        let theme = Theme::dark();
+        render_terminal_panel(area, &mut buf, &[], None, true, &theme);
+
+        // Should contain "Terminal" in the title.
+        let top_row: String = (0..area.width)
             .filter_map(|x| buf.cell((x, 0)).map(|c| c.symbol().to_string()))
             .collect();
-        assert!(header_text.contains("AI Terminal"));
+        assert!(
+            top_row.contains("Terminal"),
+            "Expected 'Terminal' in top row: {top_row:?}"
+        );
     }
 
     #[test]

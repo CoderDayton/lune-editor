@@ -87,13 +87,12 @@ impl Keymap {
             (BackTab, CTRL_SHIFT, AppCommand::PrevTab),
             // Panel toggles
             (Char('b'), CTRL, AppCommand::ToggleFileTree),
-            (Char('`'), CTRL, AppCommand::ToggleAiPanel),
-            (Char('G'), CTRL_SHIFT, AppCommand::ToggleGitPanel),
+            (Char('j'), CTRL, AppCommand::ToggleTerminal),
+            (Char('g'), CTRL, AppCommand::ToggleGitPanel),
             // AI commands
             (Char('A'), CTRL_SHIFT, AppCommand::AiAskSelection),
             (Char('R'), CTRL_SHIFT, AppCommand::AiRefactorFile),
             (Char('I'), CTRL_SHIFT, AppCommand::AiSummarizeChanges),
-            (Char('N'), CTRL_SHIFT, AppCommand::AiOpenClientPicker),
             (Char('W'), CTRL_SHIFT, AppCommand::AiCloseSession),
             (Char(']'), CTRL, AppCommand::AiNextSession),
             (Char('['), CTRL, AppCommand::AiPrevSession),
@@ -324,7 +323,7 @@ pub fn parse_command(s: &str) -> Option<AppCommand> {
         "prev_tab" => Some(AppCommand::PrevTab),
         // Panels
         "toggle_file_tree" => Some(AppCommand::ToggleFileTree),
-        "toggle_ai_panel" => Some(AppCommand::ToggleAiPanel),
+        "toggle_terminal" | "toggle_ai_panel" => Some(AppCommand::ToggleTerminal),
         "toggle_git_panel" => Some(AppCommand::ToggleGitPanel),
         "command_palette" | "open_command_palette" => Some(AppCommand::OpenCommandPalette),
         "toggle_hidden_files" => Some(AppCommand::ToggleHiddenFiles),
@@ -524,8 +523,12 @@ mod tests {
             Some(AppCommand::ToggleFileTree)
         );
         assert_eq!(
+            parse_command("toggle_terminal"),
+            Some(AppCommand::ToggleTerminal)
+        );
+        assert_eq!(
             parse_command("toggle_ai_panel"),
-            Some(AppCommand::ToggleAiPanel)
+            Some(AppCommand::ToggleTerminal)
         );
         assert_eq!(
             parse_command("toggle_git_panel"),

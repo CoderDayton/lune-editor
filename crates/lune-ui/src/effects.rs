@@ -11,11 +11,10 @@ use tachyonfx::{Duration, Effect, EffectManager, fx};
 use crate::focus::PanelId;
 
 /// Unique identifier for managed effects.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EffectId {
-    /// Focus glow on a specific panel.
-    FocusGlow(PanelId),
     /// Brightness pulse when new diff hunks appear in Live Mode.
+    #[default]
     DiffPulse,
     /// Color-cycling indicator when an AI session is actively processing.
     AiThinking,
@@ -23,12 +22,6 @@ pub enum EffectId {
     Notification,
     /// Brightness flash on panel open/close transitions.
     PanelTransition(PanelId),
-}
-
-impl Default for EffectId {
-    fn default() -> Self {
-        Self::FocusGlow(PanelId::default())
-    }
 }
 
 /// Configuration for individual effect types.
@@ -54,8 +47,6 @@ impl EffectConfig {
 pub struct EffectDefs {
     /// Master switch: when `false`, all effects are disabled.
     pub all_enabled: bool,
-    /// Focus glow on active panel borders.
-    pub focus_glow: EffectConfig,
     /// Brightness pulse when new diff hunks arrive in Live Mode.
     pub diff_pulse: EffectConfig,
     /// Color-cycling AI thinking indicator on the status bar.
@@ -70,7 +61,6 @@ impl Default for EffectDefs {
     fn default() -> Self {
         Self {
             all_enabled: true,
-            focus_glow: EffectConfig::new(0.35),
             diff_pulse: EffectConfig::new(0.25),
             ai_thinking: EffectConfig::new(0.6),
             notification_flash: EffectConfig::new(0.20),
@@ -145,36 +135,6 @@ impl LuneEffects {
     pub fn process(&mut self, elapsed: std::time::Duration, buf: &mut Buffer, area: Rect) {
         let dur: Duration = elapsed.into();
         self.manager.process_effects(dur, buf, area);
-    }
-
-    /// Start the focus glow effect on a panel's area.
-    ///
-    /// Cancels any existing focus glow on other panels first.
-    pub fn start_focus_glow(&mut self, panel: PanelId, accent: Color) {
-        if !self.defs.is_enabled(&self.defs.focus_glow) {
-            return;
-        }
-
-        let intensity = self.defs.focus_glow.intensity;
-        let effect = create_focus_glow(intensity, accent);
-        self.manager
-            .add_unique_effect(EffectId::FocusGlow(panel), effect);
-    }
-
-    /// Returns the focus glow intensity if the effect is enabled, else `0.0`.
-    #[must_use]
-    pub const fn focus_glow_intensity(&self) -> f32 {
-        if self.defs.is_enabled(&self.defs.focus_glow) {
-            self.defs.focus_glow.intensity
-        } else {
-            0.0
-        }
-    }
-
-    /// Cancel focus glow on a specific panel.
-    pub fn cancel_focus_glow(&mut self, panel: PanelId) {
-        self.manager
-            .cancel_unique_effect(EffectId::FocusGlow(panel));
     }
 
     // ── Step 3: Live Mode diff pulse ──────────────────────────────────
@@ -282,23 +242,6 @@ impl Default for LuneEffects {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Create a focus glow effect placeholder.
-///
-/// The actual border painting is handled directly in `app.rs` `render()`
-/// using panel-specific areas from the layout splits. This effect exists
-/// solely so the effect manager reports `is_running() == true` for the
-/// focus glow lifecycle (start/cancel on focus change).
-fn create_focus_glow(_intensity: f32, _accent: Color) -> Effect {
-    // No-op: just tick without painting. The direct paint_inner_border()
-    // calls in the render function handle correct per-panel areas.
-    let noop = fx::effect_fn_buf(
-        (),
-        Duration::from_millis(16),
-        move |_state: &mut (), _ctx, _buf: &mut Buffer| {},
-    );
-    fx::never_complete(noop)
 }
 
 // ── Step 3: Diff pulse ──────────────────────────────────────────────────
@@ -424,47 +367,6 @@ fn brighten_area(buf: &mut Buffer, area: Rect, tr: u8, tg: u8, tb: u8, t: f32) {
     }
 }
 
-/// Paint the inner border cells of a rect with an accent color blend.
-///
-/// This brightens/blends the existing cell colors toward the accent color
-/// at the given intensity (0.0 = no change, 1.0 = fully accent-colored).
-pub fn paint_inner_border(buf: &mut Buffer, area: Rect, accent: Color, intensity: f32) {
-    let Color::Rgb(ar, ag, ab) = accent else {
-        return; // Only RGB accent colors supported for blending.
-    };
-    if area.width < 2 || area.height < 2 {
-        return;
-    }
-
-    let x0 = area.x;
-    let x1 = area.x + area.width - 1;
-    let y0 = area.y;
-    let y1 = area.y + area.height - 1;
-    let bg_t = intensity * 0.5;
-
-    // PERF: iterate only the 4 border segments instead of the full w×h cell grid.
-    // For an 80×40 area: 3200 cells visited → 2×80+2×38 = 236 (~93% reduction).
-
-    // Top and bottom rows (includes all 4 corners).
-    for x in x0..=x1 {
-        let cell = &mut buf[(x, y0)];
-        cell.fg = blend_toward(cell.fg, ar, ag, ab, intensity);
-        cell.bg = blend_toward(cell.bg, ar, ag, ab, bg_t);
-        let cell = &mut buf[(x, y1)];
-        cell.fg = blend_toward(cell.fg, ar, ag, ab, intensity);
-        cell.bg = blend_toward(cell.bg, ar, ag, ab, bg_t);
-    }
-    // Left and right columns (excluding corners already painted above).
-    for y in (y0 + 1)..y1 {
-        let cell = &mut buf[(x0, y)];
-        cell.fg = blend_toward(cell.fg, ar, ag, ab, intensity);
-        cell.bg = blend_toward(cell.bg, ar, ag, ab, bg_t);
-        let cell = &mut buf[(x1, y)];
-        cell.fg = blend_toward(cell.fg, ar, ag, ab, intensity);
-        cell.bg = blend_toward(cell.bg, ar, ag, ab, bg_t);
-    }
-}
-
 /// Blend a color toward the target RGB at the given intensity.
 pub fn blend_toward(color: Color, tr: u8, tg: u8, tb: u8, t: f32) -> Color {
     let (sr, sg, sb) = match color {
@@ -506,19 +408,17 @@ mod tests {
     #[test]
     fn effect_id_ordering() {
         // EffectId must be Ord for BTreeMap keying.
-        let a = EffectId::FocusGlow(PanelId::Editor);
-        let b = EffectId::FocusGlow(PanelId::FileTree);
+        let a = EffectId::PanelTransition(PanelId::Editor);
+        let b = EffectId::PanelTransition(PanelId::FileTree);
         assert_ne!(a, b);
     }
 
     #[test]
     fn effect_id_variants_distinct() {
-        let focus = EffectId::FocusGlow(PanelId::Editor);
         let diff = EffectId::DiffPulse;
         let ai = EffectId::AiThinking;
         let notif = EffectId::Notification;
         let panel = EffectId::PanelTransition(PanelId::FileTree);
-        assert_ne!(focus, diff);
         assert_ne!(diff, ai);
         assert_ne!(ai, notif);
         assert_ne!(notif, panel);
@@ -553,38 +453,6 @@ mod tests {
         let fx = LuneEffects::new();
         assert!(!fx.is_running());
         assert!(fx.all_enabled());
-    }
-
-    #[test]
-    fn start_and_cancel_focus_glow() {
-        let mut fx = LuneEffects::new();
-        fx.start_focus_glow(PanelId::Editor, Color::Rgb(80, 130, 220));
-        assert!(fx.is_running());
-        fx.cancel_focus_glow(PanelId::Editor);
-        // Note: cancel_unique_effect may not immediately stop the effect
-        // (it marks it for removal on next process), but the API call works.
-    }
-
-    #[test]
-    fn paint_inner_border_small_rect() {
-        let area = Rect::new(0, 0, 4, 3);
-        let mut buf = Buffer::empty(area);
-        // Fill with a known color.
-        for cell in &mut buf.content {
-            cell.fg = Color::Rgb(100, 100, 100);
-            cell.bg = Color::Rgb(30, 30, 30);
-        }
-        paint_inner_border(&mut buf, area, Color::Rgb(80, 130, 220), 0.5);
-
-        // Border cell (0,0) should be blended.
-        let corner = &buf[(0u16, 0u16)];
-        assert!(matches!(corner.fg, Color::Rgb(_, _, _)));
-
-        // Interior cell (1,1) should NOT be blended (it's not on the border for a 4x3 rect).
-        // For 4x3: x=0..3, y=0..2. Border: x==0, x==3, y==0, y==2.
-        // Cell (1,1) is interior only if width>2 AND height>2, which it is (4>2, 3>2).
-        let interior = &buf[(1u16, 1u16)];
-        assert_eq!(interior.fg, Color::Rgb(100, 100, 100));
     }
 
     // ── Step 3: Diff pulse tests ──────────────────────────────────────
@@ -675,9 +543,6 @@ mod tests {
         assert!(!fx.all_enabled());
 
         // Trying to start effects should be a no-op.
-        fx.start_focus_glow(PanelId::Editor, Color::Rgb(80, 130, 220));
-        assert!(!fx.is_running());
-
         fx.start_diff_pulse(Color::Rgb(60, 180, 80));
         assert!(!fx.is_running());
 
@@ -707,7 +572,7 @@ mod tests {
         let defs = EffectDefs::disabled();
         assert!(!defs.all_enabled);
         // Individual configs still have defaults, just globally off.
-        assert!(defs.focus_glow.enabled);
+        assert!(defs.diff_pulse.enabled);
     }
 
     #[test]
@@ -721,14 +586,6 @@ mod tests {
         // Other effects still work.
         fx.start_ai_thinking(Color::Rgb(80, 130, 220));
         assert!(fx.is_running());
-    }
-
-    #[test]
-    fn focus_glow_intensity_when_disabled() {
-        let mut fx = LuneEffects::new();
-        assert!(fx.focus_glow_intensity() > 0.0);
-        fx.disable_all();
-        assert!(fx.focus_glow_intensity().abs() < f32::EPSILON);
     }
 
     // ── Brighten area tests ───────────────────────────────────────────

@@ -145,8 +145,6 @@ pub struct AppState {
     pub effects: LuneEffects,
     /// Timestamp of the last render (for effect timing).
     last_render: Instant,
-    /// Whether focus has changed and the focus glow needs updating.
-    focus_dirty: bool,
     /// AI session manager.
     pub ai_manager: AiManager,
     /// Last known AI terminal size (to avoid redundant resizes).
@@ -179,6 +177,8 @@ pub enum DragBorder {
     Left,
     /// Dragging the editor / right panel border.
     Right,
+    /// Dragging the upper content / bottom panel border.
+    Bottom,
 }
 
 impl AppState {
@@ -223,7 +223,6 @@ impl AppState {
             last_click: None,
             effects: LuneEffects::new(),
             last_render: Instant::now(),
-            focus_dirty: true,
             ai_manager: AiManager::new(),
             last_ai_term_size: None,
             live_mode: LiveModeController::new(),
@@ -431,6 +430,32 @@ impl AppState {
                 }
             }
         }
+
+        // Restore undo/redo history per buffer.
+        if let Some(db) = &self.state_db {
+            for &id in &self.tabs {
+                let file_path = self.registry.get(id).and_then(|b| b.file_path.clone());
+                let Some(file_path) = file_path else {
+                    continue;
+                };
+                match db.get_undo(&root, &file_path) {
+                    Ok(Some(undo_state)) => {
+                        if let Some(buf) = self.registry.get_mut(id) {
+                            if !buf.restore_undo_state(undo_state) {
+                                log::debug!(
+                                    "undo state hash mismatch for {}, discarding",
+                                    file_path.display()
+                                );
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        log::warn!("failed to load undo state for {}: {e}", file_path.display());
+                    }
+                }
+            }
+        }
     }
 
     /// Collect dirty buffer contents for crash recovery autosave.
@@ -450,6 +475,33 @@ impl AppState {
                 Some((path, buf.text()))
             })
             .collect()
+    }
+
+    /// Persist undo/redo history for all open buffers to sled.
+    ///
+    /// Called on clean exit. Iterates open buffers, extracts undo state
+    /// (capped at 1000 transactions), and writes each to the database.
+    pub fn persist_undo_history(&self) {
+        let (Some(db), Some(ws)) = (self.state_db(), self.workspace.as_ref()) else {
+            return;
+        };
+        let root = ws.root().to_path_buf();
+
+        for &id in &self.tabs {
+            let Some(buf) = self.registry.get(id) else {
+                continue;
+            };
+            let Some(ref file_path) = buf.file_path else {
+                continue;
+            };
+            let state = buf.extract_undo_state(1000);
+            if state.undo_entries.is_empty() && state.redo_entries.is_empty() {
+                continue;
+            }
+            if let Err(e) = db.put_undo(&root, file_path, &state) {
+                log::warn!("persist undo for {}: {e}", file_path.display());
+            }
+        }
     }
 
     /// Open a file and make it the active tab.
@@ -853,7 +905,7 @@ pub fn init(_state: &mut AppState, _global: &mut LuneGlobal) -> Result<(), Error
 }
 
 /// Render the UI.
-#[allow(clippy::cast_possible_truncation)] // TUI coords always fit u16
+#[allow(clippy::cast_possible_truncation, clippy::too_many_lines)] // TUI coords always fit u16
 pub fn render(
     area: Rect,
     buf: &mut Buffer,
@@ -888,11 +940,11 @@ pub fn render(
     let splits = layout::compute_layout(area, &state.layout);
     state.last_splits = Some(splits.clone());
 
-    // Resize AI sessions to match the right panel area (minus header row).
-    if let Some(right_area) = splits.right {
-        if state.layout.show_ai_panel && !state.ai_manager.is_empty() {
-            let term_rows = right_area.height.saturating_sub(1).max(1);
-            let term_cols = right_area.width.max(1);
+    // Resize AI sessions to match the bottom panel area (minus border).
+    if let Some(bottom_area) = splits.bottom {
+        if state.layout.show_bottom_panel && !state.ai_manager.is_empty() {
+            let term_rows = bottom_area.height.saturating_sub(2).max(1);
+            let term_cols = bottom_area.width.saturating_sub(2).max(1);
             let new_size = AiTermSize::new(term_rows, term_cols);
             if state.last_ai_term_size != Some(new_size) {
                 state.ai_manager.resize_all(new_size);
@@ -919,7 +971,7 @@ pub fn render(
     let editor_focused = state.focus.is_focused(PanelId::Editor);
     render_center(splits.center, buf, state, editor_focused);
 
-    // Render right panel (git panel, AI terminal, or placeholder).
+    // Render right panel (git only).
     if let Some(right_area) = splits.right {
         if state.layout.show_git_panel {
             let gp_focused = state.focus.is_focused(PanelId::GitPanel);
@@ -930,46 +982,27 @@ pub fn render(
                 gp_focused,
                 &state.theme,
             );
-        } else if state.layout.show_ai_panel {
-            let sessions = state.ai_manager.session_list();
-            let session = state.ai_manager.active_session();
-            terminal::render_ai_terminal(right_area, buf, &sessions, session, &state.theme);
         }
+    }
+
+    // Render bottom panel (terminal).
+    if let Some(bottom_area) = splits.bottom {
+        let term_focused = state.focus.is_focused(PanelId::Terminal);
+        let sessions = state.ai_manager.session_list();
+        let session = state.ai_manager.active_session();
+        terminal::render_terminal_panel(
+            bottom_area,
+            buf,
+            &sessions,
+            session,
+            term_focused,
+            &state.theme,
+        );
     }
 
     // Render status bar.
     let status_state = state.build_status_line();
     status_bar::render_status_bar(splits.status, buf, &status_state, &state.theme);
-
-    // Update focus glow if focus changed.
-    if state.focus_dirty {
-        state.focus_dirty = false;
-        update_focus_glow(state);
-    }
-
-    // Apply focus glow effect on the active panel.
-    let active_panel = state.focus.active();
-    let accent = state.theme.accent;
-    let intensity = state.effects.focus_glow_intensity();
-
-    if intensity > 0.0 {
-        match active_panel {
-            PanelId::FileTree => {
-                if let Some(left_area) = splits.left {
-                    crate::effects::paint_inner_border(buf, left_area, accent, intensity);
-                }
-            }
-            PanelId::Editor => {
-                crate::effects::paint_inner_border(buf, splits.center, accent, intensity);
-            }
-            PanelId::AiTerminal | PanelId::GitPanel => {
-                if let Some(right_area) = splits.right {
-                    crate::effects::paint_inner_border(buf, right_area, accent, intensity);
-                }
-            }
-            _ => {}
-        }
-    }
 
     // Apply managed visual effects (tachyonfx) — modifies buffer cells in-place.
     let now = Instant::now();
@@ -1028,6 +1061,7 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
             .map(|ds| editor_pane::build_live_overlay(ds, &state.theme))
     });
 
+    let elapsed = Instant::now().duration_since(state.last_render);
     editor_pane::render_editor_pane(
         content_area,
         buf,
@@ -1039,6 +1073,7 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         active_gutter,
         live_overlay.as_ref(),
         &state.theme,
+        elapsed,
     );
 }
 
@@ -1249,7 +1284,7 @@ fn handle_terminal_event(ct_event: &CtEvent, state: &mut AppState) -> Control<Ap
         }
         CtEvent::Mouse(mouse_event) => handle_mouse_event(*mouse_event, state),
         CtEvent::Resize(_, _) => {
-            // Resize AI sessions to match the new right panel area.
+            // Resize AI sessions to match the new bottom panel area.
             // The actual area will be computed on the next render;
             // for now, trigger a re-render so the layout recomputes.
             Control::Changed
@@ -1280,10 +1315,9 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
     if key.code == KeyCode::Esc {
         if state.focus.is_focused(PanelId::FileTree)
             || state.focus.is_focused(PanelId::GitPanel)
-            || state.focus.is_focused(PanelId::AiTerminal)
+            || state.focus.is_focused(PanelId::Terminal)
         {
             state.focus.focus(PanelId::Editor);
-            state.focus_dirty = true;
             return Control::Changed;
         }
         // Escape always enters Normal mode (blocks typing regardless of vim_enabled).
@@ -1293,7 +1327,7 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
     }
 
     // 4. Route to AI terminal if focused (forward all keys to PTY).
-    if state.focus.is_focused(PanelId::AiTerminal) {
+    if state.focus.is_focused(PanelId::Terminal) {
         return handle_ai_terminal_key(key, state);
     }
 
@@ -1307,7 +1341,21 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         return handle_git_panel_key(key, state);
     }
 
-    // 5. Route based on vim mode.
+    // 5. Page Up / Page Down — universal navigation across all editor modes.
+    //    Cursor jumps immediately; viewport lerps smoothly via ScrollAnimation.
+    if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
+        state.viewport.begin_scroll_animation();
+        let page_size = state
+            .last_editor_content_area
+            .map_or(20, |a| (a.height as usize).saturating_sub(2).max(1));
+        let extend = key.modifiers.contains(KeyModifiers::SHIFT);
+        return apply_motion(state, |buf| match key.code {
+            KeyCode::PageUp => buf.move_up_n(page_size, extend),
+            _ => buf.move_down_n(page_size, extend),
+        });
+    }
+
+    // 6. Route based on vim mode.
     // Normal/Insert switching always works (Escape → Normal blocks typing,
     // `i` → Insert allows typing). Visual, VisualLine, and Command modes
     // are only reachable when vim keybindings are enabled; if somehow
@@ -1363,7 +1411,6 @@ fn handle_overlay_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
 fn close_overlay(state: &mut AppState) {
     state.overlay.close();
     state.focus.focus_return();
-    state.focus_dirty = true;
 }
 
 /// Handle keys in the command palette.
@@ -1545,7 +1592,7 @@ fn handle_file_tree_set_expanded(state: &mut AppState, expanded: bool) -> Contro
 /// Cycle focus to the next visible pane.
 ///
 /// Builds a list of currently visible panels and advances to the next one
-/// in order: `FileTree` → Editor → `AiTerminal` → `GitPanel` → (wrap).
+/// in order: `FileTree` → `Editor` → `Terminal` → `GitPanel` → (wrap).
 /// Panels that are not visible are skipped.
 fn handle_focus_next_pane(state: &mut AppState) {
     let mut panes = Vec::with_capacity(4);
@@ -1553,8 +1600,8 @@ fn handle_focus_next_pane(state: &mut AppState) {
         panes.push(PanelId::FileTree);
     }
     panes.push(PanelId::Editor);
-    if state.layout.show_ai_panel {
-        panes.push(PanelId::AiTerminal);
+    if state.layout.show_bottom_panel {
+        panes.push(PanelId::Terminal);
     }
     if state.layout.show_git_panel {
         panes.push(PanelId::GitPanel);
@@ -1566,37 +1613,6 @@ fn handle_focus_next_pane(state: &mut AppState) {
         .position(|&p| p == current)
         .map_or(PanelId::Editor, |idx| panes[(idx + 1) % panes.len()]);
     state.focus.set_active(next);
-    state.focus_dirty = true;
-}
-
-/// Update the focus glow effect based on the currently focused panel.
-///
-/// Starts a glow on the newly focused panel and cancels glows on all
-/// other panels. Only applies to main content panels (`FileTree`, `Editor`,
-/// `GitPanel`) — overlays like `CommandPalette` don't get glow effects.
-fn update_focus_glow(state: &mut AppState) {
-    let active = state.focus.active();
-    let accent = state.theme.accent;
-
-    // Cancel all existing panel glows.
-    for &panel in &[
-        PanelId::FileTree,
-        PanelId::Editor,
-        PanelId::AiTerminal,
-        PanelId::GitPanel,
-    ] {
-        if panel != active {
-            state.effects.cancel_focus_glow(panel);
-        }
-    }
-
-    // Start glow on the active panel (if it's a content panel).
-    match active {
-        PanelId::FileTree | PanelId::Editor | PanelId::AiTerminal | PanelId::GitPanel => {
-            state.effects.start_focus_glow(active, accent);
-        }
-        _ => {} // Overlays/status bar don't get glow.
-    }
 }
 
 // ── Git panel key handling ────────────────────────────────────────
@@ -1769,9 +1785,12 @@ fn start_ai_session_with_context(state: &mut AppState) {
     let size = state
         .last_splits
         .as_ref()
-        .and_then(|s| s.right)
+        .and_then(|s| s.bottom)
         .map_or_else(AiTermSize::default, |r| {
-            AiTermSize::new(r.height.saturating_sub(1).max(1), r.width.max(1))
+            AiTermSize::new(
+                r.height.saturating_sub(2).max(1),
+                r.width.saturating_sub(2).max(1),
+            )
         });
     let client_name = kind.display_name().to_string();
     match state
@@ -1799,9 +1818,12 @@ fn handle_ai_new_session(kind: AiClientKind, state: &mut AppState) -> Control<Ap
     let size = state
         .last_splits
         .as_ref()
-        .and_then(|s| s.right)
+        .and_then(|s| s.bottom)
         .map_or_else(AiTermSize::default, |r| {
-            AiTermSize::new(r.height.saturating_sub(1).max(1), r.width.max(1))
+            AiTermSize::new(
+                r.height.saturating_sub(2).max(1),
+                r.width.saturating_sub(2).max(1),
+            )
         });
     let client_name = kind.display_name().to_string();
     match state
@@ -1810,18 +1832,17 @@ fn handle_ai_new_session(kind: AiClientKind, state: &mut AppState) -> Control<Ap
     {
         Ok(_id) => {
             log::info!("Started AI session: {client_name}");
-            if !state.layout.show_ai_panel {
-                state.layout.toggle_ai_panel();
+            if !state.layout.show_bottom_panel {
+                state.layout.toggle_bottom_panel();
             }
-            state.focus.focus(PanelId::AiTerminal);
-            state.focus_dirty = true;
+            state.focus.focus(PanelId::Terminal);
         }
         Err(e) => {
             // Spawn failed (binary not found or PTY error) — close silently.
             log::warn!("AI session launch failed ({client_name}): {e}");
             // If the panel was opened optimistically, close it again.
-            if state.layout.show_ai_panel && state.ai_manager.is_empty() {
-                state.layout.show_ai_panel = false;
+            if state.layout.show_bottom_panel && state.ai_manager.is_empty() {
+                state.layout.show_bottom_panel = false;
             }
         }
     }
@@ -1831,14 +1852,13 @@ fn handle_ai_new_session(kind: AiClientKind, state: &mut AppState) -> Control<Ap
 /// Ensure the AI panel is open and focused, starting a context-aware
 /// session if none exists.
 fn ensure_ai_panel_open(state: &mut AppState) {
-    if !state.layout.show_ai_panel {
-        state.layout.toggle_ai_panel();
+    if !state.layout.show_bottom_panel {
+        state.layout.toggle_bottom_panel();
     }
     if state.ai_manager.is_empty() {
         start_ai_session_with_context(state);
     }
-    state.focus.focus(PanelId::AiTerminal);
-    state.focus_dirty = true;
+    state.focus.focus(PanelId::Terminal);
 }
 
 /// Send a prompt string to the active AI session's PTY.
@@ -2105,7 +2125,7 @@ fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             Control::Continue
         }
         MouseEventKind::ScrollUp => {
-            if state.focus.is_focused(PanelId::AiTerminal) {
+            if state.focus.is_focused(PanelId::Terminal) {
                 if let Some(session) = state.ai_manager.active_session_mut() {
                     session.scroll_up(3);
                 }
@@ -2115,7 +2135,7 @@ fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             Control::Changed
         }
         MouseEventKind::ScrollDown => {
-            if state.focus.is_focused(PanelId::AiTerminal) {
+            if state.focus.is_focused(PanelId::Terminal) {
                 if let Some(session) = state.ai_manager.active_session_mut() {
                     session.scroll_down(3);
                 }
@@ -2154,12 +2174,15 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             state.dragging_border = Some(DragBorder::Right);
             return Control::Continue;
         }
+        if layout::is_on_bottom_border(splits, row) {
+            state.dragging_border = Some(DragBorder::Bottom);
+            return Control::Continue;
+        }
 
         // File tree area.
         if let Some(left_area) = splits.left {
             if point_in_rect(col, row, left_area) {
                 state.focus.focus(PanelId::FileTree);
-                state.focus_dirty = true;
                 let now = Instant::now();
                 let is_double = state.last_click.is_some_and(|(t, c, r)| {
                     c == col && r == row && now.duration_since(t).as_millis() < 500
@@ -2181,18 +2204,16 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             if let Some(right_area) = splits.right {
                 if point_in_rect(col, row, right_area) {
                     state.focus.focus(PanelId::GitPanel);
-                    state.focus_dirty = true;
                     return Control::Changed;
                 }
             }
         }
 
-        // AI terminal area.
-        if state.layout.show_ai_panel {
-            if let Some(right_area) = splits.right {
-                if point_in_rect(col, row, right_area) {
-                    state.focus.focus(PanelId::AiTerminal);
-                    state.focus_dirty = true;
+        // Terminal (bottom panel) area.
+        if state.layout.show_bottom_panel {
+            if let Some(bottom_area) = splits.bottom {
+                if point_in_rect(col, row, bottom_area) {
+                    state.focus.focus(PanelId::Terminal);
                     return Control::Changed;
                 }
             }
@@ -2235,7 +2256,6 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             has_live,
         ) {
             state.focus.set_active(PanelId::Editor);
-            state.focus_dirty = true;
             if let Some(buf) = state.active_buf_mut() {
                 let clamped_line = pos.line.min(buf.line_count().saturating_sub(1));
                 let clamped_col = pos.col.min(buf.line_len(clamped_line).saturating_sub(1));
@@ -2287,6 +2307,14 @@ fn handle_mouse_drag(mouse: MouseEvent, state: &mut AppState) -> Control<AppEven
         DragBorder::Right => {
             let right_pct = 100u16.saturating_sub(pct);
             state.layout.set_right_panel_width_pct(right_pct);
+        }
+        DragBorder::Bottom => {
+            let total_height = splits.status.y + splits.status.height;
+            if total_height > 0 {
+                let bottom_pct = ((u32::from(total_height.saturating_sub(mouse.row))) * 100
+                    / u32::from(total_height)) as u16;
+                state.layout.set_bottom_panel_height_pct(bottom_pct);
+            }
         }
     }
 
@@ -2457,7 +2485,7 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
         }
         // Panel toggles and focus.
         AppCommand::ToggleFileTree
-        | AppCommand::ToggleAiPanel
+        | AppCommand::ToggleTerminal
         | AppCommand::ToggleGitPanel
         | AppCommand::FocusNextPane
         | AppCommand::OpenCommandPalette
@@ -2518,9 +2546,8 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             if let Some(id) = state.ai_manager.active_id() {
                 state.ai_manager.close_session(id);
                 if state.ai_manager.is_empty() {
-                    state.layout.show_ai_panel = false;
+                    state.layout.show_bottom_panel = false;
                     state.focus.set_active(PanelId::Editor);
-                    state.focus_dirty = true;
                 }
             }
             Control::Changed
@@ -2590,28 +2617,26 @@ fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEv
             } else {
                 state.focus.set_active(PanelId::Editor);
             }
-            state.focus_dirty = true;
             state
                 .effects
                 .start_panel_transition(PanelId::FileTree, state.theme.accent);
             Control::Changed
         }
-        AppCommand::ToggleAiPanel => {
-            state.layout.toggle_ai_panel();
-            if state.layout.show_ai_panel {
+        AppCommand::ToggleTerminal => {
+            state.layout.toggle_bottom_panel();
+            if state.layout.show_bottom_panel {
                 if state.ai_manager.is_empty() {
                     // No session yet — ask which client to open.
                     state.overlay.open_ai_client_picker();
                 } else {
-                    state.focus.focus(PanelId::AiTerminal);
+                    state.focus.focus(PanelId::Terminal);
                 }
             } else {
                 state.focus.set_active(PanelId::Editor);
             }
-            state.focus_dirty = true;
             state
                 .effects
-                .start_panel_transition(PanelId::AiTerminal, state.theme.accent);
+                .start_panel_transition(PanelId::Terminal, state.theme.accent);
             Control::Changed
         }
         AppCommand::ToggleGitPanel => {
@@ -2623,7 +2648,6 @@ fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEv
             } else {
                 state.focus.set_active(PanelId::Editor);
             }
-            state.focus_dirty = true;
             state
                 .effects
                 .start_panel_transition(PanelId::GitPanel, state.theme.accent);
@@ -2636,7 +2660,6 @@ fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEv
         AppCommand::OpenCommandPalette => {
             state.overlay.open_command_palette();
             state.focus.focus(PanelId::CommandPalette);
-            state.focus_dirty = true;
             Control::Changed
         }
         AppCommand::OpenFilePicker => {
@@ -2646,7 +2669,6 @@ fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEv
             );
             state.overlay.open_file_picker(&start_dir);
             state.focus.focus(PanelId::CommandPalette); // Reuse overlay focus
-            state.focus_dirty = true;
             Control::Changed
         }
         _ => Control::Continue,
@@ -2752,7 +2774,6 @@ fn handle_open_file(path: &std::path::Path, state: &mut AppState) -> Control<App
     match state.open_file(path) {
         Ok(_) => {
             state.focus.focus(PanelId::Editor);
-            state.focus_dirty = true;
             state.status_message = format!("Opened: {}", path.display());
         }
         Err(e) => {
@@ -2903,7 +2924,6 @@ fn handle_git_discard(state: &mut AppState) -> Control<AppEvent> {
         AppCommand::GitDiscardConfirmed(file.path),
     );
     state.focus.focus(PanelId::CommandPalette); // Use overlay focus
-    state.focus_dirty = true;
     Control::Changed
 }
 
@@ -3523,12 +3543,29 @@ mod tests {
     // ── AI command handlers ─────────────────────────────────────────
 
     #[test]
+    fn command_toggle_git_panel() {
+        let mut state = AppState::new();
+        assert!(!state.layout.show_git_panel);
+
+        let r = handle_command(&AppCommand::ToggleGitPanel, &mut state);
+        assert!(matches!(r, Control::Changed));
+        assert!(state.layout.show_git_panel);
+        assert!(state.focus.is_focused(PanelId::GitPanel));
+
+        // Toggle off.
+        let r = handle_command(&AppCommand::ToggleGitPanel, &mut state);
+        assert!(matches!(r, Control::Changed));
+        assert!(!state.layout.show_git_panel);
+        assert!(state.focus.is_focused(PanelId::Editor));
+    }
+
+    #[test]
     fn ai_ask_selection_opens_panel() {
         let mut state = AppState::new();
         let result = handle_ai_ask_selection(&mut state);
         assert!(matches!(result, Control::Changed));
         // Always opens the AI panel regardless of whether text is selected.
-        assert!(state.layout.show_ai_panel);
+        assert!(state.layout.show_bottom_panel);
     }
 
     #[test]

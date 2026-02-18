@@ -2,13 +2,13 @@
 source: crates/lune-ui/tests/snapshot_widgets.rs
 expression: buffer_to_text(&buf)
 ---
- lune-editor                 │
-▼ src                        │
-    main.rs M                │
-    lib.rs                   │
-    utils.rs A               │
-▶ tests                      │
-  Cargo.toml ?               │
-  README.md                  │
-                             │
-                             │
+┌ lune-editor ───────────────┐
+│▼ src                       │
+│    main.rs M               │
+│    lib.rs                  │
+│    utils.rs A              │
+│▶ tests                     │
+│  Cargo.toml ?              │
+│  README.md                 │
+│                            │
+└────────────────────────────┘

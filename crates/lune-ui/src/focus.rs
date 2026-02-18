@@ -12,8 +12,8 @@ pub enum PanelId {
     /// The main editor pane.
     #[default]
     Editor,
-    /// The AI terminal panel.
-    AiTerminal,
+    /// The bottom terminal panel.
+    Terminal,
     /// The git panel.
     GitPanel,
     /// The command palette overlay.

@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use crate::primitives::{Block, Borders, Buffer, Line, Modifier, Rect, Span, Style, Widget};
+use crate::primitives::{Block, Buffer, Line, Modifier, Rect, Span, Style, Widget};
 
 use lune_core::workspace::{DirEntry, EntryKind, FileStatus, Workspace, flatten_tree};
 
@@ -184,8 +184,9 @@ impl FileTreeState {
     /// return the index of the clicked entry.
     #[must_use]
     pub fn hit_test(&self, row: u16, area: Rect) -> Option<usize> {
-        if row < area.y + 1 {
-            // Clicked on header row.
+        // Block with Borders::ALL: top border (with title) at area.y,
+        // content starts at area.y + 1, bottom border at area.y + height - 1.
+        if row <= area.y || row >= area.y + area.height.saturating_sub(1) {
             return None;
         }
         let rel_row = (row - area.y - 1) as usize;
@@ -235,34 +236,27 @@ pub fn render_file_tree(
         theme.border_unfocused
     };
 
-    // Use a ratatui Block with a right border for the panel separator.
+    // Wrap the file tree in a proper ratatui Block with a titled border.
     let border_style = Style::default().fg(accent);
-    let block = Block::default()
-        .borders(Borders::RIGHT)
-        .border_style(border_style);
-    let content_area = block.inner(area);
-    block.render(area, buf);
-    let content_width = content_area.width;
-
-    // Header row — accent color when focused.
-    let header = format!(" {workspace_name}");
-    let header_style = if is_focused {
+    let title_style = if is_focused {
         Style::default()
             .fg(theme.accent)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::BOLD)
     };
-    Line::from(Span::styled(header, header_style)).render(
-        Rect::new(content_area.x, content_area.y, content_width, 1),
-        buf,
-    );
+    let block = Block::bordered()
+        .border_style(border_style)
+        .title(Span::styled(format!(" {workspace_name} "), title_style));
+    let content_area = block.inner(area);
+    block.render(area, buf);
+    let content_width = content_area.width;
 
-    if area.height < 2 {
+    if content_area.height == 0 {
         return;
     }
 
-    let content_height = (area.height - 1) as usize;
+    let content_height = content_area.height as usize;
     state.ensure_visible(content_height);
 
     let visible_entries = state
@@ -272,7 +266,7 @@ pub fn render_file_tree(
         .take(content_height);
 
     for (i, (depth, entry)) in visible_entries.enumerate() {
-        let y = content_area.y + 1 + i as u16;
+        let y = content_area.y + i as u16;
         if y >= content_area.y + content_area.height {
             break;
         }
@@ -552,9 +546,14 @@ mod tests {
         let theme = Theme::dark();
         render_file_tree(area, &mut buf, &mut state, "my-project", true, &theme);
 
-        // Verify header is rendered.
-        let header_cell = buf.cell((1, 0)).expect("cell should exist");
-        assert_eq!(header_cell.symbol(), "m"); // " my-project" starts at col 1
+        // Verify the Block title is rendered in the top border row.
+        let top_row: String = (0..area.width)
+            .filter_map(|x| buf.cell((x, 0)).map(|c| c.symbol().to_string()))
+            .collect();
+        assert!(
+            top_row.contains("my-project"),
+            "Expected 'my-project' in top border row: {top_row:?}"
+        );
     }
 
     #[test]

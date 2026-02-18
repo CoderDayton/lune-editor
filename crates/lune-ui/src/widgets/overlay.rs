@@ -272,8 +272,8 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
         palette_cmd("Next Tab", AppCommand::NextTab),
         palette_cmd("Previous Tab", AppCommand::PrevTab),
         palette_cmd("Toggle File Tree", AppCommand::ToggleFileTree),
-        palette_cmd("Toggle AI Panel", AppCommand::ToggleAiPanel),
-        palette_cmd("New AI Session", AppCommand::AiOpenClientPicker),
+        palette_cmd("Toggle Terminal", AppCommand::ToggleTerminal),
+        palette_cmd("New Terminal Session", AppCommand::AiOpenClientPicker),
         palette_cmd("Close AI Session", AppCommand::AiCloseSession),
         palette_cmd("Next AI Session", AppCommand::AiNextSession),
         palette_cmd("Previous AI Session", AppCommand::AiPrevSession),
@@ -368,9 +368,9 @@ fn is_command_available(cmd: &str) -> bool {
 #[derive(Clone, Debug)]
 pub struct AiClientEntry {
     /// Display name.
-    pub label: &'static str,
+    pub label: String,
     /// CLI command.
-    pub command: &'static str,
+    pub command: String,
     /// Accent color for the colored bullet.
     pub color: Color,
     /// The client kind to spawn.
@@ -388,14 +388,16 @@ pub struct AiClientPickerState {
 
 impl AiClientPickerState {
     /// Scan PATH for available clients and return a ready state.
+    ///
+    /// Always appends a "System Shell" entry at the end.
     #[must_use]
     pub fn scan_available() -> Self {
-        let entries = KNOWN_CLIENTS
+        let mut entries: Vec<AiClientEntry> = KNOWN_CLIENTS
             .iter()
             .filter(|c| is_command_available(c.command))
             .map(|c| AiClientEntry {
-                label: c.label,
-                command: c.command,
+                label: c.label.to_string(),
+                command: c.command.to_string(),
                 color: c.color,
                 kind: if c.command == "claude" {
                     AiClientKind::ClaudeCode
@@ -407,6 +409,16 @@ impl AiClientPickerState {
                 },
             })
             .collect();
+
+        // Always append a system shell entry.
+        let shell_cmd = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        entries.push(AiClientEntry {
+            label: "System Shell".to_string(),
+            command: shell_cmd,
+            color: Color::Rgb(120, 200, 120),
+            kind: AiClientKind::Shell,
+        });
+
         Self {
             entries,
             selected: 0,
@@ -1340,17 +1352,17 @@ mod tests {
 
     fn claude_entry() -> AiClientEntry {
         AiClientEntry {
-            label: "Claude Code",
-            command: "claude",
+            label: "Claude Code".to_string(),
+            command: "claude".to_string(),
             color: Color::Rgb(215, 150, 60),
             kind: AiClientKind::ClaudeCode,
         }
     }
 
-    fn custom_entry(label: &'static str, command: &'static str) -> AiClientEntry {
+    fn custom_entry(label: &str, command: &str) -> AiClientEntry {
         AiClientEntry {
-            label,
-            command,
+            label: label.to_string(),
+            command: command.to_string(),
             color: Color::Rgb(80, 180, 255),
             kind: AiClientKind::Custom {
                 name: label.to_string(),
@@ -1596,15 +1608,16 @@ mod tests {
 
     #[test]
     fn scan_available_excludes_fake_commands() {
-        // With a PATH that only contains something that doesn't exist,
-        // every KNOWN_CLIENT command should be unavailable.
-        // We can't override PATH portably in a unit test, so instead we
-        // verify the filtering property: any entry returned by scan_available
-        // must correspond to a real executable.
+        // Verify the filtering property: any AI client entry returned by
+        // scan_available must correspond to a real executable (Shell is
+        // always present regardless).
         let state = AiClientPickerState::scan_available();
         for entry in &state.entries {
+            if entry.kind == AiClientKind::Shell {
+                continue; // Shell is always appended.
+            }
             assert!(
-                is_command_available(entry.command),
+                is_command_available(&entry.command),
                 "scan_available returned '{}' but is_command_available says it's absent",
                 entry.command
             );
@@ -1619,9 +1632,13 @@ mod tests {
 
     #[test]
     fn scan_available_entries_have_known_client_data() {
-        // Every returned entry must originate from KNOWN_CLIENTS.
+        // Every returned entry must originate from KNOWN_CLIENTS or be the shell.
         let state = AiClientPickerState::scan_available();
         for entry in &state.entries {
+            if entry.kind == AiClientKind::Shell {
+                assert_eq!(entry.label, "System Shell");
+                continue;
+            }
             let known = KNOWN_CLIENTS.iter().find(|k| k.command == entry.command);
             assert!(
                 known.is_some(),
@@ -1632,6 +1649,15 @@ mod tests {
             assert_eq!(entry.label, known.label);
             assert_eq!(entry.color, known.color);
         }
+    }
+
+    #[test]
+    fn scan_available_always_includes_shell() {
+        let state = AiClientPickerState::scan_available();
+        let shell = state.entries.iter().find(|e| e.kind == AiClientKind::Shell);
+        assert!(shell.is_some(), "System Shell must always be present");
+        let shell = shell.unwrap();
+        assert_eq!(shell.label, "System Shell");
     }
 
     #[test]
@@ -1648,16 +1674,19 @@ mod tests {
     }
 
     #[test]
-    fn scan_available_non_claude_entries_map_to_custom_kind() {
+    fn scan_available_non_claude_entries_map_to_custom_or_shell_kind() {
         let state = AiClientPickerState::scan_available();
         for entry in state.entries.iter().filter(|e| e.command != "claude") {
             match &entry.kind {
                 AiClientKind::Custom { name, command } => {
-                    assert_eq!(name, entry.label);
-                    assert_eq!(command, entry.command);
+                    assert_eq!(name, &entry.label);
+                    assert_eq!(command, &entry.command);
                 }
-                other => panic!(
-                    "entry '{}' should be Custom but got {:?}",
+                AiClientKind::Shell => {
+                    assert_eq!(entry.label, "System Shell");
+                }
+                other @ AiClientKind::ClaudeCode => panic!(
+                    "entry '{}' should be Custom or Shell but got {:?}",
                     entry.command, other
                 ),
             }

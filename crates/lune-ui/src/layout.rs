@@ -1,8 +1,8 @@
 //! Root layout computation.
 //!
-//! Computes the VS Code–inspired column layout: optional file tree on the left,
-//! editor in the center, optional right panel (AI terminal / git), and a status
-//! bar at the bottom.
+//! Computes the VS Code–inspired layout: optional file tree on the left,
+//! editor in the center, optional git panel on the right, optional bottom
+//! terminal panel, and a status bar at the bottom.
 
 use crate::primitives::{Constraint, Direction, Layout, Rect};
 
@@ -14,33 +14,36 @@ use crate::primitives::{Constraint, Direction, Layout, Rect};
 pub struct LayoutState {
     /// Whether the file tree sidebar is visible.
     pub show_file_tree: bool,
-    /// Whether the AI terminal panel is visible (right side).
-    pub show_ai_panel: bool,
+    /// Whether the bottom terminal panel is visible.
+    pub show_bottom_panel: bool,
     /// Whether the git panel is visible (right side).
     pub show_git_panel: bool,
     /// File tree width as a percentage of terminal width (default 20).
     pub file_tree_width_pct: u16,
     /// Right panel width as a percentage of terminal width (default 30).
     pub right_panel_width_pct: u16,
+    /// Bottom panel height as a percentage of terminal height (default 30).
+    pub bottom_panel_height_pct: u16,
 }
 
 impl Default for LayoutState {
     fn default() -> Self {
         Self {
             show_file_tree: false,
-            show_ai_panel: false,
+            show_bottom_panel: false,
             show_git_panel: false,
             file_tree_width_pct: 20,
             right_panel_width_pct: 30,
+            bottom_panel_height_pct: 30,
         }
     }
 }
 
 impl LayoutState {
-    /// Whether any right-side panel is visible.
+    /// Whether the right-side panel (git) is visible.
     #[must_use]
     pub const fn show_right_panel(&self) -> bool {
-        self.show_ai_panel || self.show_git_panel
+        self.show_git_panel
     }
 
     /// Toggle the file tree sidebar.
@@ -48,9 +51,9 @@ impl LayoutState {
         self.show_file_tree = !self.show_file_tree;
     }
 
-    /// Toggle the AI terminal panel.
-    pub const fn toggle_ai_panel(&mut self) {
-        self.show_ai_panel = !self.show_ai_panel;
+    /// Toggle the bottom terminal panel.
+    pub const fn toggle_bottom_panel(&mut self) {
+        self.show_bottom_panel = !self.show_bottom_panel;
     }
 
     /// Toggle the git panel.
@@ -79,6 +82,11 @@ impl LayoutState {
     pub const fn set_right_panel_width_pct(&mut self, pct: u16) {
         self.right_panel_width_pct = Self::clamp_pct(pct);
     }
+
+    /// Resize the bottom panel.
+    pub const fn set_bottom_panel_height_pct(&mut self, pct: u16) {
+        self.bottom_panel_height_pct = Self::clamp_pct(pct);
+    }
 }
 
 // ── Computed splits ───────────────────────────────────────────────────
@@ -90,8 +98,10 @@ pub struct LayoutSplits {
     pub left: Option<Rect>,
     /// Editor pane (center). Always present.
     pub center: Rect,
-    /// Right panel (AI terminal / git). `None` if hidden.
+    /// Right panel (git). `None` if hidden.
     pub right: Option<Rect>,
+    /// Bottom panel (terminal). `None` if hidden.
+    pub bottom: Option<Rect>,
     /// Status bar (bottom row).
     pub status: Rect,
     /// The border column between the left panel and center (for resize
@@ -100,17 +110,23 @@ pub struct LayoutSplits {
     /// The border column between center and right panel. `None` if no
     /// right panel.
     pub right_border_x: Option<u16>,
+    /// The border row between upper content and bottom panel. `None` if
+    /// no bottom panel.
+    pub bottom_border_y: Option<u16>,
 }
 
 /// Minimum width for the center editor pane.
 const MIN_CENTER_WIDTH: u16 = 20;
+
+/// Minimum height for the bottom panel.
+const MIN_BOTTOM_HEIGHT: u16 = 4;
 
 /// Status bar height (1 row).
 const STATUS_HEIGHT: u16 = 1;
 
 /// Compute the layout splits for the given terminal area and state.
 #[must_use]
-#[allow(clippy::cast_possible_truncation)] // percentage math fits u16
+#[allow(clippy::cast_possible_truncation, clippy::too_many_lines)] // percentage math fits u16
 pub fn compute_layout(area: Rect, state: &LayoutState) -> LayoutSplits {
     // Reserve the bottom row(s) for the status bar.
     let (content_area, status_area) = if area.height > STATUS_HEIGHT {
@@ -125,14 +141,43 @@ pub fn compute_layout(area: Rect, state: &LayoutState) -> LayoutSplits {
             left: None,
             center: Rect::ZERO,
             right: None,
+            bottom: None,
             status: area,
             left_border_x: None,
             right_border_x: None,
+            bottom_border_y: None,
         };
     };
 
-    // Calculate column widths.
-    let total_width = content_area.width;
+    // Split content vertically: upper (columns) + optional bottom panel.
+    let (upper_area, bottom_area, bottom_border_y) = if state.show_bottom_panel {
+        let total_height = content_area.height;
+        let bottom_h =
+            (u32::from(total_height) * u32::from(state.bottom_panel_height_pct) / 100) as u16;
+        let bottom_h = bottom_h
+            .max(MIN_BOTTOM_HEIGHT)
+            .min(total_height.saturating_sub(MIN_BOTTOM_HEIGHT));
+        let upper_h = total_height.saturating_sub(bottom_h);
+        if upper_h < MIN_BOTTOM_HEIGHT {
+            // Not enough room — skip bottom panel.
+            (content_area, None, None)
+        } else {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(upper_h), Constraint::Length(bottom_h)])
+                .split(content_area);
+            (
+                chunks[0],
+                Some(chunks[1]),
+                Some(chunks[0].y + chunks[0].height),
+            )
+        }
+    } else {
+        (content_area, None, None)
+    };
+
+    // Calculate column widths within the upper area.
+    let total_width = upper_area.width;
 
     let left_width = if state.show_file_tree {
         let w = (u32::from(total_width) * u32::from(state.file_tree_width_pct) / 100) as u16;
@@ -155,11 +200,13 @@ pub fn compute_layout(area: Rect, state: &LayoutState) -> LayoutSplits {
     if center_width < MIN_CENTER_WIDTH {
         return LayoutSplits {
             left: None,
-            center: content_area,
+            center: upper_area,
             right: None,
+            bottom: bottom_area,
             status: status_area,
             left_border_x: None,
             right_border_x: None,
+            bottom_border_y,
         };
     }
 
@@ -171,7 +218,7 @@ pub fn compute_layout(area: Rect, state: &LayoutState) -> LayoutSplits {
             let chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(center_width)])
-                .split(content_area);
+                .split(upper_area);
             (None, chunks[0], None)
         }
         (true, false) => {
@@ -181,7 +228,7 @@ pub fn compute_layout(area: Rect, state: &LayoutState) -> LayoutSplits {
                     Constraint::Length(left_width),
                     Constraint::Length(center_width),
                 ])
-                .split(content_area);
+                .split(upper_area);
             (Some(chunks[0]), chunks[1], None)
         }
         (false, true) => {
@@ -191,7 +238,7 @@ pub fn compute_layout(area: Rect, state: &LayoutState) -> LayoutSplits {
                     Constraint::Length(center_width),
                     Constraint::Length(right_width),
                 ])
-                .split(content_area);
+                .split(upper_area);
             (None, chunks[0], Some(chunks[1]))
         }
         (true, true) => {
@@ -202,7 +249,7 @@ pub fn compute_layout(area: Rect, state: &LayoutState) -> LayoutSplits {
                     Constraint::Length(center_width),
                     Constraint::Length(right_width),
                 ])
-                .split(content_area);
+                .split(upper_area);
             (Some(chunks[0]), chunks[1], Some(chunks[2]))
         }
     };
@@ -214,9 +261,11 @@ pub fn compute_layout(area: Rect, state: &LayoutState) -> LayoutSplits {
         left,
         center,
         right,
+        bottom: bottom_area,
         status: status_area,
         left_border_x,
         right_border_x,
+        bottom_border_y,
     }
 }
 
@@ -235,6 +284,16 @@ pub const fn is_on_left_border(splits: &LayoutSplits, col: u16) -> bool {
 pub const fn is_on_right_border(splits: &LayoutSplits, col: u16) -> bool {
     if let Some(bx) = splits.right_border_x {
         col.abs_diff(bx) <= 1
+    } else {
+        false
+    }
+}
+
+/// Check if a mouse row is on the bottom panel border.
+#[must_use]
+pub const fn is_on_bottom_border(splits: &LayoutSplits, row: u16) -> bool {
+    if let Some(by) = splits.bottom_border_y {
+        row.abs_diff(by) <= 1
     } else {
         false
     }
@@ -279,7 +338,7 @@ mod tests {
     #[test]
     fn layout_with_right_panel() {
         let state = LayoutState {
-            show_ai_panel: true,
+            show_git_panel: true,
             right_panel_width_pct: 30,
             ..Default::default()
         };
@@ -295,7 +354,7 @@ mod tests {
     fn layout_with_all_panels() {
         let state = LayoutState {
             show_file_tree: true,
-            show_ai_panel: true,
+            show_git_panel: true,
             file_tree_width_pct: 20,
             right_panel_width_pct: 30,
             ..Default::default()
@@ -322,7 +381,7 @@ mod tests {
     fn layout_too_narrow_hides_panels() {
         let state = LayoutState {
             show_file_tree: true,
-            show_ai_panel: true,
+            show_git_panel: true,
             file_tree_width_pct: 40,
             right_panel_width_pct: 40,
             ..Default::default()
@@ -349,7 +408,7 @@ mod tests {
     fn border_detection() {
         let state = LayoutState {
             show_file_tree: true,
-            show_ai_panel: true,
+            show_git_panel: true,
             file_tree_width_pct: 25,
             right_panel_width_pct: 25,
             ..Default::default()
@@ -381,12 +440,65 @@ mod tests {
         state.toggle_file_tree();
         assert!(!state.show_file_tree);
 
-        assert!(!state.show_ai_panel);
-        state.toggle_ai_panel();
-        assert!(state.show_ai_panel);
-        assert!(state.show_right_panel());
+        assert!(!state.show_bottom_panel);
+        state.toggle_bottom_panel();
+        assert!(state.show_bottom_panel);
 
         state.toggle_git_panel();
         assert!(state.show_git_panel);
+        assert!(state.show_right_panel());
+    }
+
+    #[test]
+    fn layout_with_bottom_panel() {
+        let state = LayoutState {
+            show_bottom_panel: true,
+            bottom_panel_height_pct: 30,
+            ..Default::default()
+        };
+        let splits = compute_layout(area(100, 40), &state);
+
+        assert!(splits.bottom.is_some());
+        let bottom = splits.bottom.unwrap();
+        assert!(bottom.height >= 4); // MIN_BOTTOM_HEIGHT
+        assert_eq!(splits.center.width, 100);
+        assert!(splits.center.height + bottom.height + 1 == 40); // +1 for status
+        assert!(splits.bottom_border_y.is_some());
+    }
+
+    #[test]
+    fn layout_with_all_panels_and_bottom() {
+        let state = LayoutState {
+            show_file_tree: true,
+            show_git_panel: true,
+            show_bottom_panel: true,
+            file_tree_width_pct: 20,
+            right_panel_width_pct: 25,
+            bottom_panel_height_pct: 30,
+        };
+        let splits = compute_layout(area(100, 40), &state);
+
+        assert!(splits.left.is_some());
+        assert!(splits.right.is_some());
+        assert!(splits.bottom.is_some());
+        let bottom = splits.bottom.unwrap();
+        // Upper area should be the rest after bottom + status.
+        let upper_h = 40 - 1 - bottom.height;
+        assert_eq!(splits.center.height, upper_h);
+    }
+
+    #[test]
+    fn bottom_border_detection() {
+        let state = LayoutState {
+            show_bottom_panel: true,
+            bottom_panel_height_pct: 30,
+            ..Default::default()
+        };
+        let splits = compute_layout(area(100, 40), &state);
+
+        let by = splits.bottom_border_y.unwrap();
+        assert!(is_on_bottom_border(&splits, by));
+        assert!(is_on_bottom_border(&splits, by + 1));
+        assert!(!is_on_bottom_border(&splits, by + 2));
     }
 }

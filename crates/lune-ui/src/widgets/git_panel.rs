@@ -5,7 +5,7 @@
 //! discarding (`d`), opening diff view (`Enter`), and committing (`c`).
 
 use crate::primitives::{
-    Block, Borders, Buffer, Color, Line, Modifier, Rect, Span, Style, Stylize, Widget,
+    Block, BorderType, Borders, Buffer, Color, Line, Modifier, Rect, Span, Style, Stylize, Widget,
 };
 
 use lune_core::workspace::FileStatus;
@@ -199,18 +199,8 @@ pub fn render_git_panel(
         theme.border_unfocused
     };
 
-    // Use a ratatui Block with a left border for the panel separator.
+    // Wrap the git panel in a proper ratatui Block with a titled border.
     let border_style = Style::default().fg(accent);
-    let block = Block::default()
-        .borders(Borders::LEFT)
-        .border_style(border_style);
-    let content_area = block.inner(area);
-    block.render(area, buf);
-    let content_x = content_area.x;
-    let content_width = content_area.width;
-
-    // Title bar — accent color when focused.
-    let title = " SOURCE CONTROL";
     let title_style = if is_focused {
         Style::default()
             .fg(theme.accent)
@@ -218,18 +208,25 @@ pub fn render_git_panel(
     } else {
         Style::default().add_modifier(Modifier::BOLD)
     };
-    Line::from(Span::styled(title, title_style))
-        .render(Rect::new(content_x, area.y, content_width, 1), buf);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .border_style(border_style)
+        .title(Span::styled(" SOURCE CONTROL ", title_style));
+    let content_area = block.inner(area);
+    block.render(area, buf);
+    let content_x = content_area.x;
+    let content_width = content_area.width;
 
     if state.status.is_none() || state.entries.is_empty() {
-        if area.height > 1 {
+        if content_area.height > 0 {
             Line::from(Span::from(" No changes").dim())
-                .render(Rect::new(content_x, area.y + 1, content_width, 1), buf);
+                .render(Rect::new(content_x, content_area.y, content_width, 1), buf);
         }
         return;
     }
 
-    let list_area_height = (area.height - 1) as usize; // -1 for title
+    let list_area_height = content_area.height as usize;
 
     // Ensure selected entry is visible.
     if state.selected < state.scroll {
@@ -240,7 +237,7 @@ pub fn render_git_panel(
 
     for row in 0..list_area_height {
         let entry_idx = state.scroll + row;
-        let y = area.y + 1 + row as u16;
+        let y = content_area.y + row as u16;
 
         if entry_idx >= state.entries.len() {
             break;
