@@ -4,7 +4,7 @@ use anyhow::Result;
 use lune_core::config::ConfigPaths;
 use lune_core::recovery::RecoveryState;
 use lune_core::settings::{CliOverrides, Settings};
-use lune_core::workspace_state::{RecentWorkspaces, WorkspaceState};
+use lune_core::state_db::{self, StateDb};
 
 /// Print usage information.
 fn print_help() {
@@ -108,6 +108,25 @@ fn main() -> Result<()> {
         }
     }
 
+    // Open the sled-backed state database and run TOML migration.
+    let state_db = config_paths.as_ref().and_then(|cp| {
+        match StateDb::open(&cp.state_dir()) {
+            Ok(db) => {
+                // One-time migration from legacy TOML files.
+                match state_db::migrate_toml_state(&cp.state_dir(), &db) {
+                    Ok(n) if n > 0 => eprintln!("Migrated {n} state file(s) from TOML to sled"),
+                    Err(e) => eprintln!("Warning: TOML migration error: {e}"),
+                    _ => {}
+                }
+                Some(db)
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to open state database: {e}");
+                None
+            }
+        }
+    });
+
     // Load settings from global config.
     let mut settings = config_paths.as_ref().map_or_else(Settings::default, |cp| {
         Settings::load(&cp.settings_file()).unwrap_or_else(|e| {
@@ -128,6 +147,11 @@ fn main() -> Result<()> {
     // Store config paths on state for use by settings commands and recovery.
     if let Some(ref cp) = config_paths {
         state.set_config_paths(cp.clone());
+    }
+
+    // Attach the state database for reactive persistence.
+    if let Some(db) = state_db {
+        state.set_state_db(db);
     }
 
     // Load user themes from config dir.
@@ -173,25 +197,31 @@ fn main() -> Result<()> {
     check_crash_recovery(&mut state, config_paths.as_ref());
 
     // Restore saved workspace state (open files, cursors, layout).
-    restore_workspace_state(&mut state, config_paths.as_ref(), workspace_root.as_deref());
+    restore_workspace_state(&mut state, workspace_root.as_deref());
 
     // Record this workspace in recent workspaces.
-    record_recent_workspace(config_paths.as_ref(), workspace_root.as_deref());
+    record_recent_workspace(&state, workspace_root.as_deref());
 
     // Run the TUI event loop.
     lune_ui::app::run(&mut state)?;
 
     // ── Clean exit: persist state ──────────────────────────────────────
 
-    if let Some(ref cp) = config_paths {
-        // Save workspace state.
+    // Final save of workspace state to sled (complements debounced saves).
+    if let Some(db) = state.state_db() {
         if let Some(mut wstate) = state.collect_workspace_state() {
-            if let Err(e) = wstate.save(cp) {
+            wstate.touch();
+            if let Err(e) = db.put_workspace(&wstate) {
                 eprintln!("Warning: failed to save workspace state: {e}");
             }
         }
+        if let Err(e) = db.flush() {
+            eprintln!("Warning: failed to flush state database: {e}");
+        }
+    }
 
-        // Clear crash recovery (clean exit = no recovery needed).
+    // Clear crash recovery (clean exit = no recovery needed).
+    if let Some(ref cp) = config_paths {
         if let Err(e) = RecoveryState::clear(cp) {
             eprintln!("Warning: failed to clear recovery state: {e}");
         }
@@ -318,16 +348,12 @@ fn check_crash_recovery(state: &mut lune_ui::app::AppState, config_paths: Option
 }
 
 /// Restore saved workspace state (open files, cursor positions, layout).
-fn restore_workspace_state(
-    state: &mut lune_ui::app::AppState,
-    config_paths: Option<&ConfigPaths>,
-    workspace_root: Option<&Path>,
-) {
-    let (Some(cp), Some(root)) = (config_paths, workspace_root) else {
+fn restore_workspace_state(state: &mut lune_ui::app::AppState, workspace_root: Option<&Path>) {
+    let (Some(db), Some(root)) = (state.state_db(), workspace_root) else {
         return;
     };
 
-    match WorkspaceState::load(root, cp) {
+    match db.get_workspace(root) {
         Ok(Some(mut wstate)) => {
             wstate.prune_missing_files();
             state.restore_workspace_state(&wstate);
@@ -340,16 +366,16 @@ fn restore_workspace_state(
 }
 
 /// Record the current workspace in the recent workspaces index.
-fn record_recent_workspace(config_paths: Option<&ConfigPaths>, workspace_root: Option<&Path>) {
-    let (Some(cp), Some(root)) = (config_paths, workspace_root) else {
+fn record_recent_workspace(state: &lune_ui::app::AppState, workspace_root: Option<&Path>) {
+    let (Some(db), Some(root)) = (state.state_db(), workspace_root) else {
         return;
     };
 
-    match RecentWorkspaces::load(cp) {
+    match db.get_recent() {
         Ok(mut recent) => {
             recent.record_open(root);
             recent.prune_missing();
-            if let Err(e) = recent.save(cp) {
+            if let Err(e) = db.put_recent(&recent) {
                 eprintln!("Warning: failed to save recent workspaces: {e}");
             }
         }

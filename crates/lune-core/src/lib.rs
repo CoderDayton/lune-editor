@@ -19,6 +19,7 @@ pub mod recovery;
 pub mod registry;
 pub mod search;
 pub mod settings;
+pub mod state_db;
 pub mod undo;
 pub mod watcher;
 pub mod workspace;
@@ -38,6 +39,7 @@ pub mod prelude {
     pub use crate::registry::BufferRegistry;
     pub use crate::search::SearchState;
     pub use crate::settings::{CliOverrides, Settings};
+    pub use crate::state_db::StateDb;
     pub use crate::workspace::Workspace;
     pub use crate::workspace_state::{RecentWorkspaces, WorkspaceState};
 }

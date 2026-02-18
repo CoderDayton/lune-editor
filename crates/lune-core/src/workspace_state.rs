@@ -1,18 +1,11 @@
-//! Workspace state persistence.
+//! Workspace state types for session persistence.
 //!
-//! Saves and restores workspace session state — open files, cursor
-//! positions, and layout — across editor restarts.
+//! Defines the data structures for workspace session state — open files,
+//! cursor positions, and layout.  Actual persistence is handled by
+//! [`crate::state_db::StateDb`] (sled-backed).
 //!
-//! State files are stored per-workspace in the config state directory,
-//! keyed by a deterministic hash of the workspace root path.
-//!
-//! # File layout
-//!
-//! ```text
-//! ~/.config/lune-editor/state/
-//! ├── workspaces.toml           # recent workspaces index
-//! └── <workspace-hash>.toml     # per-workspace session state
-//! ```
+//! The structs derive `Serialize`/`Deserialize` for both bincode (sled)
+//! and TOML (migration from legacy format).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,14 +13,15 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::ConfigPaths;
-
 // ── Per-workspace state ───────────────────────────────────────────────
 
 /// Persistent workspace session state.
 ///
-/// Serialized to `<state_dir>/<hash>.toml` on clean exit and loaded on
-/// startup when opening the same workspace directory.
+/// Stored in the sled database keyed by workspace root path hash.
+/// Use [`StateDb::put_workspace`] / [`StateDb::get_workspace`] for I/O.
+///
+/// [`StateDb::put_workspace`]: crate::state_db::StateDb::put_workspace
+/// [`StateDb::get_workspace`]: crate::state_db::StateDb::get_workspace
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct WorkspaceState {
@@ -81,54 +75,21 @@ impl WorkspaceState {
 
     /// Compute the deterministic state filename for a workspace root.
     ///
-    /// Uses a simple hash of the canonical path to avoid filesystem-unsafe
-    /// characters in the filename.
+    /// Used by the TOML-to-sled migration path.  New code should use
+    /// [`StateDb`] directly.
+    ///
+    /// [`StateDb`]: crate::state_db::StateDb
     #[must_use]
     pub fn state_filename(root: &Path) -> String {
         let hash = path_hash(root);
         format!("{hash:016x}.toml")
     }
 
-    /// Save this workspace state to the config state directory.
-    ///
-    /// # Errors
-    /// Returns an error if the file cannot be written.
-    pub fn save(&mut self, config: &ConfigPaths) -> anyhow::Result<()> {
+    /// Update the `last_saved` timestamp to now.
+    pub fn touch(&mut self) {
         self.last_saved = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-
-        let state_dir = config.state_dir();
-        std::fs::create_dir_all(&state_dir)?;
-
-        let filename = Self::state_filename(&self.root);
-        let path = state_dir.join(&filename);
-
-        let content = toml::to_string_pretty(self)?;
-        let tmp_path = path.with_extension("toml.tmp");
-        std::fs::write(&tmp_path, content)?;
-        std::fs::rename(&tmp_path, &path)?;
-
-        Ok(())
-    }
-
-    /// Load workspace state for the given root from the config state directory.
-    ///
-    /// Returns `None` if no saved state exists for this workspace.
-    ///
-    /// # Errors
-    /// Returns an error if the file exists but cannot be read or parsed.
-    pub fn load(root: &Path, config: &ConfigPaths) -> anyhow::Result<Option<Self>> {
-        let filename = Self::state_filename(root);
-        let path = config.state_dir().join(&filename);
-
-        if !path.exists() {
-            return Ok(None);
-        }
-
-        let content = std::fs::read_to_string(&path)?;
-        let state: Self = toml::from_str(&content)?;
-        Ok(Some(state))
     }
 
     /// Strip open files that no longer exist on disk.
@@ -152,8 +113,11 @@ impl WorkspaceState {
 
 /// Recently opened workspaces index.
 ///
-/// Stored at `<state_dir>/workspaces.toml` and used for quick workspace
-/// switching in future sessions.
+/// Stored in the sled database under the `recent:workspaces` key.
+/// Use [`StateDb::put_recent`] / [`StateDb::get_recent`] for I/O.
+///
+/// [`StateDb::put_recent`]: crate::state_db::StateDb::put_recent
+/// [`StateDb::get_recent`]: crate::state_db::StateDb::get_recent
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct RecentWorkspaces {
@@ -208,39 +172,6 @@ impl RecentWorkspaces {
     /// Prune entries whose workspace roots no longer exist on disk.
     pub fn prune_missing(&mut self) {
         self.entries.retain(|e| e.root.exists());
-    }
-
-    /// Load the recent workspaces index from the config state directory.
-    ///
-    /// Returns default (empty) if no saved index exists.
-    ///
-    /// # Errors
-    /// Returns an error if the file exists but cannot be read or parsed.
-    pub fn load(config: &ConfigPaths) -> anyhow::Result<Self> {
-        let path = config.state_dir().join("workspaces.toml");
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        let content = std::fs::read_to_string(&path)?;
-        let recent: Self = toml::from_str(&content)?;
-        Ok(recent)
-    }
-
-    /// Save the recent workspaces index to the config state directory.
-    ///
-    /// # Errors
-    /// Returns an error if the file cannot be written.
-    pub fn save(&self, config: &ConfigPaths) -> anyhow::Result<()> {
-        let state_dir = config.state_dir();
-        std::fs::create_dir_all(&state_dir)?;
-
-        let path = state_dir.join("workspaces.toml");
-        let content = toml::to_string_pretty(self)?;
-        let tmp_path = path.with_extension("toml.tmp");
-        std::fs::write(&tmp_path, content)?;
-        std::fs::rename(&tmp_path, &path)?;
-
-        Ok(())
     }
 }
 
@@ -313,7 +244,16 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_toml() {
+    fn touch_updates_timestamp() {
+        let mut ws = WorkspaceState::new(PathBuf::from("/tmp/touch-test"));
+        assert_eq!(ws.last_saved, 0);
+        ws.touch();
+        assert!(ws.last_saved > 0);
+    }
+
+    #[test]
+    fn toml_roundtrip_for_migration() {
+        // TOML round-trip is still needed for the migration path.
         let mut ws = WorkspaceState::new(PathBuf::from("/tmp/test"));
         ws.open_files = vec![PathBuf::from("src/main.rs"), PathBuf::from("Cargo.toml")];
         ws.active_file = Some(PathBuf::from("src/main.rs"));
@@ -328,7 +268,6 @@ mod tests {
 
     #[test]
     fn partial_toml_fills_defaults() {
-        // An empty TOML with just root should work — missing fields get defaults
         let toml_str = r#"
 root = "/tmp/test"
 "#;
@@ -336,52 +275,6 @@ root = "/tmp/test"
         assert_eq!(ws.root, PathBuf::from("/tmp/test"));
         assert!(ws.open_files.is_empty());
         assert!(ws.show_file_tree);
-    }
-
-    #[test]
-    fn save_and_load_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = ConfigPaths::from_root(dir.path().to_path_buf());
-        config.ensure_dirs().unwrap();
-
-        let workspace_root = dir.path().join("project");
-        std::fs::create_dir_all(&workspace_root).unwrap();
-
-        // Create some files to keep after pruning.
-        let src_dir = workspace_root.join("src");
-        std::fs::create_dir_all(&src_dir).unwrap();
-        std::fs::write(src_dir.join("main.rs"), "fn main() {}").unwrap();
-
-        let mut ws = WorkspaceState::new(workspace_root.clone());
-        ws.open_files = vec![PathBuf::from("src/main.rs")];
-        ws.active_file = Some(PathBuf::from("src/main.rs"));
-        ws.cursor_positions
-            .insert(PathBuf::from("src/main.rs"), (42, 7));
-        ws.show_file_tree = false;
-
-        ws.save(&config).unwrap();
-
-        let loaded = WorkspaceState::load(&workspace_root, &config)
-            .unwrap()
-            .expect("should find saved state");
-        assert_eq!(loaded.root, workspace_root);
-        assert_eq!(loaded.open_files, vec![PathBuf::from("src/main.rs")]);
-        assert_eq!(loaded.active_file, Some(PathBuf::from("src/main.rs")));
-        assert_eq!(
-            loaded.cursor_positions.get(Path::new("src/main.rs")),
-            Some(&(42, 7))
-        );
-        assert!(!loaded.show_file_tree);
-    }
-
-    #[test]
-    fn load_nonexistent_returns_none() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = ConfigPaths::from_root(dir.path().to_path_buf());
-        config.ensure_dirs().unwrap();
-
-        let result = WorkspaceState::load(Path::new("/nonexistent/workspace"), &config).unwrap();
-        assert!(result.is_none());
     }
 
     #[test]
@@ -432,21 +325,6 @@ root = "/tmp/test"
         assert_eq!(recent.entries.len(), 3);
         // Most recent should be first
         assert_eq!(recent.entries[0].root, PathBuf::from("/tmp/ws4"));
-    }
-
-    #[test]
-    fn recent_workspaces_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = ConfigPaths::from_root(dir.path().to_path_buf());
-        config.ensure_dirs().unwrap();
-
-        let mut recent = RecentWorkspaces::default();
-        recent.record_open(dir.path()); // use existing path
-
-        recent.save(&config).unwrap();
-        let loaded = RecentWorkspaces::load(&config).unwrap();
-        assert_eq!(loaded.entries.len(), 1);
-        assert_eq!(loaded.entries[0].root, dir.path());
     }
 
     #[test]
