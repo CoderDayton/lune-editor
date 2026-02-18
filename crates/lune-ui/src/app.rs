@@ -931,8 +931,9 @@ pub fn render(
                 &state.theme,
             );
         } else if state.layout.show_ai_panel {
+            let sessions = state.ai_manager.session_list();
             let session = state.ai_manager.active_session();
-            terminal::render_ai_terminal(right_area, buf, session, &state.theme);
+            terminal::render_ai_terminal(right_area, buf, &sessions, session, &state.theme);
         }
     }
 
@@ -1357,6 +1358,7 @@ fn handle_overlay_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
             }
         }
         Some(overlay::OverlayKind::FilePicker) => handle_file_picker_key(key, state),
+        Some(overlay::OverlayKind::AiClientPicker) => handle_ai_client_picker_key(key, state),
         None => Control::Continue,
     }
 }
@@ -1448,6 +1450,33 @@ fn handle_file_picker_enter(state: &mut AppState) -> Control<AppEvent> {
         let path = entry.path;
         close_overlay(state);
         Control::Event(AppEvent::Command(AppCommand::OpenFile(path)))
+    }
+}
+
+/// Handle key events for the AI client picker overlay.
+fn handle_ai_client_picker_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    match key.code {
+        KeyCode::Esc => {
+            close_overlay(state);
+            Control::Changed
+        }
+        KeyCode::Enter => {
+            if let Some(kind) = state.overlay.ai_client_picker.selected_kind() {
+                close_overlay(state);
+                Control::Event(AppEvent::Command(AppCommand::AiNewSession(kind)))
+            } else {
+                Control::Continue
+            }
+        }
+        KeyCode::Up => {
+            state.overlay.ai_client_picker.select_prev();
+            Control::Changed
+        }
+        KeyCode::Down => {
+            state.overlay.ai_client_picker.select_next();
+            Control::Changed
+        }
+        _ => Control::Continue,
     }
 }
 
@@ -1711,40 +1740,61 @@ fn f_key_escape(n: u8) -> Vec<u8> {
     }
 }
 
-/// Start a default shell session in the AI manager.
+/// Resolve the AI client kind from the current settings.
+///
+/// Falls back to `ClaudeCode` when no settings are cached.
+fn ai_client_from_settings(state: &AppState) -> AiClientKind {
+    let cmd = state
+        .cached_settings
+        .as_ref()
+        .map(|s| s.ai.default_client.as_str())
+        .unwrap_or("claude");
+    match cmd {
+        "claude" => AiClientKind::ClaudeCode,
+        other => AiClientKind::Custom {
+            name: other.to_string(),
+            command: other.to_string(),
+        },
+    }
+}
+
+/// Start an AI client session using the configured default client.
 fn start_default_ai_session(state: &mut AppState) {
+    let kind = ai_client_from_settings(state);
     let cwd = state.workspace.as_ref().map(|ws| ws.root().to_path_buf());
     let size = state
         .last_splits
         .as_ref()
         .and_then(|s| s.right)
         .map_or_else(AiTermSize::default, |r| {
-            // Subtract 1 row for the header.
             AiTermSize::new(r.height.saturating_sub(1).max(1), r.width.max(1))
         });
+    let client_name = kind.display_name().to_string();
     match state
         .ai_manager
-        .new_session(AiClientKind::Shell, cwd.as_deref(), &HashMap::new(), size)
+        .new_session(kind, cwd.as_deref(), &HashMap::new(), size)
     {
         Ok(_id) => {
-            log::info!("Started AI shell session");
+            log::info!("Started AI session: {client_name}");
         }
         Err(e) => {
             log::error!("Failed to start AI session: {e}");
             state.overlay.notify(
-                format!("Failed to start shell: {e}"),
+                format!("Failed to launch {client_name}: {e}"),
                 crate::widgets::overlay::NotificationLevel::Error,
             );
         }
     }
 }
 
-/// Start an AI session with editor context environment variables.
+/// Start an AI client session with editor context environment variables.
 ///
-/// Collects the current editor context and passes it as `LUNE_CTX_*`
-/// env vars to the new shell session. If a session is already running,
-/// reuses it (context env vars are only set at spawn time).
+/// Collects the current editor context (active file, cursor, selection,
+/// git status, open tabs) and passes it as `LUNE_CTX_*` env vars to the
+/// spawned process. The AI client uses its own auth — no API key is
+/// configured in Lune.
 fn start_ai_session_with_context(state: &mut AppState) {
+    let kind = ai_client_from_settings(state);
     let ctx = state.collect_editor_context();
     let env = ctx.to_env_vars();
     let cwd = state.workspace.as_ref().map(|ws| ws.root().to_path_buf());
@@ -1755,21 +1805,55 @@ fn start_ai_session_with_context(state: &mut AppState) {
         .map_or_else(AiTermSize::default, |r| {
             AiTermSize::new(r.height.saturating_sub(1).max(1), r.width.max(1))
         });
+    let client_name = kind.display_name().to_string();
     match state
         .ai_manager
-        .new_session(AiClientKind::Shell, cwd.as_deref(), &env, size)
+        .new_session(kind, cwd.as_deref(), &env, size)
     {
         Ok(_id) => {
-            log::info!("Started AI session with editor context");
+            log::info!("Started AI session ({client_name}) with editor context");
         }
         Err(e) => {
             log::error!("Failed to start AI session: {e}");
             state.overlay.notify(
-                format!("Failed to start shell: {e}"),
+                format!("Failed to launch {client_name}: {e}"),
                 NotificationLevel::Error,
             );
         }
     }
+}
+
+/// Start a new AI session with the given client kind and open the panel.
+fn handle_ai_new_session(kind: AiClientKind, state: &mut AppState) -> Control<AppEvent> {
+    let ctx = state.collect_editor_context();
+    let env = ctx.to_env_vars();
+    let cwd = state.workspace.as_ref().map(|ws| ws.root().to_path_buf());
+    let size = state
+        .last_splits
+        .as_ref()
+        .and_then(|s| s.right)
+        .map_or_else(AiTermSize::default, |r| {
+            AiTermSize::new(r.height.saturating_sub(1).max(1), r.width.max(1))
+        });
+    let client_name = kind.display_name().to_string();
+    match state.ai_manager.new_session(kind, cwd.as_deref(), &env, size) {
+        Ok(_id) => {
+            log::info!("Started AI session: {client_name}");
+            if !state.layout.show_ai_panel {
+                state.layout.toggle_ai_panel();
+            }
+            state.focus.focus(PanelId::AiTerminal);
+            state.focus_dirty = true;
+        }
+        Err(e) => {
+            log::error!("Failed to start AI session: {e}");
+            state.overlay.notify(
+                format!("Failed to launch {client_name}: {e}"),
+                NotificationLevel::Error,
+            );
+        }
+    }
+    Control::Changed
 }
 
 /// Ensure the AI panel is open and focused, starting a context-aware
@@ -1800,28 +1884,12 @@ fn send_prompt_to_ai(state: &mut AppState, prompt: &str) {
 
 /// Handle "Ask AI about selection" command.
 ///
-/// Collects the current selection, opens the AI panel, and sends
-/// a contextual prompt.
+/// Opens the AI panel and focuses it. If there is an active text selection,
+/// it is automatically included as `LUNE_CTX_SELECTION` in the session
+/// environment so the AI client sees it as context. The user then types
+/// their prompt directly into the session.
 fn handle_ai_ask_selection(state: &mut AppState) -> Control<AppEvent> {
-    let ctx = state.collect_editor_context();
-    let selection_text = ctx
-        .selection
-        .as_ref()
-        .map(|s| s.text.clone())
-        .unwrap_or_default();
-
-    if selection_text.is_empty() {
-        state.overlay.notify(
-            "No text selected — select code first",
-            NotificationLevel::Warning,
-        );
-        return Control::Changed;
-    }
-
     ensure_ai_panel_open(state);
-
-    let prompt = format!("Explain this code:\n\n{selection_text}");
-    send_prompt_to_ai(state, &prompt);
     Control::Changed
 }
 
@@ -2468,6 +2536,42 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
         AppCommand::AiAskSelection => handle_ai_ask_selection(state),
         AppCommand::AiRefactorFile => handle_ai_refactor_file(state),
         AppCommand::AiSummarizeChanges => handle_ai_summarize_changes(state),
+        AppCommand::AiOpenClientPicker => {
+            state.overlay.open_ai_client_picker();
+            Control::Changed
+        }
+        AppCommand::AiNewSession(kind) => handle_ai_new_session(kind.clone(), state),
+        AppCommand::AiCloseSession => {
+            if let Some(id) = state.ai_manager.active_id() {
+                state.ai_manager.close_session(id);
+                if state.ai_manager.is_empty() {
+                    state.layout.show_ai_panel = false;
+                    state.focus.set_active(PanelId::Editor);
+                    state.focus_dirty = true;
+                }
+            }
+            Control::Changed
+        }
+        AppCommand::AiNextSession => {
+            let ids: Vec<_> = state.ai_manager.session_list().into_iter().map(|(id, _, _)| id).collect();
+            if let Some(active) = state.ai_manager.active_id() {
+                if let Some(pos) = ids.iter().position(|&id| id == active) {
+                    let next = ids[(pos + 1) % ids.len()];
+                    state.ai_manager.switch_session(next);
+                }
+            }
+            Control::Changed
+        }
+        AppCommand::AiPrevSession => {
+            let ids: Vec<_> = state.ai_manager.session_list().into_iter().map(|(id, _, _)| id).collect();
+            if let Some(active) = state.ai_manager.active_id() {
+                if let Some(pos) = ids.iter().position(|&id| id == active) {
+                    let prev = if pos == 0 { ids.len() - 1 } else { pos - 1 };
+                    state.ai_manager.switch_session(ids[prev]);
+                }
+            }
+            Control::Changed
+        }
         // Live Mode commands.
         AppCommand::ToggleLiveMode => handle_toggle_live_mode(state),
         // Theme commands.
@@ -2512,11 +2616,12 @@ fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEv
         AppCommand::ToggleAiPanel => {
             state.layout.toggle_ai_panel();
             if state.layout.show_ai_panel {
-                // Start a shell session on first toggle if none exist.
                 if state.ai_manager.is_empty() {
-                    start_default_ai_session(state);
+                    // No session yet — ask which client to open.
+                    state.overlay.open_ai_client_picker();
+                } else {
+                    state.focus.focus(PanelId::AiTerminal);
                 }
-                state.focus.focus(PanelId::AiTerminal);
             } else {
                 state.focus.set_active(PanelId::Editor);
             }
@@ -3435,12 +3540,12 @@ mod tests {
     // ── AI command handlers ─────────────────────────────────────────
 
     #[test]
-    fn ai_ask_selection_no_selection_warns() {
+    fn ai_ask_selection_opens_panel() {
         let mut state = AppState::new();
         let result = handle_ai_ask_selection(&mut state);
         assert!(matches!(result, Control::Changed));
-        // Should have a notification about no selection.
-        assert!(!state.overlay.notifications.is_empty());
+        // Always opens the AI panel regardless of whether text is selected.
+        assert!(state.layout.show_ai_panel);
     }
 
     #[test]

@@ -4,9 +4,9 @@
 //! colors and attributes to ratatui styles. Also renders the cursor
 //! position and a session status header.
 
-use crate::primitives::{Buffer, Color, Line, Modifier, Rect, Span, Style, Widget};
+use crate::primitives::{Buffer, Color, Line, Modifier, Rect, Span, Style, Stylize, Widget};
 
-use lune_ai::session::SessionState;
+use lune_ai::session::{AiSessionId, SessionState};
 
 use crate::theme::Theme;
 
@@ -173,12 +173,60 @@ pub fn render_terminal_screen(
     }
 }
 
-/// Render the full AI terminal panel: header + terminal screen.
+/// Render the session tab bar (shown when >1 session exists).
 ///
-/// When no session is active, renders a placeholder.
+/// `sessions` is a list of `(id, display_name, state)` for all sessions.
+/// `active_id` is the currently focused session.
+#[allow(clippy::cast_possible_truncation)]
+fn render_session_tabs(
+    area: Rect,
+    buf: &mut Buffer,
+    sessions: &[(AiSessionId, String, SessionState)],
+    active_id: Option<AiSessionId>,
+    theme: &Theme,
+) {
+    if area.height == 0 || sessions.is_empty() {
+        return;
+    }
+
+    let mut x = area.x;
+    for (id, name, state) in sessions {
+        let is_active = Some(*id) == active_id;
+        let state_mark = match state {
+            SessionState::Running => "",
+            SessionState::Starting => " ~",
+            SessionState::Exited(0) => " ✓",
+            SessionState::Exited(_) | SessionState::Error => " !",
+        };
+        let label = format!(" {name}{state_mark} ");
+        let len = label.len() as u16;
+        if x + len > area.x + area.width {
+            break;
+        }
+        let tab_style = if is_active {
+            theme.tab_active_focused
+        } else {
+            theme.tab_inactive
+        };
+        let span = Span::styled(label, tab_style);
+        Line::from(span).render(Rect::new(x, area.y, len, 1), buf);
+        x += len;
+        // Separator
+        if x < area.x + area.width {
+            Line::from(Span::from("│").dim()).render(Rect::new(x, area.y, 1, 1), buf);
+            x += 1;
+        }
+    }
+}
+
+/// Render the full AI terminal panel: optional session tabs + header + terminal screen.
+///
+/// `sessions` is the list of all sessions for the tab bar.
+/// `session` is the currently active session to render.
 pub fn render_ai_terminal(
     area: Rect,
     buf: &mut Buffer,
+    sessions: &[(AiSessionId, String, SessionState)],
     session: Option<&lune_ai::AiSession>,
     theme: &Theme,
 ) {
@@ -186,11 +234,23 @@ pub fn render_ai_terminal(
         return;
     }
 
+    let multi = sessions.len() > 1;
+    let tabs_height: u16 = if multi { 1 } else { 0 };
+
     match session {
         Some(session) => {
-            // Header takes 1 row.
-            let header_area = Rect::new(area.x, area.y, area.width, 1);
-            let screen_area = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
+            // Tab bar (only when >1 session).
+            if multi {
+                let tabs_area = Rect::new(area.x, area.y, area.width, 1);
+                let active_id = Some(session.id());
+                render_session_tabs(tabs_area, buf, sessions, active_id, theme);
+            }
+
+            let header_y = area.y + tabs_height;
+            let header_area = Rect::new(area.x, header_y, area.width, 1);
+            let screen_y = header_y + 1;
+            let screen_height = area.height.saturating_sub(tabs_height + 1);
+            let screen_area = Rect::new(area.x, screen_y, area.width, screen_height);
 
             render_terminal_header(
                 header_area,
@@ -264,7 +324,7 @@ mod tests {
     fn render_no_session() {
         let (area, mut buf) = make_buffer(40, 10);
         let theme = Theme::dark();
-        render_ai_terminal(area, &mut buf, None, &theme);
+        render_ai_terminal(area, &mut buf, &[], None, &theme);
 
         // Should contain "AI Terminal" in the header.
         let header_text: String = (0..area.width)
@@ -321,7 +381,7 @@ mod tests {
     fn render_tiny_area_does_not_panic() {
         let (area, mut buf) = make_buffer(5, 1);
         let theme = Theme::dark();
-        render_ai_terminal(area, &mut buf, None, &theme);
+        render_ai_terminal(area, &mut buf, &[], None, &theme);
         // Area height < 2, should just return.
     }
 }

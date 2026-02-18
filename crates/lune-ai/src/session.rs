@@ -21,7 +21,7 @@ use crate::pty::{PtyHandle, TermSize};
 pub type AiSessionId = Uuid;
 
 /// The kind of AI client running in this session.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AiClientKind {
     /// A plain shell (e.g. bash, zsh).
     Shell,

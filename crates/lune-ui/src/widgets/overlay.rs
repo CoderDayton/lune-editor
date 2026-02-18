@@ -11,6 +11,7 @@ use crate::primitives::{
     Block, BorderType, Borders, Buffer, Clear, Line, Rect, Span, Style, Stylize, Widget,
 };
 
+use lune_ai::session::AiClientKind;
 use crate::event::AppCommand;
 use crate::theme::Theme;
 use lune_core::language::lang;
@@ -33,6 +34,8 @@ pub enum OverlayKind {
     },
     /// Interactive file/directory picker.
     FilePicker,
+    /// AI client picker (choose which client to launch).
+    AiClientPicker,
 }
 
 // ── Overlay state ─────────────────────────────────────────────────────
@@ -48,6 +51,8 @@ pub struct OverlayState {
     pub file_picker: FilePickerState,
     /// Active notifications (toast messages).
     pub notifications: Vec<Notification>,
+    /// AI client picker state.
+    pub ai_client_picker: AiClientPickerState,
 }
 
 impl OverlayState {
@@ -66,6 +71,12 @@ impl OverlayState {
         // Reuse allocation; input was just cleared so update_filter will copy all commands.
         self.command_palette.update_filter();
         self.active = Some(OverlayKind::CommandPalette);
+    }
+
+    /// Open the AI client picker overlay.
+    pub fn open_ai_client_picker(&mut self) {
+        self.ai_client_picker.reset();
+        self.active = Some(OverlayKind::AiClientPicker);
     }
 
     /// Open the file picker at the given directory.
@@ -259,6 +270,10 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
         palette_cmd("Previous Tab", AppCommand::PrevTab),
         palette_cmd("Toggle File Tree", AppCommand::ToggleFileTree),
         palette_cmd("Toggle AI Panel", AppCommand::ToggleAiPanel),
+        palette_cmd("New AI Session", AppCommand::AiOpenClientPicker),
+        palette_cmd("Close AI Session", AppCommand::AiCloseSession),
+        palette_cmd("Next AI Session", AppCommand::AiNextSession),
+        palette_cmd("Previous AI Session", AppCommand::AiPrevSession),
         palette_cmd("Toggle Git Panel", AppCommand::ToggleGitPanel),
         palette_cmd("Undo", AppCommand::Undo),
         palette_cmd("Redo", AppCommand::Redo),
@@ -294,6 +309,92 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
 
     cmds.sort_by(|a, b| a.label_lower.cmp(&b.label_lower));
     cmds
+}
+
+// ── AI client picker ──────────────────────────────────────────────────
+
+/// An entry in the AI client picker.
+#[derive(Clone, Debug)]
+pub struct AiClientEntry {
+    /// Display name shown in the picker list.
+    pub label: &'static str,
+    /// Brief description shown alongside the name.
+    pub description: &'static str,
+    /// The client kind to spawn.
+    pub kind: AiClientKind,
+}
+
+/// State for the AI client picker overlay.
+#[derive(Clone, Debug)]
+pub struct AiClientPickerState {
+    /// Available clients.
+    pub entries: Vec<AiClientEntry>,
+    /// Currently highlighted index.
+    pub selected: usize,
+}
+
+impl Default for AiClientPickerState {
+    fn default() -> Self {
+        Self {
+            entries: available_ai_clients(),
+            selected: 0,
+        }
+    }
+}
+
+impl AiClientPickerState {
+    /// Reset selection to first entry.
+    pub fn reset(&mut self) {
+        self.selected = 0;
+    }
+
+    /// Move selection up.
+    pub fn select_prev(&mut self) {
+        if !self.entries.is_empty() {
+            self.selected = if self.selected == 0 {
+                self.entries.len() - 1
+            } else {
+                self.selected - 1
+            };
+        }
+    }
+
+    /// Move selection down.
+    pub fn select_next(&mut self) {
+        if !self.entries.is_empty() {
+            self.selected = (self.selected + 1) % self.entries.len();
+        }
+    }
+
+    /// Get the client kind for the currently selected entry.
+    #[must_use]
+    pub fn selected_kind(&self) -> Option<AiClientKind> {
+        self.entries.get(self.selected).map(|e| e.kind.clone())
+    }
+}
+
+/// Build the static list of available AI clients.
+fn available_ai_clients() -> Vec<AiClientEntry> {
+    vec![
+        AiClientEntry {
+            label: "Claude Code",
+            description: "claude — Anthropic's official CLI",
+            kind: AiClientKind::ClaudeCode,
+        },
+        AiClientEntry {
+            label: "Aider",
+            description: "aider — AI pair programming in the terminal",
+            kind: AiClientKind::Custom {
+                name: "Aider".to_string(),
+                command: "aider".to_string(),
+            },
+        },
+        AiClientEntry {
+            label: "Shell",
+            description: "$SHELL — plain interactive shell",
+            kind: AiClientKind::Shell,
+        },
+    ]
 }
 
 // ── Notifications ─────────────────────────────────────────────────────
@@ -545,7 +646,80 @@ pub fn render_overlay(area: Rect, buf: &mut Buffer, overlay: &mut OverlayState, 
         Some(OverlayKind::FilePicker) => {
             render_file_picker(area, buf, &overlay.file_picker, theme);
         }
+        Some(OverlayKind::AiClientPicker) => {
+            render_ai_client_picker(area, buf, &overlay.ai_client_picker, theme);
+        }
         None => {}
+    }
+}
+
+/// Render the AI client picker overlay.
+#[allow(clippy::cast_possible_truncation)]
+fn render_ai_client_picker(
+    area: Rect,
+    buf: &mut Buffer,
+    state: &AiClientPickerState,
+    theme: &Theme,
+) {
+    let popup_w = (area.width * 50 / 100).max(40).min(area.width);
+    let popup_h = (state.entries.len() as u16 + 6).min(area.height);
+    let popup_x = area.x + (area.width - popup_w) / 2;
+    let popup_y = area.y + (area.height - popup_h) / 3;
+
+    let popup_rect = Rect::new(popup_x, popup_y, popup_w, popup_h);
+    Clear.render(popup_rect, buf);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(" Open AI Session ")
+        .style(Style::new().fg(theme.overlay_border));
+    let inner = block.inner(popup_rect);
+    block.render(popup_rect, buf);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    // Subtitle
+    Line::from(Span::from(" Choose a client to open:").dim())
+        .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
+
+    // Separator
+    if inner.height > 1 {
+        let sep = "─".repeat(inner.width as usize);
+        Line::from(Span::from(sep).dim())
+            .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
+    }
+
+    // Entry list
+    for (i, entry) in state.entries.iter().enumerate() {
+        let y = inner.y + 2 + i as u16;
+        if y >= inner.y + inner.height {
+            break;
+        }
+
+        let label = format!("  {} — {}", entry.label, entry.description);
+        let max_len = inner.width as usize;
+        let label = if label.len() > max_len {
+            format!("{}…", &label[..max_len.saturating_sub(1)])
+        } else {
+            label
+        };
+
+        let span = if i == state.selected {
+            Span::styled(label, theme.overlay_selected)
+        } else {
+            Span::from(label)
+        };
+        Line::from(span).render(Rect::new(inner.x, y, inner.width, 1), buf);
+    }
+
+    // Footer hint
+    let hint_y = inner.y + inner.height.saturating_sub(1);
+    if hint_y > inner.y + 1 + state.entries.len() as u16 {
+        Line::from(Span::from(" ↑↓ select · Enter open · Esc cancel").dim())
+            .render(Rect::new(inner.x, hint_y, inner.width, 1), buf);
     }
 }
 

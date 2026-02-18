@@ -93,6 +93,10 @@ impl Keymap {
             (Char('A'), CTRL_SHIFT, AppCommand::AiAskSelection),
             (Char('R'), CTRL_SHIFT, AppCommand::AiRefactorFile),
             (Char('I'), CTRL_SHIFT, AppCommand::AiSummarizeChanges),
+            (Char('N'), CTRL_SHIFT, AppCommand::AiOpenClientPicker),
+            (Char('W'), CTRL_SHIFT, AppCommand::AiCloseSession),
+            (Char(']'), CTRL, AppCommand::AiNextSession),
+            (Char('['), CTRL, AppCommand::AiPrevSession),
             // Editor commands
             (Char('z'), CTRL, AppCommand::Undo),
             (Char('y'), CTRL, AppCommand::Redo),
@@ -349,6 +353,10 @@ pub fn parse_command(s: &str) -> Option<AppCommand> {
         "ai_ask_selection" => Some(AppCommand::AiAskSelection),
         "ai_refactor_file" => Some(AppCommand::AiRefactorFile),
         "ai_summarize_changes" => Some(AppCommand::AiSummarizeChanges),
+        "ai_open_client_picker" => Some(AppCommand::AiOpenClientPicker),
+        "ai_close_session" => Some(AppCommand::AiCloseSession),
+        "ai_next_session" => Some(AppCommand::AiNextSession),
+        "ai_prev_session" => Some(AppCommand::AiPrevSession),
         // Live Mode
         "toggle_live_mode" => Some(AppCommand::ToggleLiveMode),
         // Theme

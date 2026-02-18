@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use crate::primitives::CtEvent;
+use lune_ai::session::AiClientKind;
 use lune_core::language::LanguageId;
 use rat_salsa::timer::TimeOut;
 
@@ -162,6 +163,16 @@ pub enum AppCommand {
     AiRefactorFile,
     /// Ask the AI to summarize git changes.
     AiSummarizeChanges,
+    /// Open the client picker overlay to start a new AI session.
+    AiOpenClientPicker,
+    /// Start a new AI session with the given client kind.
+    AiNewSession(AiClientKind),
+    /// Close the currently active AI session.
+    AiCloseSession,
+    /// Switch to the next AI session tab.
+    AiNextSession,
+    /// Switch to the previous AI session tab.
+    AiPrevSession,
 
     // ── Live Mode commands ────────────────────────────────────────────
     /// Toggle Live Mode: Off ↔ On.
