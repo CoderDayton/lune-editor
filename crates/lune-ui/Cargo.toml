@@ -9,6 +9,8 @@ rust-version.workspace = true
 [dependencies]
 lune-core.workspace = true
 lune-git.workspace = true
+lune-ai.workspace = true
+rustc-hash.workspace = true
 ratatui.workspace = true
 ratatui-core.workspace = true
 ratatui-crossterm.workspace = true
@@ -21,6 +23,7 @@ rat-focus.workspace = true
 tachyonfx.workspace = true
 anyhow.workspace = true
 log.workspace = true
+vt100.workspace = true
 tree-sitter.workspace = true
 tree-sitter-highlight.workspace = true
 tree-sitter-rust.workspace = true
