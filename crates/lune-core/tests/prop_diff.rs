@@ -9,7 +9,7 @@
 use lune_core::ropey::Rope;
 use proptest::prelude::*;
 
-use lune_core::diff::{compute_diff, compute_diff_str, compute_inline_highlights, LiveHunkKind};
+use lune_core::diff::{LiveHunkKind, compute_diff, compute_diff_str, compute_inline_highlights};
 
 // ── Strategies ────────────────────────────────────────────────────────
 

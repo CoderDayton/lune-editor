@@ -9,7 +9,7 @@
 use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// A workspace rooted at a directory.
 #[derive(Debug)]

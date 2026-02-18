@@ -17,13 +17,13 @@ use lune_ui::highlight::theme::SyntaxTheme;
 use lune_ui::primitives::{Buffer, Rect};
 use lune_ui::theme::Theme;
 use lune_ui::vim::VimMode;
-use lune_ui::widgets::diff_view::{render_diff_view, DiffViewMode, DiffViewState};
-use lune_ui::widgets::editor_pane::{render_editor_pane, ViewportState};
-use lune_ui::widgets::file_tree::{render_file_tree, FileTreeState};
-use lune_ui::widgets::git_panel::{render_git_panel, GitPanelState};
-use lune_ui::widgets::overlay::{render_overlay, OverlayState};
-use lune_ui::widgets::status_bar::{render_status_bar, StatusLineState};
-use lune_ui::widgets::tab_bar::{render_tab_bar, TabEntry, TabManager};
+use lune_ui::widgets::diff_view::{DiffViewMode, DiffViewState, render_diff_view};
+use lune_ui::widgets::editor_pane::{ViewportState, render_editor_pane};
+use lune_ui::widgets::file_tree::{FileTreeState, render_file_tree};
+use lune_ui::widgets::git_panel::{GitPanelState, render_git_panel};
+use lune_ui::widgets::overlay::{OverlayState, render_overlay};
+use lune_ui::widgets::status_bar::{StatusLineState, render_status_bar};
+use lune_ui::widgets::tab_bar::{TabEntry, TabManager, render_tab_bar};
 
 // ── Helpers ───────────────────────────────────────────────────────────
 

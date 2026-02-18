@@ -411,20 +411,22 @@ mod tests {
     #[test]
     fn editor_cursor_normal_is_reversed() {
         let t = Theme::dark();
-        assert!(t
-            .editor_cursor_normal
-            .add_modifier
-            .contains(Modifier::REVERSED));
+        assert!(
+            t.editor_cursor_normal
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
     }
 
     #[test]
     fn editor_cursor_insert_is_underlined_white() {
         let t = Theme::dark();
         assert_eq!(t.editor_cursor_insert.fg, Some(Color::White));
-        assert!(t
-            .editor_cursor_insert
-            .add_modifier
-            .contains(Modifier::UNDERLINED));
+        assert!(
+            t.editor_cursor_insert
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        );
     }
 
     #[test]

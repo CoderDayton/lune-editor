@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use lune_core::buffer::BufferId;
-use lune_core::diff::{compute_diff, compute_diff_incremental, LiveHunk};
+use lune_core::diff::{LiveHunk, compute_diff, compute_diff_incremental};
 use lune_core::ropey::Rope;
 
 // ── State machine ───────────────────────────────────────────────────────

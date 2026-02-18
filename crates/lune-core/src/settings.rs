@@ -435,7 +435,7 @@ vim_mode = true
 
         let mut workspace = Settings::default();
         workspace.editor.tab_size = 2; // override
-                                       // vim_mode is default (false), so it should NOT override global
+        // vim_mode is default (false), so it should NOT override global
 
         global.merge_workspace(&workspace);
         assert_eq!(global.editor.tab_size, 2); // overridden

@@ -17,7 +17,7 @@
 
 use std::path::Path;
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::workspace_state::{RecentWorkspaces, WorkspaceState};
 
@@ -329,16 +329,18 @@ mod tests {
         let db = test_db();
         let ws = WorkspaceState::new(PathBuf::from("/tmp/del-test"));
         db.put_workspace(&ws).unwrap();
-        assert!(db
-            .get_workspace(Path::new("/tmp/del-test"))
-            .unwrap()
-            .is_some());
+        assert!(
+            db.get_workspace(Path::new("/tmp/del-test"))
+                .unwrap()
+                .is_some()
+        );
 
         db.delete_workspace(Path::new("/tmp/del-test")).unwrap();
-        assert!(db
-            .get_workspace(Path::new("/tmp/del-test"))
-            .unwrap()
-            .is_none());
+        assert!(
+            db.get_workspace(Path::new("/tmp/del-test"))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::primitives::{Buffer, Line, Modifier, Rect, Span, Style, Widget};
 
-use lune_core::workspace::{flatten_tree, DirEntry, EntryKind, FileStatus, Workspace};
+use lune_core::workspace::{DirEntry, EntryKind, FileStatus, Workspace, flatten_tree};
 
 use crate::theme::Theme;
 

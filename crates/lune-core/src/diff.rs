@@ -651,12 +651,16 @@ mod tests {
         let highlights = compute_inline_highlights("hello world", "hello rust");
         assert!(!highlights.is_empty(), "should detect char-level changes");
         // Should have both deletion (world) and insertion (rust).
-        assert!(highlights
-            .iter()
-            .any(|h| h.kind == LiveDiffLineKind::Deletion));
-        assert!(highlights
-            .iter()
-            .any(|h| h.kind == LiveDiffLineKind::Addition));
+        assert!(
+            highlights
+                .iter()
+                .any(|h| h.kind == LiveDiffLineKind::Deletion)
+        );
+        assert!(
+            highlights
+                .iter()
+                .any(|h| h.kind == LiveDiffLineKind::Addition)
+        );
     }
 
     #[test]

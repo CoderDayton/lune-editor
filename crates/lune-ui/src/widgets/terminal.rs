@@ -235,7 +235,7 @@ pub fn render_ai_terminal(
     }
 
     let multi = sessions.len() > 1;
-    let tabs_height: u16 = if multi { 1 } else { 0 };
+    let tabs_height: u16 = u16::from(multi);
 
     match session {
         Some(session) => {

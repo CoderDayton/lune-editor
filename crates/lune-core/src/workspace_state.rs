@@ -231,9 +231,11 @@ mod tests {
         let f1 = WorkspaceState::state_filename(Path::new("/tmp/project"));
         let f2 = WorkspaceState::state_filename(Path::new("/tmp/project"));
         assert_eq!(f1, f2);
-        assert!(Path::new(&f1)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("toml")));
+        assert!(
+            Path::new(&f1)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
+        );
     }
 
     #[test]

@@ -526,8 +526,7 @@ fn char_window(s: &str, start: usize, width: usize) -> &str {
         // UTF-8: walk char_indices to find byte boundaries.
         let mut start_byte = s.len();
         let mut end_byte = s.len();
-        let mut col = 0usize;
-        for (byte_idx, _) in s.char_indices() {
+        for (col, (byte_idx, _)) in s.char_indices().enumerate() {
             if col == start {
                 start_byte = byte_idx;
             }
@@ -535,7 +534,6 @@ fn char_window(s: &str, start: usize, width: usize) -> &str {
                 end_byte = byte_idx;
                 break;
             }
-            col += 1;
         }
         if start_byte <= end_byte {
             &s[start_byte..end_byte]

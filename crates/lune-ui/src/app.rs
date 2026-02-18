@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::Error;
 use crossbeam::channel::{self, Receiver, TryRecvError};
 use rat_salsa::poll::{PollCrossterm, PollTimers};
-use rat_salsa::{run_tui, Control, RunConfig, SalsaAppContext, SalsaContext};
+use rat_salsa::{Control, RunConfig, SalsaAppContext, SalsaContext, run_tui};
 
 use crate::primitives::{
     Buffer, Constraint, CtEvent, Direction, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, Layout,
@@ -28,8 +28,8 @@ use lune_core::workspace_state::make_relative;
 use lune_git::{GitService, GutterMarks};
 
 use lune_ai::context::{
-    extract_selection_text, EditorContext, FileContext, GitStatusSummary, SelectionContext,
-    TabContext,
+    EditorContext, FileContext, GitStatusSummary, SelectionContext, TabContext,
+    extract_selection_text,
 };
 use lune_ai::{AiClientKind, AiManager, LiveModeController, TermSize as AiTermSize};
 
@@ -1179,11 +1179,7 @@ fn build_live_hunk_map(ctrl: &LiveModeController) -> HashMap<BufferId, usize> {
         .iter()
         .filter_map(|(&id, state)| {
             let count = state.hunks.len();
-            if count > 0 {
-                Some((id, count))
-            } else {
-                None
-            }
+            if count > 0 { Some((id, count)) } else { None }
         })
         .collect()
 }
@@ -1461,12 +1457,14 @@ fn handle_ai_client_picker_key(key: &KeyEvent, state: &mut AppState) -> Control<
             Control::Changed
         }
         KeyCode::Enter => {
-            if let Some(kind) = state.overlay.ai_client_picker.selected_kind() {
-                close_overlay(state);
-                Control::Event(AppEvent::Command(AppCommand::AiNewSession(kind)))
-            } else {
-                Control::Continue
-            }
+            state
+                .overlay
+                .ai_client_picker
+                .selected_kind()
+                .map_or(Control::Continue, |kind| {
+                    close_overlay(state);
+                    Control::Event(AppEvent::Command(AppCommand::AiNewSession(kind)))
+                })
         }
         KeyCode::Up => {
             state.overlay.ai_client_picker.select_prev();
@@ -1747,43 +1745,13 @@ fn ai_client_from_settings(state: &AppState) -> AiClientKind {
     let cmd = state
         .cached_settings
         .as_ref()
-        .map(|s| s.ai.default_client.as_str())
-        .unwrap_or("claude");
+        .map_or("claude", |s| s.ai.default_client.as_str());
     match cmd {
         "claude" => AiClientKind::ClaudeCode,
         other => AiClientKind::Custom {
             name: other.to_string(),
             command: other.to_string(),
         },
-    }
-}
-
-/// Start an AI client session using the configured default client.
-fn start_default_ai_session(state: &mut AppState) {
-    let kind = ai_client_from_settings(state);
-    let cwd = state.workspace.as_ref().map(|ws| ws.root().to_path_buf());
-    let size = state
-        .last_splits
-        .as_ref()
-        .and_then(|s| s.right)
-        .map_or_else(AiTermSize::default, |r| {
-            AiTermSize::new(r.height.saturating_sub(1).max(1), r.width.max(1))
-        });
-    let client_name = kind.display_name().to_string();
-    match state
-        .ai_manager
-        .new_session(kind, cwd.as_deref(), &HashMap::new(), size)
-    {
-        Ok(_id) => {
-            log::info!("Started AI session: {client_name}");
-        }
-        Err(e) => {
-            log::error!("Failed to start AI session: {e}");
-            state.overlay.notify(
-                format!("Failed to launch {client_name}: {e}"),
-                crate::widgets::overlay::NotificationLevel::Error,
-            );
-        }
     }
 }
 
@@ -1836,7 +1804,10 @@ fn handle_ai_new_session(kind: AiClientKind, state: &mut AppState) -> Control<Ap
             AiTermSize::new(r.height.saturating_sub(1).max(1), r.width.max(1))
         });
     let client_name = kind.display_name().to_string();
-    match state.ai_manager.new_session(kind, cwd.as_deref(), &env, size) {
+    match state
+        .ai_manager
+        .new_session(kind, cwd.as_deref(), &env, size)
+    {
         Ok(_id) => {
             log::info!("Started AI session: {client_name}");
             if !state.layout.show_ai_panel {
@@ -1846,11 +1817,12 @@ fn handle_ai_new_session(kind: AiClientKind, state: &mut AppState) -> Control<Ap
             state.focus_dirty = true;
         }
         Err(e) => {
-            log::error!("Failed to start AI session: {e}");
-            state.overlay.notify(
-                format!("Failed to launch {client_name}: {e}"),
-                NotificationLevel::Error,
-            );
+            // Spawn failed (binary not found or PTY error) — close silently.
+            log::warn!("AI session launch failed ({client_name}): {e}");
+            // If the panel was opened optimistically, close it again.
+            if state.layout.show_ai_panel && state.ai_manager.is_empty() {
+                state.layout.show_ai_panel = false;
+            }
         }
     }
     Control::Changed
@@ -2465,6 +2437,7 @@ fn move_n(buf: &mut TextBuffer, n: usize, extend: bool, method: fn(&mut TextBuff
 // ── Command handling ──────────────────────────────────────────────────
 
 /// Handle application commands.
+#[allow(clippy::too_many_lines)]
 fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
     match cmd {
         AppCommand::Quit | AppCommand::ForceQuit => Control::Quit,
@@ -2553,7 +2526,12 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             Control::Changed
         }
         AppCommand::AiNextSession => {
-            let ids: Vec<_> = state.ai_manager.session_list().into_iter().map(|(id, _, _)| id).collect();
+            let ids: Vec<_> = state
+                .ai_manager
+                .session_list()
+                .into_iter()
+                .map(|(id, _, _)| id)
+                .collect();
             if let Some(active) = state.ai_manager.active_id() {
                 if let Some(pos) = ids.iter().position(|&id| id == active) {
                     let next = ids[(pos + 1) % ids.len()];
@@ -2563,7 +2541,12 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             Control::Changed
         }
         AppCommand::AiPrevSession => {
-            let ids: Vec<_> = state.ai_manager.session_list().into_iter().map(|(id, _, _)| id).collect();
+            let ids: Vec<_> = state
+                .ai_manager
+                .session_list()
+                .into_iter()
+                .map(|(id, _, _)| id)
+                .collect();
             if let Some(active) = state.ai_manager.active_id() {
                 if let Some(pos) = ids.iter().position(|&id| id == active) {
                     let prev = if pos == 0 { ids.len() - 1 } else { pos - 1 };

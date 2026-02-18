@@ -12,7 +12,7 @@ use ropey::Rope;
 use uuid::Uuid;
 
 use crate::position::{CursorState, Position, Selection};
-use crate::undo::{end_position_after_insert, EditOp, RevisionId, Transaction, UndoStack};
+use crate::undo::{EditOp, RevisionId, Transaction, UndoStack, end_position_after_insert};
 
 use std::sync::Arc;
 
@@ -1024,7 +1024,7 @@ mod tests {
 
         let mut buf = TextBuffer::from_file(&path).unwrap();
         assert!(!buf.is_dirty()); // "ab" on disk = clean
-                                  // Undo is empty, so insert then save to establish save point.
+        // Undo is empty, so insert then save to establish save point.
         buf.insert(Position::new(0, 2), "c"); // "abc"
         buf.save().unwrap(); // save point at "abc"
         assert!(!buf.is_dirty());
@@ -1032,7 +1032,7 @@ mod tests {
         // Now undo past the save point.
         assert!(buf.undo()); // "ab" — save_distance = -1
         assert!(buf.is_dirty()); // we're behind the save point
-                                 // Make a new edit — forks history, redo stack cleared.
+        // Make a new edit — forks history, redo stack cleared.
         buf.insert(Position::new(0, 2), "x"); // "abx"
         assert!(buf.is_dirty());
         // Undo the "x" — content is "ab", save_distance = -1 again,

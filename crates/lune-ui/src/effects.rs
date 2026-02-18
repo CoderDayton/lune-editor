@@ -6,7 +6,7 @@
 use std::fmt;
 
 use crate::primitives::{Buffer, Color, Rect};
-use tachyonfx::{fx, Duration, Effect, EffectManager};
+use tachyonfx::{Duration, Effect, EffectManager, fx};
 
 use crate::focus::PanelId;
 

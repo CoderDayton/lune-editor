@@ -1,0 +1,37 @@
+# Lefthook git hooks configuration for lune-editor
+# Rust equivalents: rustfmt (ruff fmt), clippy (ruff lint), cargo check (mypy), cargo audit (bandit)
+
+pre-commit:
+  parallel: false
+  commands:
+    fmt:
+      glob: "*.rs"
+      run: cargo fmt --all -- --check
+      fail_text: "Formatting check failed. Run `cargo fmt --all` to fix."
+
+    clippy:
+      glob: "*.rs"
+      run: cargo clippy --workspace --all-targets -- -D warnings
+      fail_text: "Clippy found warnings. Fix them before committing."
+
+    check:
+      glob: "*.rs"
+      run: cargo check --workspace
+      fail_text: "Type/compilation check failed."
+
+    audit:
+      glob: "{Cargo.toml,Cargo.lock}"
+      run: cargo audit
+      fail_text: "Security vulnerabilities found. Run `cargo audit` for details."
+
+pre-push:
+  parallel: false
+  commands:
+    test:
+      run: cargo test --workspace
+      fail_text: "Tests failed. Fix before pushing."
+
+    clippy:
+      glob: "*.rs"
+      run: cargo clippy --workspace --all-targets -- -D warnings
+      fail_text: "Clippy found warnings. Fix them before pushing."

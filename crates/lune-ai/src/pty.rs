@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
 
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 /// Terminal dimensions (rows x cols).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -17,8 +17,8 @@ pub mod session;
 
 // Re-exports for convenience.
 pub use context::{
-    extract_selection_text, EditorContext, FileContext, GitStatusSummary, SelectionContext,
-    TabContext,
+    EditorContext, FileContext, GitStatusSummary, SelectionContext, TabContext,
+    extract_selection_text,
 };
 pub use live_mode::{
     LiveChangeInfo, LiveDiffState, LiveModeController, LiveModeState, LiveModeStats,

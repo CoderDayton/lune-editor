@@ -11,9 +11,10 @@ use crate::primitives::{
     Block, BorderType, Borders, Buffer, Clear, Line, Rect, Span, Style, Stylize, Widget,
 };
 
-use lune_ai::session::AiClientKind;
 use crate::event::AppCommand;
+use crate::primitives::Color;
 use crate::theme::Theme;
+use lune_ai::session::AiClientKind;
 use lune_core::language::lang;
 
 // ── Overlay kinds ─────────────────────────────────────────────────────
@@ -74,8 +75,10 @@ impl OverlayState {
     }
 
     /// Open the AI client picker overlay.
+    ///
+    /// Re-scans PATH for available clients each time it opens.
     pub fn open_ai_client_picker(&mut self) {
-        self.ai_client_picker.reset();
+        self.ai_client_picker = AiClientPickerState::scan_available();
         self.active = Some(OverlayKind::AiClientPicker);
     }
 
@@ -313,39 +316,101 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
 
 // ── AI client picker ──────────────────────────────────────────────────
 
-/// An entry in the AI client picker.
+/// Metadata for a known AI CLI client.
+struct KnownClient {
+    label: &'static str,
+    command: &'static str,
+    /// Terminal color used for the colored bullet.
+    color: Color,
+}
+
+/// The full catalog of known AI CLI clients.
+const KNOWN_CLIENTS: &[KnownClient] = &[
+    KnownClient {
+        label: "Claude Code",
+        command: "claude",
+        color: Color::Rgb(215, 150, 60), // amber
+    },
+    KnownClient {
+        label: "OpenCode",
+        command: "opencode",
+        color: Color::Rgb(80, 180, 255), // sky blue
+    },
+    KnownClient {
+        label: "Gemini",
+        command: "gemini",
+        color: Color::Rgb(66, 200, 140), // teal-green
+    },
+    KnownClient {
+        label: "Kilo Code",
+        command: "kilo",
+        color: Color::Rgb(255, 100, 100), // coral red
+    },
+    KnownClient {
+        label: "Cline",
+        command: "cline",
+        color: Color::Rgb(160, 110, 255), // violet
+    },
+    KnownClient {
+        label: "Qwen Code",
+        command: "qwen",
+        color: Color::Rgb(60, 210, 200), // cyan
+    },
+];
+
+/// Returns `true` if `cmd` is found as an executable file on `$PATH`.
+fn is_command_available(cmd: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path_var| std::env::split_paths(&path_var).any(|dir| dir.join(cmd).is_file()))
+}
+
+/// An entry in the AI client picker (only installed clients appear).
 #[derive(Clone, Debug)]
 pub struct AiClientEntry {
-    /// Display name shown in the picker list.
+    /// Display name.
     pub label: &'static str,
-    /// Brief description shown alongside the name.
-    pub description: &'static str,
+    /// CLI command.
+    pub command: &'static str,
+    /// Accent color for the colored bullet.
+    pub color: Color,
     /// The client kind to spawn.
     pub kind: AiClientKind,
 }
 
 /// State for the AI client picker overlay.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct AiClientPickerState {
-    /// Available clients.
+    /// Installed clients found on PATH.
     pub entries: Vec<AiClientEntry>,
     /// Currently highlighted index.
     pub selected: usize,
 }
 
-impl Default for AiClientPickerState {
-    fn default() -> Self {
+impl AiClientPickerState {
+    /// Scan PATH for available clients and return a ready state.
+    #[must_use]
+    pub fn scan_available() -> Self {
+        let entries = KNOWN_CLIENTS
+            .iter()
+            .filter(|c| is_command_available(c.command))
+            .map(|c| AiClientEntry {
+                label: c.label,
+                command: c.command,
+                color: c.color,
+                kind: if c.command == "claude" {
+                    AiClientKind::ClaudeCode
+                } else {
+                    AiClientKind::Custom {
+                        name: c.label.to_string(),
+                        command: c.command.to_string(),
+                    }
+                },
+            })
+            .collect();
         Self {
-            entries: available_ai_clients(),
+            entries,
             selected: 0,
         }
-    }
-}
-
-impl AiClientPickerState {
-    /// Reset selection to first entry.
-    pub fn reset(&mut self) {
-        self.selected = 0;
     }
 
     /// Move selection up.
@@ -371,30 +436,6 @@ impl AiClientPickerState {
     pub fn selected_kind(&self) -> Option<AiClientKind> {
         self.entries.get(self.selected).map(|e| e.kind.clone())
     }
-}
-
-/// Build the static list of available AI clients.
-fn available_ai_clients() -> Vec<AiClientEntry> {
-    vec![
-        AiClientEntry {
-            label: "Claude Code",
-            description: "claude — Anthropic's official CLI",
-            kind: AiClientKind::ClaudeCode,
-        },
-        AiClientEntry {
-            label: "Aider",
-            description: "aider — AI pair programming in the terminal",
-            kind: AiClientKind::Custom {
-                name: "Aider".to_string(),
-                command: "aider".to_string(),
-            },
-        },
-        AiClientEntry {
-            label: "Shell",
-            description: "$SHELL — plain interactive shell",
-            kind: AiClientKind::Shell,
-        },
-    ]
 }
 
 // ── Notifications ─────────────────────────────────────────────────────
@@ -692,27 +733,40 @@ fn render_ai_client_picker(
             .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
     }
 
-    // Entry list
-    for (i, entry) in state.entries.iter().enumerate() {
-        let y = inner.y + 2 + i as u16;
-        if y >= inner.y + inner.height {
-            break;
+    // Entry list — or empty state
+    if state.entries.is_empty() {
+        let y = inner.y + 2;
+        if y < inner.y + inner.height {
+            Line::from(Span::from("  No AI clients found in PATH").dim())
+                .render(Rect::new(inner.x, y, inner.width, 1), buf);
         }
+    } else {
+        for (i, entry) in state.entries.iter().enumerate() {
+            let y = inner.y + 2 + i as u16;
+            if y >= inner.y + inner.height {
+                break;
+            }
 
-        let label = format!("  {} — {}", entry.label, entry.description);
-        let max_len = inner.width as usize;
-        let label = if label.len() > max_len {
-            format!("{}…", &label[..max_len.saturating_sub(1)])
-        } else {
-            label
-        };
+            let label_text = format!(" {} ({})", entry.label, entry.command);
+            let max_label = inner.width.saturating_sub(3) as usize;
+            let label_text = if label_text.len() > max_label {
+                format!("{}…", &label_text[..max_label.saturating_sub(1)])
+            } else {
+                label_text
+            };
 
-        let span = if i == state.selected {
-            Span::styled(label, theme.overlay_selected)
-        } else {
-            Span::from(label)
-        };
-        Line::from(span).render(Rect::new(inner.x, y, inner.width, 1), buf);
+            if i == state.selected {
+                // Selected: full row highlighted
+                let full = format!(" ● {label_text}");
+                Line::from(Span::styled(full, theme.overlay_selected))
+                    .render(Rect::new(inner.x, y, inner.width, 1), buf);
+            } else {
+                // Unselected: colored bullet + plain label
+                let bullet = Span::styled(" ● ", Style::new().fg(entry.color));
+                let text = Span::from(label_text);
+                Line::from(vec![bullet, text]).render(Rect::new(inner.x, y, inner.width, 1), buf);
+            }
+        }
     }
 
     // Footer hint
@@ -1008,10 +1062,11 @@ mod tests {
         cp.type_char('v');
         // Should match "Save" and "Save All".
         assert!(cp.filtered_commands.len() >= 2);
-        assert!(cp
-            .filtered_commands
-            .iter()
-            .all(|c| c.label.to_lowercase().contains("sav")));
+        assert!(
+            cp.filtered_commands
+                .iter()
+                .all(|c| c.label.to_lowercase().contains("sav"))
+        );
     }
 
     #[test]
@@ -1270,5 +1325,363 @@ mod tests {
     fn palette_includes_open_file_command() {
         let cmds = all_palette_commands();
         assert!(cmds.iter().any(|c| c.label == "Open File"));
+    }
+
+    // ── AI client picker tests ─────────────────────────────────────
+
+    /// Build a picker state from a hand-crafted list of entries (bypasses
+    /// PATH scanning so the tests are hermetic).
+    fn make_picker_state(entries: Vec<AiClientEntry>) -> AiClientPickerState {
+        AiClientPickerState {
+            entries,
+            selected: 0,
+        }
+    }
+
+    fn claude_entry() -> AiClientEntry {
+        AiClientEntry {
+            label: "Claude Code",
+            command: "claude",
+            color: Color::Rgb(215, 150, 60),
+            kind: AiClientKind::ClaudeCode,
+        }
+    }
+
+    fn custom_entry(label: &'static str, command: &'static str) -> AiClientEntry {
+        AiClientEntry {
+            label,
+            command,
+            color: Color::Rgb(80, 180, 255),
+            kind: AiClientKind::Custom {
+                name: label.to_string(),
+                command: command.to_string(),
+            },
+        }
+    }
+
+    // ── KNOWN_CLIENTS catalog ──────────────────────────────────────
+
+    #[test]
+    fn known_clients_all_six_present() {
+        let commands: Vec<&str> = KNOWN_CLIENTS.iter().map(|c| c.command).collect();
+        assert_eq!(commands.len(), 6, "expected exactly 6 known clients");
+        assert!(commands.contains(&"claude"), "missing claude");
+        assert!(commands.contains(&"opencode"), "missing opencode");
+        assert!(commands.contains(&"gemini"), "missing gemini");
+        assert!(commands.contains(&"kilo"), "missing kilo");
+        assert!(commands.contains(&"cline"), "missing cline");
+        assert!(commands.contains(&"qwen"), "missing qwen");
+    }
+
+    #[test]
+    fn known_clients_labels_match_commands() {
+        let find = |cmd: &str| KNOWN_CLIENTS.iter().find(|c| c.command == cmd).unwrap();
+        assert_eq!(find("claude").label, "Claude Code");
+        assert_eq!(find("opencode").label, "OpenCode");
+        assert_eq!(find("gemini").label, "Gemini");
+        assert_eq!(find("kilo").label, "Kilo Code");
+        assert_eq!(find("cline").label, "Cline");
+        assert_eq!(find("qwen").label, "Qwen Code");
+    }
+
+    #[test]
+    fn known_clients_colors_all_distinct() {
+        let colors: Vec<Color> = KNOWN_CLIENTS.iter().map(|c| c.color).collect();
+        // No two entries share a color.
+        for i in 0..colors.len() {
+            for j in (i + 1)..colors.len() {
+                assert_ne!(
+                    colors[i], colors[j],
+                    "clients at index {i} and {j} share the same color"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn known_clients_colors_non_default() {
+        // Every color must be an explicit Rgb value, not the default Reset.
+        for client in KNOWN_CLIENTS {
+            assert!(
+                matches!(client.color, Color::Rgb(_, _, _)),
+                "client '{}' uses a non-Rgb color: {:?}",
+                client.label,
+                client.color
+            );
+        }
+    }
+
+    // ── is_command_available ───────────────────────────────────────
+
+    #[test]
+    fn is_command_available_returns_false_for_fake_command() {
+        assert!(
+            !is_command_available("zzzneverexists123"),
+            "non-existent command should not be found on PATH"
+        );
+    }
+
+    #[test]
+    fn is_command_available_returns_true_for_sh() {
+        assert!(
+            is_command_available("sh"),
+            "'sh' must be present on PATH in any POSIX environment"
+        );
+    }
+
+    #[test]
+    fn is_command_available_empty_string_returns_false() {
+        // An empty command name should never match a real executable.
+        assert!(!is_command_available(""));
+    }
+
+    // ── AiClientPickerState — empty state ─────────────────────────
+
+    #[test]
+    fn picker_empty_select_next_is_noop() {
+        let mut state = AiClientPickerState::default();
+        state.select_next();
+        assert_eq!(
+            state.selected, 0,
+            "select_next on empty state must not panic or change index"
+        );
+    }
+
+    #[test]
+    fn picker_empty_select_prev_is_noop() {
+        let mut state = AiClientPickerState::default();
+        state.select_prev();
+        assert_eq!(
+            state.selected, 0,
+            "select_prev on empty state must not panic or change index"
+        );
+    }
+
+    #[test]
+    fn picker_empty_selected_kind_returns_none() {
+        let state = AiClientPickerState::default();
+        assert!(
+            state.selected_kind().is_none(),
+            "selected_kind on empty state must return None"
+        );
+    }
+
+    // ── AiClientPickerState — single entry ────────────────────────
+
+    #[test]
+    fn picker_single_entry_next_wraps_to_zero() {
+        let mut state = make_picker_state(vec![claude_entry()]);
+        state.select_next();
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn picker_single_entry_prev_wraps_to_zero() {
+        let mut state = make_picker_state(vec![claude_entry()]);
+        state.select_prev();
+        assert_eq!(state.selected, 0);
+    }
+
+    // ── AiClientPickerState — multi-entry navigation ───────────────
+
+    #[test]
+    fn picker_select_next_advances_index() {
+        let mut state = make_picker_state(vec![
+            claude_entry(),
+            custom_entry("OpenCode", "opencode"),
+            custom_entry("Gemini", "gemini"),
+        ]);
+        assert_eq!(state.selected, 0);
+        state.select_next();
+        assert_eq!(state.selected, 1);
+        state.select_next();
+        assert_eq!(state.selected, 2);
+    }
+
+    #[test]
+    fn picker_select_next_wraps_at_end() {
+        let mut state =
+            make_picker_state(vec![claude_entry(), custom_entry("OpenCode", "opencode")]);
+        state.select_next(); // → 1
+        state.select_next(); // → 0 (wrap)
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn picker_select_prev_decrements_index() {
+        let mut state = make_picker_state(vec![
+            claude_entry(),
+            custom_entry("OpenCode", "opencode"),
+            custom_entry("Gemini", "gemini"),
+        ]);
+        state.selected = 2;
+        state.select_prev();
+        assert_eq!(state.selected, 1);
+        state.select_prev();
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn picker_select_prev_wraps_at_start() {
+        let mut state = make_picker_state(vec![
+            claude_entry(),
+            custom_entry("OpenCode", "opencode"),
+            custom_entry("Gemini", "gemini"),
+        ]);
+        assert_eq!(state.selected, 0);
+        state.select_prev(); // wraps to len-1 = 2
+        assert_eq!(state.selected, 2);
+    }
+
+    #[test]
+    fn picker_nav_full_round_trip() {
+        let n = 4usize;
+        let entries = vec![
+            claude_entry(),
+            custom_entry("OpenCode", "opencode"),
+            custom_entry("Gemini", "gemini"),
+            custom_entry("Kilo Code", "kilo"),
+        ];
+        let mut state = make_picker_state(entries);
+        // Forward round-trip.
+        for i in 0..n {
+            assert_eq!(state.selected, i);
+            state.select_next();
+        }
+        assert_eq!(
+            state.selected, 0,
+            "should wrap back to 0 after full forward cycle"
+        );
+        // Backward: one prev from 0 should go to n-1.
+        state.select_prev();
+        assert_eq!(state.selected, n - 1);
+    }
+
+    // ── AiClientPickerState — selected_kind ───────────────────────
+
+    #[test]
+    fn picker_selected_kind_claude_returns_claude_code() {
+        let state = make_picker_state(vec![claude_entry()]);
+        assert_eq!(state.selected_kind(), Some(AiClientKind::ClaudeCode));
+    }
+
+    #[test]
+    fn picker_selected_kind_custom_entry() {
+        let state = make_picker_state(vec![custom_entry("Gemini", "gemini")]);
+        assert_eq!(
+            state.selected_kind(),
+            Some(AiClientKind::Custom {
+                name: "Gemini".to_string(),
+                command: "gemini".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn picker_selected_kind_tracks_selection() {
+        let mut state =
+            make_picker_state(vec![claude_entry(), custom_entry("OpenCode", "opencode")]);
+        assert_eq!(state.selected_kind(), Some(AiClientKind::ClaudeCode));
+        state.select_next();
+        assert_eq!(
+            state.selected_kind(),
+            Some(AiClientKind::Custom {
+                name: "OpenCode".to_string(),
+                command: "opencode".to_string(),
+            })
+        );
+    }
+
+    // ── scan_available integration ────────────────────────────────
+
+    #[test]
+    fn scan_available_excludes_fake_commands() {
+        // With a PATH that only contains something that doesn't exist,
+        // every KNOWN_CLIENT command should be unavailable.
+        // We can't override PATH portably in a unit test, so instead we
+        // verify the filtering property: any entry returned by scan_available
+        // must correspond to a real executable.
+        let state = AiClientPickerState::scan_available();
+        for entry in &state.entries {
+            assert!(
+                is_command_available(entry.command),
+                "scan_available returned '{}' but is_command_available says it's absent",
+                entry.command
+            );
+        }
+    }
+
+    #[test]
+    fn scan_available_selected_starts_at_zero() {
+        let state = AiClientPickerState::scan_available();
+        assert_eq!(state.selected, 0, "initial selection must be 0");
+    }
+
+    #[test]
+    fn scan_available_entries_have_known_client_data() {
+        // Every returned entry must originate from KNOWN_CLIENTS.
+        let state = AiClientPickerState::scan_available();
+        for entry in &state.entries {
+            let known = KNOWN_CLIENTS.iter().find(|k| k.command == entry.command);
+            assert!(
+                known.is_some(),
+                "scan_available returned unknown command '{}'",
+                entry.command
+            );
+            let known = known.unwrap();
+            assert_eq!(entry.label, known.label);
+            assert_eq!(entry.color, known.color);
+        }
+    }
+
+    #[test]
+    fn scan_available_claude_entry_maps_to_claude_code_kind() {
+        // If claude is on PATH, verify its kind. If not, the test is vacuous.
+        let state = AiClientPickerState::scan_available();
+        if let Some(entry) = state.entries.iter().find(|e| e.command == "claude") {
+            assert_eq!(
+                entry.kind,
+                AiClientKind::ClaudeCode,
+                "claude command must map to AiClientKind::ClaudeCode"
+            );
+        }
+    }
+
+    #[test]
+    fn scan_available_non_claude_entries_map_to_custom_kind() {
+        let state = AiClientPickerState::scan_available();
+        for entry in state.entries.iter().filter(|e| e.command != "claude") {
+            match &entry.kind {
+                AiClientKind::Custom { name, command } => {
+                    assert_eq!(name, entry.label);
+                    assert_eq!(command, entry.command);
+                }
+                other => panic!(
+                    "entry '{}' should be Custom but got {:?}",
+                    entry.command, other
+                ),
+            }
+        }
+    }
+
+    // ── overlay open_ai_client_picker ─────────────────────────────
+
+    #[test]
+    fn overlay_open_ai_client_picker_sets_active_kind() {
+        let mut overlay = OverlayState::default();
+        overlay.open_ai_client_picker();
+        assert!(overlay.is_active());
+        assert!(
+            matches!(overlay.active, Some(OverlayKind::AiClientPicker)),
+            "active overlay must be AiClientPicker"
+        );
+    }
+
+    #[test]
+    fn overlay_open_ai_client_picker_close_clears() {
+        let mut overlay = OverlayState::default();
+        overlay.open_ai_client_picker();
+        overlay.close();
+        assert!(!overlay.is_active());
     }
 }

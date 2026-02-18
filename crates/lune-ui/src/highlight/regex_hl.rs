@@ -7,7 +7,7 @@
 use std::ops::Range;
 
 use lune_core::highlight::{HighlightStyle, HighlightedLine, Highlighter, SpanVec, StyledSpan};
-use lune_core::language::{lang, LanguageId};
+use lune_core::language::{LanguageId, lang};
 use lune_core::prelude::TextBuffer;
 use regex::Regex;
 
@@ -196,10 +196,12 @@ mod tests {
 
         // First line should be a comment.
         assert!(!result[0].is_plain());
-        assert!(result[0]
-            .spans
-            .iter()
-            .any(|s| s.style == HighlightStyle::Comment));
+        assert!(
+            result[0]
+                .spans
+                .iter()
+                .any(|s| s.style == HighlightStyle::Comment)
+        );
     }
 
     #[test]
@@ -211,16 +213,20 @@ mod tests {
         let result = hl.highlight_lines(0..2);
 
         // Line 0: [package] should be Namespace.
-        assert!(result[0]
-            .spans
-            .iter()
-            .any(|s| s.style == HighlightStyle::Namespace));
+        assert!(
+            result[0]
+                .spans
+                .iter()
+                .any(|s| s.style == HighlightStyle::Namespace)
+        );
 
         // Line 1: "lune" should be String.
-        assert!(result[1]
-            .spans
-            .iter()
-            .any(|s| s.style == HighlightStyle::String));
+        assert!(
+            result[1]
+                .spans
+                .iter()
+                .any(|s| s.style == HighlightStyle::String)
+        );
     }
 
     #[test]
@@ -230,10 +236,12 @@ mod tests {
         hl.update(&buf, None);
 
         let result = hl.highlight_lines(0..2);
-        assert!(result[0]
-            .spans
-            .iter()
-            .any(|s| s.style == HighlightStyle::Keyword));
+        assert!(
+            result[0]
+                .spans
+                .iter()
+                .any(|s| s.style == HighlightStyle::Keyword)
+        );
     }
 
     #[test]
@@ -243,14 +251,18 @@ mod tests {
         hl.update(&buf, None);
 
         let result = hl.highlight_lines(0..2);
-        assert!(result[0]
-            .spans
-            .iter()
-            .any(|s| s.style == HighlightStyle::Comment));
-        assert!(result[1]
-            .spans
-            .iter()
-            .any(|s| s.style == HighlightStyle::String));
+        assert!(
+            result[0]
+                .spans
+                .iter()
+                .any(|s| s.style == HighlightStyle::Comment)
+        );
+        assert!(
+            result[1]
+                .spans
+                .iter()
+                .any(|s| s.style == HighlightStyle::String)
+        );
     }
 
     #[test]
