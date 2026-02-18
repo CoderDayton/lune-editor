@@ -1015,9 +1015,9 @@ accent = "#ABCDEF"
             vertical: None,
             horizontal: None,
         };
-        let result = bc.apply_to(BorderChars::rounded());
+        let result = bc.apply_to(BorderChars::plain());
         assert_eq!(result.top_left, '┌');
-        assert_eq!(result.top_right, '╮'); // kept from base
+        assert_eq!(result.top_right, '┐'); // kept from base
         assert_eq!(result.bottom_right, '┘');
         assert_eq!(result.vertical, '│'); // kept from base
     }

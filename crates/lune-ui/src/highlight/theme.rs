@@ -22,26 +22,29 @@ impl SyntaxTheme {
     pub fn dark() -> Self {
         let mut styles = [Style::default(); STYLE_COUNT];
 
-        styles[HighlightStyle::Keyword as usize] =
-            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-        styles[HighlightStyle::Type as usize] = Style::new().fg(Color::Yellow);
-        styles[HighlightStyle::Function as usize] = Style::new().fg(Color::Blue);
-        styles[HighlightStyle::String as usize] = Style::new().fg(Color::Green);
+        // Catppuccin Mocha palette for syntax highlighting.
+        styles[HighlightStyle::Keyword as usize] = Style::new()
+            .fg(Color::Rgb(203, 166, 247))
+            .add_modifier(Modifier::BOLD); // mauve
+        styles[HighlightStyle::Type as usize] = Style::new().fg(Color::Rgb(249, 226, 175)); // yellow
+        styles[HighlightStyle::Function as usize] = Style::new().fg(Color::Rgb(137, 180, 250)); // blue
+        styles[HighlightStyle::String as usize] = Style::new().fg(Color::Rgb(166, 227, 161)); // green
         styles[HighlightStyle::Comment as usize] = Style::new()
-            .fg(Color::DarkGray)
+            .fg(Color::Rgb(127, 132, 156)) // overlay1
             .add_modifier(Modifier::ITALIC);
-        styles[HighlightStyle::Number as usize] = Style::new().fg(Color::Magenta);
-        styles[HighlightStyle::Operator as usize] = Style::new().fg(Color::White);
-        styles[HighlightStyle::Punctuation as usize] = Style::new().fg(Color::DarkGray);
-        styles[HighlightStyle::Variable as usize] = Style::new().fg(Color::LightRed);
-        styles[HighlightStyle::Constant as usize] =
-            Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD);
-        styles[HighlightStyle::Attribute as usize] = Style::new().fg(Color::LightYellow);
-        styles[HighlightStyle::Namespace as usize] = Style::new().fg(Color::LightCyan);
+        styles[HighlightStyle::Number as usize] = Style::new().fg(Color::Rgb(250, 179, 135)); // peach
+        styles[HighlightStyle::Operator as usize] = Style::new().fg(Color::Rgb(137, 220, 235)); // sky
+        styles[HighlightStyle::Punctuation as usize] = Style::new().fg(Color::Rgb(147, 153, 178)); // overlay2
+        styles[HighlightStyle::Variable as usize] = Style::new().fg(Color::Rgb(205, 214, 244)); // text
+        styles[HighlightStyle::Constant as usize] = Style::new()
+            .fg(Color::Rgb(250, 179, 135))
+            .add_modifier(Modifier::BOLD); // peach
+        styles[HighlightStyle::Attribute as usize] = Style::new().fg(Color::Rgb(249, 226, 175)); // yellow
+        styles[HighlightStyle::Namespace as usize] = Style::new().fg(Color::Rgb(180, 190, 254)); // lavender
         styles[HighlightStyle::Error as usize] = Style::new()
-            .fg(Color::Red)
+            .fg(Color::Rgb(243, 139, 168)) // red
             .add_modifier(Modifier::UNDERLINED);
-        styles[HighlightStyle::Embedded as usize] = Style::new().fg(Color::LightGreen);
+        styles[HighlightStyle::Embedded as usize] = Style::new().fg(Color::Rgb(148, 226, 213)); // teal
         styles[HighlightStyle::Default as usize] = Style::default();
 
         Self { styles }
@@ -110,10 +113,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dark_theme_keyword_is_cyan_bold() {
+    fn dark_theme_keyword_is_mauve_bold() {
         let theme = SyntaxTheme::dark();
         let style = theme.resolve(HighlightStyle::Keyword);
-        assert_eq!(style.fg, Some(Color::Cyan));
+        assert_eq!(style.fg, Some(Color::Rgb(203, 166, 247)));
         assert!(style.add_modifier.contains(Modifier::BOLD));
     }
 
@@ -121,13 +124,14 @@ mod tests {
     fn dark_theme_string_is_green() {
         let theme = SyntaxTheme::dark();
         let style = theme.resolve(HighlightStyle::String);
-        assert_eq!(style.fg, Some(Color::Green));
+        assert_eq!(style.fg, Some(Color::Rgb(166, 227, 161)));
     }
 
     #[test]
     fn dark_theme_comment_is_italic() {
         let theme = SyntaxTheme::dark();
         let style = theme.resolve(HighlightStyle::Comment);
+        assert_eq!(style.fg, Some(Color::Rgb(127, 132, 156)));
         assert!(style.add_modifier.contains(Modifier::ITALIC));
     }
 

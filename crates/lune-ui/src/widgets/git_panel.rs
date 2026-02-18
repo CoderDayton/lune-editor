@@ -4,7 +4,9 @@
 //! Supports keyboard/mouse navigation, staging (`s`), unstaging (`u`),
 //! discarding (`d`), opening diff view (`Enter`), and committing (`c`).
 
-use crate::primitives::{Buffer, Color, Line, Modifier, Rect, Span, Style, Stylize, Widget};
+use crate::primitives::{
+    Block, Borders, Buffer, Color, Line, Modifier, Rect, Span, Style, Stylize, Widget,
+};
 
 use lune_core::workspace::FileStatus;
 use lune_git::{GitFileStatus, GitStatus};
@@ -197,29 +199,15 @@ pub fn render_git_panel(
         theme.border_unfocused
     };
 
-    // Reserve the leftmost column for the border separator.
-    let content_x = area.x + 1;
-    let content_width = area.width - 1;
-
-    // Draw a left border line with rounded corners for visual separation from the editor pane.
+    // Use a ratatui Block with a left border for the panel separator.
     let border_style = Style::default().fg(accent);
-    let tl_str = theme.border_chars.top_left.to_string();
-    let bl_str = theme.border_chars.bottom_left.to_string();
-    let v_str = theme.border_chars.vertical.to_string();
-    let last_y = area.y + area.height - 1;
-    for y in area.y..area.y + area.height {
-        if let Some(cell) = buf.cell_mut((area.x, y)) {
-            let sym = if y == area.y {
-                &tl_str
-            } else if y == last_y {
-                &bl_str
-            } else {
-                &v_str
-            };
-            cell.set_symbol(sym);
-            cell.set_style(border_style);
-        }
-    }
+    let block = Block::default()
+        .borders(Borders::LEFT)
+        .border_style(border_style);
+    let content_area = block.inner(area);
+    block.render(area, buf);
+    let content_x = content_area.x;
+    let content_width = content_area.width;
 
     // Title bar — accent color when focused.
     let title = " SOURCE CONTROL";

@@ -33,14 +33,14 @@ pub struct BorderChars {
 }
 
 impl BorderChars {
-    /// Rounded border character set: `╭╮╰╯│─`.
+    /// Plain border character set: `┌┐└┘│─`.
     #[inline]
-    pub const fn rounded() -> Self {
+    pub const fn plain() -> Self {
         Self {
-            top_left: '╭',
-            top_right: '╮',
-            bottom_left: '╰',
-            bottom_right: '╯',
+            top_left: '┌',
+            top_right: '┐',
+            bottom_left: '└',
+            bottom_right: '┘',
             vertical: '│',
             horizontal: '─',
         }
@@ -49,7 +49,7 @@ impl BorderChars {
 
 impl Default for BorderChars {
     fn default() -> Self {
-        Self::rounded()
+        Self::plain()
     }
 }
 
@@ -186,185 +186,212 @@ pub struct Theme {
 impl Theme {
     /// The built-in dark theme.
     ///
+    /// Uses a consistent RGB palette for predictable rendering across
+    /// terminals. Inspired by Catppuccin Mocha with a deep blue-gray base.
+    ///
     /// All style methods on `ratatui_core::style::Style` are `const fn`
     /// in ratatui-core 0.1, so this constructor is fully const-evaluable.
     pub const fn dark() -> Self {
-        let accent = Color::Rgb(80, 130, 220);
+        // ── Palette ──────────────────────────────────────────────
+        let base = Color::Rgb(30, 30, 46); // #1e1e2e  background
+        let surface0 = Color::Rgb(49, 50, 68); // #313244  raised surfaces
+        let surface1 = Color::Rgb(69, 71, 90); // #45475a  borders, gutters
+        let surface2 = Color::Rgb(88, 91, 112); // #585b70  dimmed text
+        let subtext0 = Color::Rgb(127, 132, 156); // #7f849c  muted text
+        let text = Color::Rgb(205, 214, 244); // #cdd6f4  primary text
+        let accent = Color::Rgb(137, 180, 250); // #89b4fa  blue accent
+        let green = Color::Rgb(166, 227, 161); // #a6e3a1
+        let yellow = Color::Rgb(249, 226, 175); // #f9e2af
+        let red = Color::Rgb(243, 139, 168); // #f38ba8
+        let mauve = Color::Rgb(203, 166, 247); // #cba6f7
+        let teal = Color::Rgb(148, 226, 213); // #94e2d5
+        let mantle = Color::Rgb(24, 24, 37); // #181825  status bar bg
 
         Self {
             // Borders
-            border_chars: BorderChars::rounded(),
+            border_chars: BorderChars::plain(),
             border_focused: accent,
-            border_unfocused: Color::DarkGray,
+            border_unfocused: surface1,
 
             // General UI
             accent,
-            bg: Color::Reset,
-            fg: Color::White,
-            fg_dim: Color::DarkGray,
-            fg_muted: Color::Gray,
-            selection_bg: Color::DarkGray,
+            bg: base,
+            fg: text,
+            fg_dim: surface2,
+            fg_muted: subtext0,
+            selection_bg: surface0,
 
             // Editor
-            editor_cursor_normal: Style::new().add_modifier(Modifier::REVERSED),
-            editor_cursor_insert: Style::new()
-                .fg(Color::White)
-                .add_modifier(Modifier::UNDERLINED),
-            editor_gutter_active: Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
-            editor_gutter_inactive: Style::new().fg(Color::DarkGray),
-            editor_gutter_separator: Color::DarkGray,
+            editor_cursor_normal: Style::new().fg(base).bg(text),
+            editor_cursor_insert: Style::new().fg(text).add_modifier(Modifier::UNDERLINED),
+            editor_gutter_active: Style::new().fg(text).add_modifier(Modifier::BOLD),
+            editor_gutter_inactive: Style::new().fg(surface1),
+            editor_gutter_separator: surface0,
 
             // File tree
-            tree_dir_fg: Color::Blue,
-            tree_file_fg: Color::White,
-            tree_symlink_fg: Color::Cyan,
-            tree_selected_bg: Color::DarkGray,
+            tree_dir_fg: accent,
+            tree_file_fg: text,
+            tree_symlink_fg: teal,
+            tree_selected_bg: surface0,
 
             // Git status
-            git_added: Color::Green,
-            git_modified: Color::Yellow,
-            git_deleted: Color::Red,
-            git_conflicted: Color::Magenta,
-            git_renamed: Color::Cyan,
-            git_untracked: Color::Gray,
-            git_ignored: Color::DarkGray,
+            git_added: green,
+            git_modified: yellow,
+            git_deleted: red,
+            git_conflicted: mauve,
+            git_renamed: teal,
+            git_untracked: subtext0,
+            git_ignored: surface1,
 
             // Diff view
-            diff_add_fg: Color::Green,
-            diff_add_bg: Color::Rgb(0, 40, 0),
-            diff_del_fg: Color::Red,
-            diff_del_bg: Color::Rgb(40, 0, 0),
-            diff_hunk_fg: Color::Cyan,
+            diff_add_fg: green,
+            diff_add_bg: Color::Rgb(26, 46, 26), // dark green tint
+            diff_del_fg: red,
+            diff_del_bg: Color::Rgb(46, 26, 30), // dark red tint
+            diff_hunk_fg: teal,
 
             // Live Mode overlay
-            live_change_bg: Color::Rgb(30, 40, 60),
+            live_change_bg: Color::Rgb(35, 40, 60),
 
             // Tab bar
             tab_active_focused: Style::new().fg(accent).add_modifier(Modifier::BOLD),
             tab_active_unfocused: Style::new()
-                .add_modifier(Modifier::BOLD)
-                .add_modifier(Modifier::REVERSED),
-            tab_inactive: Style::new().fg(Color::DarkGray),
-            tab_live_badge: Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                .fg(text)
+                .bg(surface0)
+                .add_modifier(Modifier::BOLD),
+            tab_inactive: Style::new().fg(surface2),
+            tab_live_badge: Style::new().fg(teal).add_modifier(Modifier::BOLD),
 
             // Status bar
             status_mode: Style::new()
-                .add_modifier(Modifier::BOLD)
-                .add_modifier(Modifier::REVERSED),
-            status_info: Style::new().add_modifier(Modifier::DIM),
-            status_bg: Style::new().add_modifier(Modifier::REVERSED),
+                .fg(base)
+                .bg(accent)
+                .add_modifier(Modifier::BOLD),
+            status_info: Style::new().fg(subtext0),
+            status_bg: Style::new().fg(subtext0).bg(mantle),
 
             // Notifications
-            notif_info: Color::Green,
-            notif_warn: Color::Yellow,
-            notif_error: Color::Red,
+            notif_info: green,
+            notif_warn: yellow,
+            notif_error: red,
 
             // Overlay / popup
-            overlay_border: Color::White,
+            overlay_border: accent,
             overlay_selected: Style::new()
-                .add_modifier(Modifier::BOLD)
-                .add_modifier(Modifier::REVERSED),
-            overlay_dir_fg: Color::Cyan,
-            overlay_file_fg: Color::White,
-            overlay_hint_fg: Color::DarkGray,
+                .fg(base)
+                .bg(accent)
+                .add_modifier(Modifier::BOLD),
+            overlay_dir_fg: teal,
+            overlay_file_fg: text,
+            overlay_hint_fg: surface2,
 
             // Welcome screen
-            welcome_title: Style::new().add_modifier(Modifier::BOLD),
-            welcome_text: Style::new().add_modifier(Modifier::DIM),
+            welcome_title: Style::new().fg(accent).add_modifier(Modifier::BOLD),
+            welcome_text: Style::new().fg(subtext0),
         }
     }
 
     /// Built-in light theme.
     ///
-    /// Designed for terminals with a light background. Uses darker
-    /// foreground colors and lighter accent tones.
+    /// Uses a consistent RGB palette (Catppuccin Latte-inspired) for
+    /// terminals with a light background.
     pub const fn light() -> Self {
-        let accent = Color::Rgb(30, 100, 200);
+        // ── Palette ──────────────────────────────────────────────
+        let base = Color::Rgb(239, 241, 245); // #eff1f5  background
+        let surface0 = Color::Rgb(204, 208, 218); // #ccd0da  raised surfaces
+        let surface1 = Color::Rgb(188, 192, 204); // #bcc0cc  borders
+        let surface2 = Color::Rgb(156, 160, 176); // #9ca0b0  dimmed text
+        let subtext0 = Color::Rgb(108, 111, 133); // #6c6f85  muted text
+        let text = Color::Rgb(76, 79, 105); // #4c4f69  primary text
+        let accent = Color::Rgb(30, 102, 245); // #1e66f5  blue accent
+        let green = Color::Rgb(64, 160, 43); // #40a02b
+        let yellow = Color::Rgb(223, 142, 29); // #df8e1d
+        let red = Color::Rgb(210, 15, 57); // #d20f39
+        let mauve = Color::Rgb(136, 57, 239); // #8839ef
+        let teal = Color::Rgb(23, 146, 153); // #179299
+        let mantle = Color::Rgb(230, 233, 239); // #e6e9ef  status bar bg
 
         Self {
             // Borders
-            border_chars: BorderChars::rounded(),
+            border_chars: BorderChars::plain(),
             border_focused: accent,
-            border_unfocused: Color::Gray,
+            border_unfocused: surface1,
 
             // General UI
             accent,
-            bg: Color::Reset,
-            fg: Color::Rgb(30, 30, 30),
-            fg_dim: Color::Gray,
-            fg_muted: Color::DarkGray,
-            selection_bg: Color::Rgb(200, 220, 245),
+            bg: base,
+            fg: text,
+            fg_dim: surface2,
+            fg_muted: subtext0,
+            selection_bg: surface0,
 
             // Editor
-            editor_cursor_normal: Style::new().add_modifier(Modifier::REVERSED),
-            editor_cursor_insert: Style::new()
-                .fg(Color::Rgb(30, 30, 30))
-                .add_modifier(Modifier::UNDERLINED),
-            editor_gutter_active: Style::new()
-                .fg(Color::Rgb(30, 30, 30))
-                .add_modifier(Modifier::BOLD),
-            editor_gutter_inactive: Style::new().fg(Color::Gray),
-            editor_gutter_separator: Color::Rgb(200, 200, 200),
+            editor_cursor_normal: Style::new().fg(base).bg(text),
+            editor_cursor_insert: Style::new().fg(text).add_modifier(Modifier::UNDERLINED),
+            editor_gutter_active: Style::new().fg(text).add_modifier(Modifier::BOLD),
+            editor_gutter_inactive: Style::new().fg(surface1),
+            editor_gutter_separator: surface0,
 
             // File tree
-            tree_dir_fg: Color::Rgb(0, 80, 180),
-            tree_file_fg: Color::Rgb(30, 30, 30),
-            tree_symlink_fg: Color::Rgb(0, 140, 140),
-            tree_selected_bg: Color::Rgb(220, 230, 245),
+            tree_dir_fg: accent,
+            tree_file_fg: text,
+            tree_symlink_fg: teal,
+            tree_selected_bg: surface0,
 
             // Git status
-            git_added: Color::Rgb(0, 130, 0),
-            git_modified: Color::Rgb(180, 130, 0),
-            git_deleted: Color::Rgb(200, 30, 30),
-            git_conflicted: Color::Rgb(160, 0, 160),
-            git_renamed: Color::Rgb(0, 140, 140),
-            git_untracked: Color::Gray,
-            git_ignored: Color::Rgb(180, 180, 180),
+            git_added: green,
+            git_modified: yellow,
+            git_deleted: red,
+            git_conflicted: mauve,
+            git_renamed: teal,
+            git_untracked: subtext0,
+            git_ignored: surface1,
 
             // Diff view
-            diff_add_fg: Color::Rgb(0, 130, 0),
+            diff_add_fg: green,
             diff_add_bg: Color::Rgb(220, 245, 220),
-            diff_del_fg: Color::Rgb(200, 30, 30),
+            diff_del_fg: red,
             diff_del_bg: Color::Rgb(255, 225, 225),
-            diff_hunk_fg: Color::Rgb(0, 140, 140),
+            diff_hunk_fg: teal,
 
             // Live Mode overlay
-            live_change_bg: Color::Rgb(230, 240, 255),
+            live_change_bg: Color::Rgb(220, 230, 250),
 
             // Tab bar
             tab_active_focused: Style::new().fg(accent).add_modifier(Modifier::BOLD),
             tab_active_unfocused: Style::new()
-                .add_modifier(Modifier::BOLD)
-                .add_modifier(Modifier::REVERSED),
-            tab_inactive: Style::new().fg(Color::Gray),
-            tab_live_badge: Style::new()
-                .fg(Color::Rgb(0, 140, 140))
+                .fg(text)
+                .bg(surface0)
                 .add_modifier(Modifier::BOLD),
+            tab_inactive: Style::new().fg(surface2),
+            tab_live_badge: Style::new().fg(teal).add_modifier(Modifier::BOLD),
 
             // Status bar
             status_mode: Style::new()
-                .add_modifier(Modifier::BOLD)
-                .add_modifier(Modifier::REVERSED),
-            status_info: Style::new().add_modifier(Modifier::DIM),
-            status_bg: Style::new().add_modifier(Modifier::REVERSED),
+                .fg(base)
+                .bg(accent)
+                .add_modifier(Modifier::BOLD),
+            status_info: Style::new().fg(subtext0),
+            status_bg: Style::new().fg(subtext0).bg(mantle),
 
             // Notifications
-            notif_info: Color::Rgb(0, 130, 0),
-            notif_warn: Color::Rgb(180, 130, 0),
-            notif_error: Color::Rgb(200, 30, 30),
+            notif_info: green,
+            notif_warn: yellow,
+            notif_error: red,
 
             // Overlay / popup
-            overlay_border: Color::Rgb(60, 60, 60),
+            overlay_border: accent,
             overlay_selected: Style::new()
-                .add_modifier(Modifier::BOLD)
-                .add_modifier(Modifier::REVERSED),
-            overlay_dir_fg: Color::Rgb(0, 140, 140),
-            overlay_file_fg: Color::Rgb(30, 30, 30),
-            overlay_hint_fg: Color::Gray,
+                .fg(base)
+                .bg(accent)
+                .add_modifier(Modifier::BOLD),
+            overlay_dir_fg: teal,
+            overlay_file_fg: text,
+            overlay_hint_fg: surface2,
 
             // Welcome screen
-            welcome_title: Style::new().add_modifier(Modifier::BOLD),
-            welcome_text: Style::new().add_modifier(Modifier::DIM),
+            welcome_title: Style::new().fg(accent).add_modifier(Modifier::BOLD),
+            welcome_text: Style::new().fg(subtext0),
         }
     }
 }
@@ -388,8 +415,8 @@ mod tests {
     }
 
     #[test]
-    fn border_chars_rounded_is_default() {
-        assert_eq!(BorderChars::default(), BorderChars::rounded());
+    fn border_chars_plain_is_default() {
+        assert_eq!(BorderChars::default(), BorderChars::plain());
     }
 
     #[test]
@@ -409,19 +436,16 @@ mod tests {
     }
 
     #[test]
-    fn editor_cursor_normal_is_reversed() {
+    fn editor_cursor_normal_has_explicit_colors() {
         let t = Theme::dark();
-        assert!(
-            t.editor_cursor_normal
-                .add_modifier
-                .contains(Modifier::REVERSED)
-        );
+        assert!(t.editor_cursor_normal.fg.is_some());
+        assert!(t.editor_cursor_normal.bg.is_some());
     }
 
     #[test]
-    fn editor_cursor_insert_is_underlined_white() {
+    fn editor_cursor_insert_is_underlined() {
         let t = Theme::dark();
-        assert_eq!(t.editor_cursor_insert.fg, Some(Color::White));
+        assert!(t.editor_cursor_insert.fg.is_some());
         assert!(
             t.editor_cursor_insert
                 .add_modifier
@@ -430,9 +454,9 @@ mod tests {
     }
 
     #[test]
-    fn gutter_active_is_bold_white() {
+    fn gutter_active_is_bold() {
         let t = Theme::dark();
-        assert_eq!(t.editor_gutter_active.fg, Some(Color::White));
+        assert!(t.editor_gutter_active.fg.is_some());
         assert!(t.editor_gutter_active.add_modifier.contains(Modifier::BOLD));
     }
 
@@ -444,10 +468,11 @@ mod tests {
     }
 
     #[test]
-    fn status_mode_is_bold_reversed() {
+    fn status_mode_is_bold_with_colors() {
         let t = Theme::dark();
         assert!(t.status_mode.add_modifier.contains(Modifier::BOLD));
-        assert!(t.status_mode.add_modifier.contains(Modifier::REVERSED));
+        assert!(t.status_mode.fg.is_some());
+        assert!(t.status_mode.bg.is_some());
     }
 
     #[test]
@@ -462,8 +487,8 @@ mod tests {
         // Verify both themes can be constructed in a const context.
         const DARK: Theme = Theme::dark();
         const LIGHT: Theme = Theme::light();
-        assert_eq!(DARK.accent, Color::Rgb(80, 130, 220));
-        assert_eq!(LIGHT.accent, Color::Rgb(30, 100, 200));
+        assert_eq!(DARK.accent, Color::Rgb(137, 180, 250));
+        assert_eq!(LIGHT.accent, Color::Rgb(30, 102, 245));
     }
 
     #[test]

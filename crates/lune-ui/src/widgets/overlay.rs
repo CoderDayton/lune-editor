@@ -712,7 +712,7 @@ fn render_ai_client_picker(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .title(" Open AI Session ")
         .style(Style::new().fg(theme.overlay_border));
     let inner = block.inner(popup_rect);
@@ -801,7 +801,7 @@ fn render_popup_frame(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .title(title)
         .style(Style::new().fg(theme.overlay_border));
     let inner = block.inner(popup_rect);
@@ -974,7 +974,7 @@ fn render_centered_popup(
     let title_str = format!(" {title} ");
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .title(title_str)
         .style(Style::new().fg(theme.overlay_border));
     let inner = block.inner(popup_rect);

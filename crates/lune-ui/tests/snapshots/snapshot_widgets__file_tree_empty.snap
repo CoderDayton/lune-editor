@@ -1,13 +1,12 @@
 ---
 source: crates/lune-ui/tests/snapshot_widgets.rs
-assertion_line: 428
 expression: buffer_to_text(&buf)
 ---
- my-project                  ╮
+ my-project                  │
                              │
                              │
                              │
                              │
                              │
                              │
-                             ╯
+                             │

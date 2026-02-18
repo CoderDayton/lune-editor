@@ -70,7 +70,7 @@ impl Default for EffectDefs {
     fn default() -> Self {
         Self {
             all_enabled: true,
-            focus_glow: EffectConfig::new(0.15),
+            focus_glow: EffectConfig::new(0.35),
             diff_pulse: EffectConfig::new(0.25),
             ai_thinking: EffectConfig::new(0.6),
             notification_flash: EffectConfig::new(0.20),
@@ -284,25 +284,21 @@ impl Default for LuneEffects {
     }
 }
 
-/// Create a focus glow effect: brightens the outer 1-cell border of the
-/// area using the accent color, running indefinitely until cancelled.
-fn create_focus_glow(intensity: f32, accent: Color) -> Effect {
-    // Use effect_fn_buf for a custom per-frame effect that paints the
-    // inner border cells with the accent color at the given intensity.
-    // This runs every frame indefinitely.
-    let glow = fx::effect_fn_buf(
-        (),                        // no state needed
-        Duration::from_millis(16), // ~1 frame at 60fps
-        move |_state: &mut (), ctx, buf: &mut Buffer| {
-            let area = ctx.area;
-            if area.width < 2 || area.height < 2 {
-                return;
-            }
-            paint_inner_border(buf, area, accent, intensity);
-        },
+/// Create a focus glow effect placeholder.
+///
+/// The actual border painting is handled directly in `app.rs` `render()`
+/// using panel-specific areas from the layout splits. This effect exists
+/// solely so the effect manager reports `is_running() == true` for the
+/// focus glow lifecycle (start/cancel on focus change).
+fn create_focus_glow(_intensity: f32, _accent: Color) -> Effect {
+    // No-op: just tick without painting. The direct paint_inner_border()
+    // calls in the render function handle correct per-panel areas.
+    let noop = fx::effect_fn_buf(
+        (),
+        Duration::from_millis(16),
+        move |_state: &mut (), _ctx, _buf: &mut Buffer| {},
     );
-
-    fx::never_complete(glow)
+    fx::never_complete(noop)
 }
 
 // ── Step 3: Diff pulse ──────────────────────────────────────────────────

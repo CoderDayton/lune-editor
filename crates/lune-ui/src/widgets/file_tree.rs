@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use crate::primitives::{Buffer, Line, Modifier, Rect, Span, Style, Widget};
+use crate::primitives::{Block, Borders, Buffer, Line, Modifier, Rect, Span, Style, Widget};
 
 use lune_core::workspace::{DirEntry, EntryKind, FileStatus, Workspace, flatten_tree};
 
@@ -229,13 +229,20 @@ pub fn render_file_tree(
         return;
     }
 
-    // Reserve the rightmost column for the border separator.
-    let content_width = area.width - 1;
     let accent = if is_focused {
         theme.border_focused
     } else {
         theme.border_unfocused
     };
+
+    // Use a ratatui Block with a right border for the panel separator.
+    let border_style = Style::default().fg(accent);
+    let block = Block::default()
+        .borders(Borders::RIGHT)
+        .border_style(border_style);
+    let content_area = block.inner(area);
+    block.render(area, buf);
+    let content_width = content_area.width;
 
     // Header row — accent color when focused.
     let header = format!(" {workspace_name}");
@@ -246,8 +253,10 @@ pub fn render_file_tree(
     } else {
         Style::default().add_modifier(Modifier::BOLD)
     };
-    Line::from(Span::styled(header, header_style))
-        .render(Rect::new(area.x, area.y, content_width, 1), buf);
+    Line::from(Span::styled(header, header_style)).render(
+        Rect::new(content_area.x, content_area.y, content_width, 1),
+        buf,
+    );
 
     if area.height < 2 {
         return;
@@ -263,13 +272,13 @@ pub fn render_file_tree(
         .take(content_height);
 
     for (i, (depth, entry)) in visible_entries.enumerate() {
-        let y = area.y + 1 + i as u16;
-        if y >= area.y + area.height {
+        let y = content_area.y + 1 + i as u16;
+        if y >= content_area.y + content_area.height {
             break;
         }
 
         let is_selected = state.scroll_offset + i == state.selected;
-        let line_area = Rect::new(area.x, y, content_width, 1);
+        let line_area = Rect::new(content_area.x, y, content_width, 1);
 
         render_entry(
             line_area,
@@ -280,25 +289,6 @@ pub fn render_file_tree(
             &state.config,
             theme,
         );
-    }
-
-    // Draw a right border line for visual separation from the editor pane.
-    let border_x = area.x + content_width;
-    let border_style = Style::default().fg(accent);
-    let v_str: String = theme.border_chars.vertical.to_string();
-    let tr_str: String = theme.border_chars.top_right.to_string();
-    let br_str: String = theme.border_chars.bottom_right.to_string();
-    for y in area.y..area.y + area.height {
-        if let Some(cell) = buf.cell_mut((border_x, y)) {
-            if y == area.y {
-                cell.set_symbol(&tr_str);
-            } else if y == area.y + area.height - 1 {
-                cell.set_symbol(&br_str);
-            } else {
-                cell.set_symbol(&v_str);
-            }
-            cell.set_style(border_style);
-        }
     }
 }
 

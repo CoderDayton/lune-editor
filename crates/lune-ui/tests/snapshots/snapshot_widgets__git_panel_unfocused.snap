@@ -1,9 +1,8 @@
 ---
 source: crates/lune-ui/tests/snapshot_widgets.rs
-assertion_line: 607
 expression: buffer_to_text(&buf)
 ---
-╭ SOURCE CONTROL
+│ SOURCE CONTROL
 │ Staged Changes (2)
 │ M src/main.rs
 │ A src/new_file.rs
@@ -14,4 +13,4 @@ expression: buffer_to_text(&buf)
 │
 │
 │
-╰
+│

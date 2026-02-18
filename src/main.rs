@@ -1,6 +1,7 @@
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use lune_core::config::ConfigPaths;
 use lune_core::recovery::RecoveryState;
 use lune_core::settings::{CliOverrides, Settings};
@@ -202,6 +203,9 @@ fn main() -> Result<()> {
     // Record this workspace in recent workspaces.
     record_recent_workspace(&state, workspace_root.as_deref());
 
+    // Verify we have a controlling terminal before entering the TUI.
+    require_controlling_terminal()?;
+
     // Run the TUI event loop.
     lune_ui::app::run(&mut state)?;
 
@@ -227,6 +231,18 @@ fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Bail early with a clear message if there is no controlling terminal.
+///
+/// crossterm's `enable_raw_mode()` opens `/dev/tty` which returns ENXIO
+/// when the process has no controlling terminal (pipes, CI, detached).
+fn require_controlling_terminal() -> Result<()> {
+    File::open("/dev/tty").context(
+        "No controlling terminal found. \
+         Lune must be run in an interactive terminal, not from a pipe, CI, or detached process.",
+    )?;
     Ok(())
 }
 
