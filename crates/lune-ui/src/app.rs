@@ -1941,17 +1941,24 @@ fn handle_insert_mode(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
 
 /// Handle key events in normal mode — characters are vim commands.
 ///
-/// When vim is disabled, only `i` (return to Insert) and arrow keys are
-/// accepted.  All other vim Normal-mode commands are ignored.
+/// When vim is disabled, only `i` (return to Insert), `h/j/k/l`
+/// navigation, and arrow keys are accepted.  All other vim Normal-mode
+/// commands are ignored.
 fn handle_normal_mode(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
     if let KeyCode::Char(ch) = key.code {
-        // When vim is disabled, only allow `i` to return to Insert mode.
+        // When vim is disabled, allow `i` and basic h/j/k/l navigation.
         if !state.vim_enabled {
-            if ch == 'i' {
-                state.vim.enter_insert();
-                return Control::Changed;
-            }
-            return Control::Continue;
+            return match ch {
+                'i' => {
+                    state.vim.enter_insert();
+                    Control::Changed
+                }
+                'h' => apply_motion(state, |buf| buf.move_left(false)),
+                'j' => apply_motion(state, |buf| buf.move_down(false)),
+                'k' => apply_motion(state, |buf| buf.move_up(false)),
+                'l' => apply_motion(state, |buf| buf.move_right(false)),
+                _ => Control::Continue,
+            };
         }
         let dummy = TextBuffer::new();
         let buf = state
