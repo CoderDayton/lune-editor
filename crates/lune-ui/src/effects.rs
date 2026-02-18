@@ -436,26 +436,36 @@ pub fn paint_inner_border(buf: &mut Buffer, area: Rect, accent: Color, intensity
     let Color::Rgb(ar, ag, ab) = accent else {
         return; // Only RGB accent colors supported for blending.
     };
+    if area.width < 2 || area.height < 2 {
+        return;
+    }
 
     let x0 = area.x;
-    let x1 = area.x + area.width.saturating_sub(1);
+    let x1 = area.x + area.width - 1;
     let y0 = area.y;
-    let y1 = area.y + area.height.saturating_sub(1);
+    let y1 = area.y + area.height - 1;
+    let bg_t = intensity * 0.5;
 
-    for y in area.y..area.y.saturating_add(area.height) {
-        for x in area.x..area.x.saturating_add(area.width) {
-            // Check if this cell is on the inner border (1-cell thick).
-            let on_border = x == x0 || x == x1 || y == y0 || y == y1;
-            if !on_border {
-                continue;
-            }
+    // PERF: iterate only the 4 border segments instead of the full w×h cell grid.
+    // For an 80×40 area: 3200 cells visited → 2×80+2×38 = 236 (~93% reduction).
 
-            let cell = &mut buf[(x, y)];
-            // Blend the foreground color toward accent.
-            cell.fg = blend_toward(cell.fg, ar, ag, ab, intensity);
-            // Blend the background color toward accent (subtler).
-            cell.bg = blend_toward(cell.bg, ar, ag, ab, intensity * 0.5);
-        }
+    // Top and bottom rows (includes all 4 corners).
+    for x in x0..=x1 {
+        let cell = &mut buf[(x, y0)];
+        cell.fg = blend_toward(cell.fg, ar, ag, ab, intensity);
+        cell.bg = blend_toward(cell.bg, ar, ag, ab, bg_t);
+        let cell = &mut buf[(x, y1)];
+        cell.fg = blend_toward(cell.fg, ar, ag, ab, intensity);
+        cell.bg = blend_toward(cell.bg, ar, ag, ab, bg_t);
+    }
+    // Left and right columns (excluding corners already painted above).
+    for y in (y0 + 1)..y1 {
+        let cell = &mut buf[(x0, y)];
+        cell.fg = blend_toward(cell.fg, ar, ag, ab, intensity);
+        cell.bg = blend_toward(cell.bg, ar, ag, ab, bg_t);
+        let cell = &mut buf[(x1, y)];
+        cell.fg = blend_toward(cell.fg, ar, ag, ab, intensity);
+        cell.bg = blend_toward(cell.bg, ar, ag, ab, bg_t);
     }
 }
 

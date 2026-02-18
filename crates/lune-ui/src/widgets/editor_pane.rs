@@ -10,6 +10,7 @@
 use crate::primitives::{Buffer, Color, Line, Rect, Span, Style, Stylize, Widget};
 
 use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 
 use lune_core::diff::LiveHunkKind;
 use lune_core::highlight::{HighlightedLine, StyledSpan};
@@ -359,7 +360,14 @@ pub fn render_editor_pane(
             );
 
             // Look up highlighted spans for this line.
-            let hl_line = highlighted.and_then(|lines| lines.iter().find(|hl| hl.line == line_idx));
+            // PERF: binary search O(log n) — HighlightedLine entries are sorted by
+            // line index (tree-sitter produces them in source order).
+            let hl_line = highlighted.and_then(|lines| {
+                lines
+                    .binary_search_by_key(&line_idx, |hl| hl.line)
+                    .ok()
+                    .map(|i| &lines[i])
+            });
 
             // Fetch the line from the cache (already prepared above).
             let cached_line = viewport.line_cache.get(line_idx);
@@ -504,6 +512,39 @@ fn apply_live_bg_tint(
     }
 }
 
+/// Extract a `&str` window into `s` starting at char offset `start` for `width` chars.
+///
+/// Zero-allocation ASCII fast-path (O(1) pointer arithmetic); correct UTF-8 fallback.
+#[inline]
+fn char_window(s: &str, start: usize, width: usize) -> &str {
+    if s.is_ascii() {
+        // ASCII: every byte is a char boundary — direct byte slice.
+        let a = start.min(s.len());
+        let b = (start + width).min(s.len());
+        &s[a..b]
+    } else {
+        // UTF-8: walk char_indices to find byte boundaries.
+        let mut start_byte = s.len();
+        let mut end_byte = s.len();
+        let mut col = 0usize;
+        for (byte_idx, _) in s.char_indices() {
+            if col == start {
+                start_byte = byte_idx;
+            }
+            if col == start + width {
+                end_byte = byte_idx;
+                break;
+            }
+            col += 1;
+        }
+        if start_byte <= end_byte {
+            &s[start_byte..end_byte]
+        } else {
+            ""
+        }
+    }
+}
+
 /// Render the text content of a single line with cursor, selection, and syntax highlighting.
 ///
 /// `cached_line` is the pre-fetched line content from the `LineCache`,
@@ -526,21 +567,20 @@ fn render_line_content(
 ) {
     let line_text = cached_line.trim_end_matches('\n').trim_end_matches('\r');
 
-    // Apply horizontal scroll.
-    let visible_text: String = line_text.chars().skip(left_col).take(width).collect();
-
     // Render the text — either with syntax highlighting or plain.
+    // PERF: char_window returns a &str slice (zero-alloc ASCII fast-path); the
+    // styled path passes raw line_text + offsets so build_styled_line slices in-place.
     let rect = Rect::new(x, y, width as u16, 1);
 
     if let Some(hl) = hl_line {
         if hl.is_plain() {
-            Line::from(visible_text.as_str()).render(rect, buf);
+            Line::from(char_window(line_text, left_col, width)).render(rect, buf);
         } else {
             let styled_spans = build_styled_line(line_text, left_col, width, &hl.spans, theme);
             Line::from(styled_spans).render(rect, buf);
         }
     } else {
-        Line::from(visible_text.as_str()).render(rect, buf);
+        Line::from(char_window(line_text, left_col, width)).render(rect, buf);
     }
 
     // Apply selection highlighting.
@@ -570,8 +610,8 @@ fn build_styled_line<'a>(
     let right_col = left_col + width;
 
     // Build a char→byte offset lookup from char_indices, avoiding Vec<char> allocation.
-    // We collect byte offsets for each char index, plus the final byte offset.
-    let char_byte_offsets: Vec<usize> = line_text
+    // PERF: SmallVec<128> avoids heap allocation for lines ≤ 127 chars (~90% of code).
+    let char_byte_offsets: SmallVec<[usize; 128]> = line_text
         .char_indices()
         .map(|(byte_idx, _)| byte_idx)
         .chain(std::iter::once(line_text.len()))
@@ -587,7 +627,8 @@ fn build_styled_line<'a>(
         }
     };
 
-    let mut result: Vec<Span<'a>> = Vec::new();
+    // Pre-allocate: spans.len() + 2 covers styled spans plus gap fills on both sides.
+    let mut result: Vec<Span<'a>> = Vec::with_capacity(spans.len() + 2);
     let mut pos = left_col;
 
     for span in spans {

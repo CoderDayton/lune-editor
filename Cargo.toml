@@ -142,3 +142,8 @@ strip = "symbols"
 # ── Dev profile (faster iteration) ─────────────────────────────────────
 [profile.dev]
 debug = "line-tables-only"
+
+# Compile all dependencies at opt-level 3 even in dev — tree-sitter, ratatui,
+# and tachyonfx are 10-30× faster when optimized; incremental builds are unaffected.
+[profile.dev.package."*"]
+opt-level = 3

@@ -163,35 +163,48 @@ pub fn compute_layout(area: Rect, state: &LayoutState) -> LayoutSplits {
         };
     }
 
-    // Build the constraint list for the horizontal layout.
-    let mut constraints = Vec::new();
-    if left_width > 0 {
-        constraints.push(Constraint::Length(left_width));
-    }
-    constraints.push(Constraint::Length(center_width));
-    if right_width > 0 {
-        constraints.push(Constraint::Length(right_width));
-    }
-
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(constraints)
-        .split(content_area);
-
-    let mut idx = 0;
-    let left = if left_width > 0 {
-        let r = Some(chunks[idx]);
-        idx += 1;
-        r
-    } else {
-        None
-    };
-    let center = chunks[idx];
-    idx += 1;
-    let right = if right_width > 0 {
-        Some(chunks[idx])
-    } else {
-        None
+    // Build the horizontal layout.
+    // PERF: use fixed-size array literals per branch — eliminates the Vec<Constraint>
+    // allocation (and the `idx` counter) since there are only 4 possible column combos.
+    let (left, center, right) = match (left_width > 0, right_width > 0) {
+        (false, false) => {
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(center_width)])
+                .split(content_area);
+            (None, chunks[0], None)
+        }
+        (true, false) => {
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(left_width),
+                    Constraint::Length(center_width),
+                ])
+                .split(content_area);
+            (Some(chunks[0]), chunks[1], None)
+        }
+        (false, true) => {
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(center_width),
+                    Constraint::Length(right_width),
+                ])
+                .split(content_area);
+            (None, chunks[0], Some(chunks[1]))
+        }
+        (true, true) => {
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(left_width),
+                    Constraint::Length(center_width),
+                    Constraint::Length(right_width),
+                ])
+                .split(content_area);
+            (Some(chunks[0]), chunks[1], Some(chunks[2]))
+        }
     };
 
     let left_border_x = left.map(|r| r.x + r.width);

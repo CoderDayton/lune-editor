@@ -1281,6 +1281,7 @@ dependencies = [
  "regex",
  "rustc-hash",
  "serde",
+ "smallvec",
  "tachyonfx",
  "tempfile",
  "toml",
