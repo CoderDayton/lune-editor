@@ -57,7 +57,7 @@ portable-pty = "0.9"
 vt100 = "0.16"
 
 # Serialization / config
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 toml = "0.8"
 bincode = { version = "2", features = ["serde"] }
 
