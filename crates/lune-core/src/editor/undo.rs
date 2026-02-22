@@ -6,6 +6,8 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use crate::position::{CursorState, Position};
 
 /// Monotonically increasing revision identifier.
@@ -15,7 +17,7 @@ pub type RevisionId = u64;
 ///
 /// Text payloads use `Arc<str>` so that `clone()` and `inverse()` are O(1)
 /// (reference-count bump) instead of O(n) heap allocation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EditOp {
     /// Text was inserted at a position.
     Insert {
@@ -91,7 +93,7 @@ fn bytecount_newlines(bytes: &[u8]) -> usize {
 }
 
 /// A group of edit operations that form a single undo step.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Transaction {
     /// The revision this transaction produced.
     pub revision: RevisionId,
@@ -173,6 +175,33 @@ impl Default for UndoStack {
     fn default() -> Self {
         Self::new()
     }
+}
+
+impl UndoStack {
+    /// Read-only access to the underlying entries.
+    pub(crate) fn entries(&self) -> &VecDeque<Transaction> {
+        &self.entries
+    }
+
+    /// Replace all entries (for undo state restoration).
+    pub(crate) fn replace(&mut self, entries: VecDeque<Transaction>) {
+        self.entries = entries;
+        // Trim to capacity if the restored state exceeds max.
+        while self.entries.len() > self.max_entries {
+            self.entries.pop_front();
+        }
+    }
+}
+
+/// Serializable snapshot of undo/redo history for persistence.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct UndoState {
+    /// Undo stack entries (oldest first).
+    pub undo_entries: Vec<Transaction>,
+    /// Redo stack entries (oldest first).
+    pub redo_entries: Vec<Transaction>,
+    /// Content fingerprint for mismatch detection.
+    pub content_hash: u64,
 }
 
 #[cfg(test)]

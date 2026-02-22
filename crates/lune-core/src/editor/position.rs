@@ -5,11 +5,13 @@
 
 use std::cmp::Ordering;
 
+use serde::{Deserialize, Serialize};
+
 /// A position in a text buffer, identified by line and column.
 ///
 /// Both `line` and `col` are 0-based. `col` represents a character (char)
 /// offset within the line, not a byte offset.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Position {
     /// 0-based line index.
     pub line: usize,
@@ -45,7 +47,7 @@ impl PartialOrd for Position {
 /// When `anchor == head`, the selection is collapsed to a cursor (no selected
 /// text). The anchor is where the selection started; the head is where the
 /// cursor currently sits.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Selection {
     /// Where the selection started.
     pub anchor: Position,
@@ -102,7 +104,7 @@ impl Selection {
 
 /// The full cursor state for a buffer, supporting a primary selection and
 /// optional secondary cursors for multi-cursor editing.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CursorState {
     /// The primary selection / cursor.
     pub primary: Selection,

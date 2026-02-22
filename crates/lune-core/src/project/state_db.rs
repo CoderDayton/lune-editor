@@ -140,6 +140,44 @@ impl StateDb {
         }
     }
 
+    // ── Undo state ────────────────────────────────────────────────────
+
+    /// Build a sled key for per-file undo state.
+    fn undo_key(root: &Path, file: &Path) -> Vec<u8> {
+        let root_hash = path_hash(root);
+        let file_hash = path_hash(file);
+        format!("undo:{root_hash:016x}:{file_hash:016x}").into_bytes()
+    }
+
+    /// Persist undo/redo history for a file within a workspace.
+    ///
+    /// # Errors
+    /// Returns an error if serialization or the sled write fails.
+    pub fn put_undo(
+        &self,
+        root: &Path,
+        file: &Path,
+        state: &crate::undo::UndoState,
+    ) -> anyhow::Result<()> {
+        let key = Self::undo_key(root, file);
+        self.put_raw(&key, state)
+    }
+
+    /// Load persisted undo/redo history for a file.
+    ///
+    /// Returns `None` if no saved state exists.
+    ///
+    /// # Errors
+    /// Returns an error if the sled read or deserialization fails.
+    pub fn get_undo(
+        &self,
+        root: &Path,
+        file: &Path,
+    ) -> anyhow::Result<Option<crate::undo::UndoState>> {
+        let key = Self::undo_key(root, file);
+        self.get_raw(&key)
+    }
+
     // ── Generic helpers ───────────────────────────────────────────────
 
     /// Store an arbitrary serde-serializable value under a raw key.

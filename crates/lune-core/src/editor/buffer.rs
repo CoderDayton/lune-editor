@@ -12,7 +12,7 @@ use ropey::Rope;
 use uuid::Uuid;
 
 use crate::position::{CursorState, Position, Selection};
-use crate::undo::{EditOp, RevisionId, Transaction, UndoStack, end_position_after_insert};
+use crate::undo::{EditOp, RevisionId, Transaction, UndoStack, UndoState, end_position_after_insert};
 
 use std::sync::Arc;
 
@@ -412,6 +412,53 @@ impl TextBuffer {
                 self.rope.remove(start_idx..end_idx);
             }
         }
+    }
+
+    // ── Undo state persistence ────────────────────────────────────────
+
+    /// Extract a serializable snapshot of the undo/redo history.
+    ///
+    /// Up to `max_entries` transactions are captured from each stack.
+    /// The returned `UndoState` includes a content hash so that
+    /// `restore_undo_state` can reject stale snapshots.
+    #[must_use]
+    pub fn extract_undo_state(&self, max_entries: usize) -> UndoState {
+        let take = |stack: &UndoStack| -> Vec<Transaction> {
+            let entries = stack.entries();
+            let skip = entries.len().saturating_sub(max_entries);
+            entries.iter().skip(skip).cloned().collect()
+        };
+        UndoState {
+            undo_entries: take(&self.undo_stack),
+            redo_entries: take(&self.redo_stack),
+            content_hash: self.content_hash(),
+        }
+    }
+
+    /// Restore undo/redo history from a persisted snapshot.
+    ///
+    /// Returns `true` if the content hash matches and the state was
+    /// restored, `false` if the buffer contents have changed since the
+    /// snapshot was taken (in which case nothing is modified).
+    pub fn restore_undo_state(&mut self, state: UndoState) -> bool {
+        if state.content_hash != self.content_hash() {
+            return false;
+        }
+        self.undo_stack.replace(state.undo_entries.into());
+        self.redo_stack.replace(state.redo_entries.into());
+        true
+    }
+
+    /// FNV-1a hash of the full buffer content for mismatch detection.
+    fn content_hash(&self) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for chunk in self.rope.chunks() {
+            for byte in chunk.as_bytes() {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        hash
     }
 
     // ── Cursor movement ───────────────────────────────────────────────

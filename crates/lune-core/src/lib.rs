@@ -9,21 +9,13 @@
 //! - **Search / Replace**: Pattern matching within buffers
 //! - **Diff**: Change detection via the `similar` crate
 
-pub mod buffer;
-pub mod config;
-pub mod diff;
-pub mod highlight;
-pub mod language;
-pub mod position;
-pub mod recovery;
-pub mod registry;
-pub mod search;
-pub mod settings;
-pub mod state_db;
-pub mod undo;
-pub mod watcher;
-pub mod workspace;
-pub mod workspace_state;
+pub mod editor;
+pub mod project;
+pub mod syntax;
+
+pub use editor::{buffer, diff, position, registry, search, undo};
+pub use project::{config, recovery, settings, state_db, watcher, workspace, workspace_state};
+pub use syntax::{highlight, language};
 
 /// Convenient re-exports of the most commonly used types.
 pub mod prelude {
