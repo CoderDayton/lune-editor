@@ -9,9 +9,9 @@
 //! - **[`context`]**: Editor context snapshots for AI context injection
 
 pub mod context;
-pub mod manager;
-pub mod pty;
-pub mod session;
+pub mod runtime;
+
+pub use runtime::{manager, pty, session};
 
 // Re-exports for convenience.
 pub use context::{

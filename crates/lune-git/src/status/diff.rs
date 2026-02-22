@@ -1,14 +1,14 @@
 //! Diff computation for working tree and index.
 //!
 //! Provides [`FileDiff`], [`DiffHunk`], and [`DiffLine`] types, plus
-//! methods on [`super::service::GitService`] to compute diffs.
+//! methods on [`crate::service::GitService`] to compute diffs.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use git2::{Diff, DiffFormat, DiffOptions};
 
-use super::service::GitService;
+use crate::service::GitService;
 
 /// A diff for a single file.
 #[derive(Clone, Debug)]

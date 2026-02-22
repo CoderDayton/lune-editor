@@ -8,7 +8,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use super::service::GitService;
+use crate::service::GitService;
 
 /// Type of gutter indicator for a single line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

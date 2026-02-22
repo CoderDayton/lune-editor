@@ -7,10 +7,11 @@
 //! - **[`GutterMarks`]**: Line-level change indicators (added/modified/deleted)
 //! - **Diff**: Unified diff generation for the panel ([`FileDiff`], [`DiffHunk`])
 
-pub mod diff;
-pub mod gutter;
-pub mod service;
-pub mod staging;
+pub mod repo;
+pub mod status;
+
+pub use repo::service;
+pub use status::{diff, gutter, staging};
 
 pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 pub use gutter::{GutterMark, GutterMarks};

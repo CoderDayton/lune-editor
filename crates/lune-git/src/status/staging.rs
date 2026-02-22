@@ -9,7 +9,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use git2::Oid;
 
-use super::service::GitService;
+use crate::service::GitService;
 
 impl GitService {
     /// Stage a file by adding it to the index.

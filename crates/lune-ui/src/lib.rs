@@ -8,16 +8,12 @@
 //! - **Event routing**: rat-salsa event loop integration, focus management
 //! - **Effects**: tachyonfx-based visual effects and animations
 
-pub mod primitives;
-
-pub mod app;
-pub mod effects;
-pub mod event;
-pub mod focus;
+pub mod base;
 pub mod highlight;
-pub mod keybindings;
-pub mod layout;
-pub mod theme;
-pub mod theme_config;
-pub mod vim;
+pub mod runtime;
+pub mod style;
 pub mod widgets;
+
+pub use base::primitives;
+pub use runtime::{app, effects, event, focus, keybindings, layout, vim};
+pub use style::{theme, theme_config};
