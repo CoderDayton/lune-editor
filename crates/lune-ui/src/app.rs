@@ -5,7 +5,6 @@
 //! function pointers required by `run_tui`.
 
 use rustc_hash::FxHashMap;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -20,7 +19,6 @@ use crate::primitives::{
 };
 
 use lune_core::prelude::*;
-use lune_core::ropey::Rope;
 use lune_core::settings::Settings;
 use lune_core::watcher::{FileWatcher, WatchEvent};
 use lune_core::workspace::EntryKind;
@@ -31,7 +29,7 @@ use lune_ai::context::{
     EditorContext, FileContext, GitStatusSummary, SelectionContext, TabContext,
     extract_selection_text,
 };
-use lune_ai::{AiClientKind, AiManager, LiveModeController, TermSize as AiTermSize};
+use lune_ai::{AiClientKind, AiManager, TermSize as AiTermSize};
 
 use crate::highlight;
 use crate::highlight::theme::SyntaxTheme;
@@ -149,8 +147,6 @@ pub struct AppState {
     pub ai_manager: AiManager,
     /// Last known AI terminal size (to avoid redundant resizes).
     last_ai_term_size: Option<AiTermSize>,
-    /// Live Mode controller (diff tracking, accept/reject state).
-    pub live_mode: LiveModeController,
     /// Whether the AI thinking effect is currently active.
     ai_thinking_active: bool,
     /// Notification count at last render (for detecting new notifications).
@@ -225,7 +221,6 @@ impl AppState {
             last_render: Instant::now(),
             ai_manager: AiManager::new(),
             last_ai_term_size: None,
-            live_mode: LiveModeController::new(),
             ai_thinking_active: false,
             last_notification_count: 0,
             config_paths: None,
@@ -731,7 +726,6 @@ impl AppState {
             ai_status: self.build_ai_status(),
             file_type: self.detect_file_type(),
             message: self.status_message.clone(),
-            live_mode: self.build_live_mode_status(),
         }
     }
 
@@ -788,20 +782,6 @@ impl AppState {
                 }
             },
         )
-    }
-
-    /// Build a Live Mode status string for the status bar.
-    fn build_live_mode_status(&self) -> String {
-        if !self.live_mode.is_active() {
-            return String::new();
-        }
-        let hunks = self.live_mode.global_stats.total_hunks;
-        if hunks > 0 {
-            let files = self.live_mode.global_stats.total_files_changed;
-            format!("LIVE {hunks}Δ {files}F")
-        } else {
-            "LIVE".to_string()
-        }
     }
 
     /// Re-run the highlighter for the active buffer after a text change.
@@ -922,19 +902,10 @@ pub fn render(
     }
     state.last_notification_count = current_count;
 
-    // Sync tab manager from registry (include live hunk counts).
-    let live_hunks = build_live_hunk_map(&state.live_mode);
-    let live_hunks_ref = if live_hunks.is_empty() {
-        None
-    } else {
-        Some(&live_hunks)
-    };
-    state.tab_mgr.sync_from_registry(
-        &state.tabs,
-        state.active_buffer,
-        &state.registry,
-        live_hunks_ref,
-    );
+    // Sync tab manager from registry.
+    state
+        .tab_mgr
+        .sync_from_registry(&state.tabs, state.active_buffer, &state.registry);
 
     // Compute layout.
     let splits = layout::compute_layout(area, &state.layout);
@@ -1053,15 +1024,6 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         .active_buffer
         .and_then(|id| state.gutter_marks.get(&id));
 
-    // Build live diff overlay for the active buffer (if Live Mode is on).
-    let live_overlay = state.active_buffer.and_then(|id| {
-        state
-            .live_mode
-            .get_diff_state(id)
-            .map(|ds| editor_pane::build_live_overlay(ds, &state.theme))
-    });
-
-    let elapsed = Instant::now().duration_since(state.last_render);
     editor_pane::render_editor_pane(
         content_area,
         buf,
@@ -1071,9 +1033,7 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         highlighted.as_deref(),
         &state.syntax_theme,
         active_gutter,
-        live_overlay.as_ref(),
         &state.theme,
-        elapsed,
     );
 }
 
@@ -1113,13 +1073,6 @@ fn handle_fs_event(fs_event: &crate::event::FsEvent, state: &mut AppState) -> Co
         | crate::event::FsEvent::Created(p)
         | crate::event::FsEvent::Deleted(p) => p,
     };
-
-    // Feed file changes to Live Mode controller when active.
-    if state.live_mode.is_active() {
-        if let crate::event::FsEvent::Changed(changed_path) = fs_event {
-            feed_live_mode_change(changed_path, state);
-        }
-    }
 
     // Hot-reload settings when config.toml is modified.
     if let crate::event::FsEvent::Changed(changed_path) = fs_event {
@@ -1201,53 +1154,6 @@ fn maybe_persist_state(state: &mut AppState) {
         }
     }
     state.last_state_save = Instant::now();
-}
-
-/// Build a map of `BufferId → hunk count` from the live mode controller.
-///
-/// Used to populate tab badges showing per-file change counts.
-fn build_live_hunk_map(ctrl: &LiveModeController) -> HashMap<BufferId, usize> {
-    if !ctrl.is_active() {
-        return HashMap::new();
-    }
-    ctrl.tracked_buffers
-        .iter()
-        .filter_map(|(&id, state)| {
-            let count = state.hunks.len();
-            if count > 0 { Some((id, count)) } else { None }
-        })
-        .collect()
-}
-
-/// Read a changed file from disk, update the Live Mode diff, and auto-follow.
-///
-/// When the controller returns a [`LiveChangeInfo`], we switch to the
-/// changed buffer's tab and scroll the viewport to the latest change.
-fn feed_live_mode_change(path: &Path, state: &mut AppState) {
-    let contents = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            log::debug!(
-                "Live Mode: failed to read changed file {}: {e}",
-                path.display()
-            );
-            return;
-        }
-    };
-    let rope = Rope::from_str(&contents);
-    let Some(info) = state.live_mode.on_file_changed(path, rope) else {
-        return;
-    };
-
-    // Trigger diff pulse effect (brightness flash on new hunks).
-    state.effects.start_diff_pulse(state.theme.diff_add_fg);
-
-    // Auto-follow: switch to the changed buffer and scroll to the change.
-    state.active_buffer = Some(info.buffer_id);
-    if let Some(buf) = state.registry.get_mut(info.buffer_id) {
-        buf.cursor.primary.head = Position::new(info.follow_line, 0);
-        buf.cursor.primary.anchor = buf.cursor.primary.head;
-    }
 }
 
 /// Handle AI session events (poll all sessions for new output).
@@ -1945,48 +1851,6 @@ fn handle_ai_summarize_changes(state: &mut AppState) -> Control<AppEvent> {
     Control::Changed
 }
 
-// ── Live Mode command handlers ────────────────────────────────────────
-
-/// Toggle Live Mode: Off ↔ On.
-///
-/// When entering On from Off, registers all open buffers with file paths
-/// as baselines. When entering Off, clears all tracking.
-fn handle_toggle_live_mode(state: &mut AppState) -> Control<AppEvent> {
-    let was_active = state.live_mode.is_active();
-    state.live_mode.toggle();
-
-    if state.live_mode.is_active() && !was_active {
-        // Entering live mode: register all open buffers with file paths.
-        register_all_buffers_for_live_mode(state);
-        state
-            .overlay
-            .notify("Live Mode: On", NotificationLevel::Info);
-    } else {
-        state
-            .overlay
-            .notify("Live Mode: Off", NotificationLevel::Info);
-    }
-
-    Control::Changed
-}
-
-/// Register all open buffers that have file paths for live tracking.
-fn register_all_buffers_for_live_mode(state: &mut AppState) {
-    let entries: Vec<(BufferId, PathBuf, Rope)> = state
-        .tabs
-        .iter()
-        .filter_map(|&id| {
-            let buf = state.registry.get(id)?;
-            let path = buf.file_path.clone()?;
-            Some((id, path, buf.rope().clone()))
-        })
-        .collect();
-
-    for (id, path, content) in entries {
-        state.live_mode.register_buffer(id, path, content);
-    }
-}
-
 /// Handle key events in insert mode — characters are inserted.
 fn handle_insert_mode(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
     let extend = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -2241,11 +2105,6 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
         let has_git = state
             .active_buffer
             .is_some_and(|id| state.gutter_marks.contains_key(&id));
-        let has_live = state.live_mode.is_active()
-            && state
-                .active_buffer
-                .and_then(|id| state.live_mode.get_diff_state(id))
-                .is_some_and(|ds| !ds.hunks.is_empty());
         if let Some(pos) = editor_pane::click_to_position(
             col,
             row,
@@ -2253,7 +2112,6 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             &state.viewport,
             total_lines,
             has_git,
-            has_live,
         ) {
             state.focus.set_active(PanelId::Editor);
             if let Some(buf) = state.active_buf_mut() {
@@ -2582,8 +2440,6 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             }
             Control::Changed
         }
-        // Live Mode commands.
-        AppCommand::ToggleLiveMode => handle_toggle_live_mode(state),
         // Theme commands.
         AppCommand::NextTheme => {
             state.next_theme();

@@ -174,10 +174,6 @@ pub enum AppCommand {
     /// Switch to the previous AI session tab.
     AiPrevSession,
 
-    // ── Live Mode commands ────────────────────────────────────────────
-    /// Toggle Live Mode: Off ↔ On.
-    ToggleLiveMode,
-
     // ── Theme commands ──────────────────────────────────────────────
     /// Switch to the next theme in the registry.
     NextTheme,

@@ -160,15 +160,12 @@ impl Default for FileTreeSettings {
 pub struct AiSettings {
     /// Default AI client to use (e.g. `"claude"`, `"copilot"`).
     pub default_client: String,
-    /// Enable Live Mode on startup.
-    pub live_mode_enabled: bool,
 }
 
 impl Default for AiSettings {
     fn default() -> Self {
         Self {
             default_client: "claude".to_owned(),
-            live_mode_enabled: false,
         }
     }
 }

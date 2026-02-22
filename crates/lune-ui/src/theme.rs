@@ -134,10 +134,6 @@ pub struct Theme {
     /// Foreground color for diff hunk headers (`@@`).
     pub diff_hunk_fg: Color,
 
-    // ── Live Mode overlay ─────────────────────────────────────────
-    /// Background tint for lines in the currently visible change region.
-    pub live_change_bg: Color,
-
     // ── Tab bar ───────────────────────────────────────────────────
     /// Style for the active tab in a focused pane.
     pub tab_active_focused: Style,
@@ -145,8 +141,6 @@ pub struct Theme {
     pub tab_active_unfocused: Style,
     /// Style for inactive (background) tabs.
     pub tab_inactive: Style,
-    /// Style for the live mode hunk-count badge (`●3`) on tabs with changes.
-    pub tab_live_badge: Style,
 
     // ── Status bar ────────────────────────────────────────────────
     /// Style for the mode indicator segment (e.g. NORMAL, INSERT).
@@ -250,9 +244,6 @@ impl Theme {
             diff_del_bg: Color::Rgb(46, 26, 30), // dark red tint
             diff_hunk_fg: teal,
 
-            // Live Mode overlay
-            live_change_bg: Color::Rgb(35, 40, 60),
-
             // Tab bar
             tab_active_focused: Style::new().fg(accent).add_modifier(Modifier::BOLD),
             tab_active_unfocused: Style::new()
@@ -260,7 +251,6 @@ impl Theme {
                 .bg(surface0)
                 .add_modifier(Modifier::BOLD),
             tab_inactive: Style::new().fg(surface2),
-            tab_live_badge: Style::new().fg(teal).add_modifier(Modifier::BOLD),
 
             // Status bar
             status_mode: Style::new()
@@ -354,9 +344,6 @@ impl Theme {
             diff_del_bg: Color::Rgb(255, 225, 225),
             diff_hunk_fg: teal,
 
-            // Live Mode overlay
-            live_change_bg: Color::Rgb(220, 230, 250),
-
             // Tab bar
             tab_active_focused: Style::new().fg(accent).add_modifier(Modifier::BOLD),
             tab_active_unfocused: Style::new()
@@ -364,7 +351,6 @@ impl Theme {
                 .bg(surface0)
                 .add_modifier(Modifier::BOLD),
             tab_inactive: Style::new().fg(surface2),
-            tab_live_badge: Style::new().fg(teal).add_modifier(Modifier::BOLD),
 
             // Status bar
             status_mode: Style::new()

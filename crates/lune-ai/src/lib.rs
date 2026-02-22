@@ -7,10 +7,8 @@
 //! - **[`session`]**: AI session lifecycle with vt100 terminal emulation
 //! - **[`manager`]**: Multi-session management
 //! - **[`context`]**: Editor context snapshots for AI context injection
-//! - **[`live_mode`]**: Live Mode controller for detecting AI-driven file changes
 
 pub mod context;
-pub mod live_mode;
 pub mod manager;
 pub mod pty;
 pub mod session;
@@ -19,9 +17,6 @@ pub mod session;
 pub use context::{
     EditorContext, FileContext, GitStatusSummary, SelectionContext, TabContext,
     extract_selection_text,
-};
-pub use live_mode::{
-    LiveChangeInfo, LiveDiffState, LiveModeController, LiveModeState, LiveModeStats,
 };
 pub use manager::AiManager;
 pub use pty::TermSize;

@@ -282,10 +282,6 @@ pub struct ThemeConfig {
     #[serde(default)]
     pub welcome: WelcomeConfig,
 
-    /// Live mode overlay color overrides.
-    #[serde(default)]
-    pub live_mode: LiveModeConfig,
-
     /// Syntax highlighting color overrides.
     #[serde(default)]
     pub syntax: SyntaxColorsConfig,
@@ -351,7 +347,6 @@ pub struct TabColorsConfig {
     pub active_focused: Option<StyleDef>,
     pub active_unfocused: Option<StyleDef>,
     pub inactive: Option<StyleDef>,
-    pub live_badge: Option<StyleDef>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -381,11 +376,6 @@ pub struct OverlayColorsConfig {
 pub struct WelcomeConfig {
     pub title: Option<StyleDef>,
     pub text: Option<StyleDef>,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct LiveModeConfig {
-    pub change_bg: Option<String>,
 }
 
 // ── ThemeConfig → Theme conversion ────────────────────────────────────
@@ -469,9 +459,6 @@ impl ThemeConfig {
         apply_color(self.diff.del_bg.as_ref(), &mut t.diff_del_bg);
         apply_color(self.diff.hunk_fg.as_ref(), &mut t.diff_hunk_fg);
 
-        // ── Live mode ────────────────────────────────────────────
-        apply_color(self.live_mode.change_bg.as_ref(), &mut t.live_change_bg);
-
         // ── Tabs ─────────────────────────────────────────────────
         apply_style(self.tabs.active_focused.as_ref(), &mut t.tab_active_focused);
         apply_style(
@@ -479,7 +466,6 @@ impl ThemeConfig {
             &mut t.tab_active_unfocused,
         );
         apply_style(self.tabs.inactive.as_ref(), &mut t.tab_inactive);
-        apply_style(self.tabs.live_badge.as_ref(), &mut t.tab_live_badge);
 
         // ── Status bar ───────────────────────────────────────────
         apply_style(self.status_bar.mode.as_ref(), &mut t.status_mode);

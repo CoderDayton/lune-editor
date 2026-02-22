@@ -1,6 +1,6 @@
 [package]
 name = "lune-ai"
-description = "AI integration: PTY manager, context provider, Live Mode"
+description = "AI integration: PTY manager, context provider"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

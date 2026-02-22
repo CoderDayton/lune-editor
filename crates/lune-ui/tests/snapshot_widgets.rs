@@ -124,28 +124,6 @@ fn snapshot_status_bar_with_message() {
     insta::assert_snapshot!("status_bar_with_message", buffer_to_text(&buf));
 }
 
-#[test]
-fn snapshot_status_bar_live_mode() {
-    let area = Rect::new(0, 0, 80, 1);
-    let mut buf = Buffer::empty(area);
-    let theme = Theme::dark();
-
-    let status = StatusLineState {
-        mode: VimMode::Normal,
-        file_path: "app.rs".to_string(),
-        cursor_line: 5,
-        cursor_col: 1,
-        live_mode: "LIVE: 3 hunks".to_string(),
-        git_branch: "dev".to_string(),
-        encoding: "UTF-8",
-        file_type: "Rust".to_string(),
-        ..StatusLineState::default()
-    };
-
-    render_status_bar(area, &mut buf, &status, &theme);
-    insta::assert_snapshot!("status_bar_live_mode", buffer_to_text(&buf));
-}
-
 // ── Tab bar snapshots ─────────────────────────────────────────────────
 
 #[test]
@@ -171,7 +149,6 @@ fn snapshot_tab_bar_single_active() {
         title: "main.rs".to_string(),
         dirty: false,
         pinned: false,
-        live_hunk_count: 0,
     });
     mgr.active_index = 0;
 
@@ -191,28 +168,24 @@ fn snapshot_tab_bar_multiple_tabs() {
         title: "main.rs".to_string(),
         dirty: false,
         pinned: false,
-        live_hunk_count: 0,
     });
     mgr.tabs.push(TabEntry {
         buffer_id: make_buffer_id(),
         title: "lib.rs".to_string(),
         dirty: true,
         pinned: false,
-        live_hunk_count: 0,
     });
     mgr.tabs.push(TabEntry {
         buffer_id: make_buffer_id(),
         title: "utils.rs".to_string(),
         dirty: false,
         pinned: false,
-        live_hunk_count: 5,
     });
     mgr.tabs.push(TabEntry {
         buffer_id: make_buffer_id(),
         title: "config.rs".to_string(),
         dirty: true,
         pinned: false,
-        live_hunk_count: 12,
     });
     mgr.active_index = 1;
 
@@ -232,7 +205,6 @@ fn snapshot_tab_bar_unfocused() {
         title: "test.rs".to_string(),
         dirty: false,
         pinned: false,
-        live_hunk_count: 0,
     });
     mgr.active_index = 0;
 

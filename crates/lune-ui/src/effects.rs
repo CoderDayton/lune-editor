@@ -13,7 +13,7 @@ use crate::focus::PanelId;
 /// Unique identifier for managed effects.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EffectId {
-    /// Brightness pulse when new diff hunks appear in Live Mode.
+    /// Brightness pulse when new diff hunks appear.
     #[default]
     DiffPulse,
     /// Color-cycling indicator when an AI session is actively processing.
@@ -47,7 +47,7 @@ impl EffectConfig {
 pub struct EffectDefs {
     /// Master switch: when `false`, all effects are disabled.
     pub all_enabled: bool,
-    /// Brightness pulse when new diff hunks arrive in Live Mode.
+    /// Brightness pulse when new diff hunks arrive.
     pub diff_pulse: EffectConfig,
     /// Color-cycling AI thinking indicator on the status bar.
     pub ai_thinking: EffectConfig,
@@ -137,7 +137,7 @@ impl LuneEffects {
         self.manager.process_effects(dur, buf, area);
     }
 
-    // ── Step 3: Live Mode diff pulse ──────────────────────────────────
+    // ── Step 3: Diff pulse ────────────────────────────────────────────
 
     /// Start a brief brightness pulse over the editor area when new
     /// diff hunks appear. Replaces any existing diff pulse.

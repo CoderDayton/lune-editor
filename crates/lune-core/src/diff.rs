@@ -1,4 +1,4 @@
-//! Diff engine for Live Mode — computes line-level and character-level diffs.
+//! Diff engine — computes line-level and character-level diffs.
 //!
 //! Uses the [`similar`] crate (Myers algorithm) to compare two text snapshots
 //! and produce [`LiveHunk`] lists for rendering overlays.
@@ -21,7 +21,7 @@ pub enum LiveHunkKind {
     Modification,
 }
 
-/// A single line within a live diff hunk.
+/// A single line within a diff hunk.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiveDiffLine {
     /// Whether this line is context, addition, or deletion.

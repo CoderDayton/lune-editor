@@ -103,8 +103,6 @@ impl Keymap {
             (Char('h'), CTRL, AppCommand::Replace),
             // Command palette
             (Char('p'), CTRL, AppCommand::OpenCommandPalette),
-            // Live Mode
-            (Char('l'), CTRL, AppCommand::ToggleLiveMode),
             // Theme switching
             (Char('t'), CTRL, AppCommand::NextTheme),
             (Char('T'), CTRL_SHIFT, AppCommand::PrevTheme),
@@ -356,8 +354,6 @@ pub fn parse_command(s: &str) -> Option<AppCommand> {
         "ai_close_session" => Some(AppCommand::AiCloseSession),
         "ai_next_session" => Some(AppCommand::AiNextSession),
         "ai_prev_session" => Some(AppCommand::AiPrevSession),
-        // Live Mode
-        "toggle_live_mode" => Some(AppCommand::ToggleLiveMode),
         // Theme
         "next_theme" => Some(AppCommand::NextTheme),
         "prev_theme" => Some(AppCommand::PrevTheme),
@@ -537,10 +533,6 @@ mod tests {
         assert_eq!(
             parse_command("command_palette"),
             Some(AppCommand::OpenCommandPalette)
-        );
-        assert_eq!(
-            parse_command("toggle_live_mode"),
-            Some(AppCommand::ToggleLiveMode)
         );
         assert_eq!(parse_command("next_theme"), Some(AppCommand::NextTheme));
         assert_eq!(parse_command("prev_theme"), Some(AppCommand::PrevTheme));

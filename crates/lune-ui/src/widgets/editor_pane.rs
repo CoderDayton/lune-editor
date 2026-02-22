@@ -7,116 +7,17 @@
 //! When syntax highlighting data is available, lines are rendered with
 //! styled spans from the theme instead of plain text.
 
-use crate::primitives::{Buffer, Color, Line, Rect, Span, Style, Stylize, Widget};
+use crate::primitives::{Buffer, Line, Rect, Span, Style, Stylize, Widget};
 
-use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
-use lune_core::diff::LiveHunkKind;
 use lune_core::highlight::{HighlightedLine, StyledSpan};
 use lune_core::prelude::*;
 use lune_git::GutterMarks;
 
-use lune_ai::LiveDiffState;
-
 use crate::highlight::theme::SyntaxTheme;
 use crate::theme::Theme;
 use crate::vim::VimMode;
-
-// ── Live diff overlay ─────────────────────────────────────────────────
-
-/// Per-line overlay information for the Live Mode diff display.
-#[derive(Clone, Debug)]
-pub struct LiveLineOverlay {
-    /// Gutter marker character (`+`, `−`, `~`).
-    pub marker: char,
-    /// Color for the gutter marker.
-    pub marker_color: Color,
-    /// Optional background tint for the whole line.
-    pub bg_tint: Option<Color>,
-}
-
-/// Pre-computed per-line lookup for Live Mode diff rendering.
-///
-/// Maps buffer (baseline) line indices to overlay information.
-/// Built once per frame from the current [`LiveDiffState`].
-#[derive(Clone, Debug, Default)]
-pub struct LiveDiffOverlay {
-    /// Per-line overlay data, keyed by baseline line index.
-    pub lines: FxHashMap<usize, LiveLineOverlay>,
-}
-
-impl LiveDiffOverlay {
-    /// Whether this overlay has any content to render.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.lines.is_empty()
-    }
-
-    /// Get overlay info for a specific baseline line.
-    #[must_use]
-    pub fn get(&self, line_idx: usize) -> Option<&LiveLineOverlay> {
-        self.lines.get(&line_idx)
-    }
-}
-
-/// Build a [`LiveDiffOverlay`] from a [`LiveDiffState`].
-///
-/// Iterates over hunks and maps `old_range` (baseline lines) to overlay markers:
-/// - **Deletion**: `−` red marker, `diff_del_bg` background
-/// - **Modification**: `~` yellow marker, `live_change_bg` background
-/// - **Insertion**: `+` green marker on the line *at* the insertion point, `diff_add_bg` background
-#[must_use]
-pub fn build_live_overlay(diff_state: &LiveDiffState, theme: &Theme) -> LiveDiffOverlay {
-    let mut overlay = LiveDiffOverlay::default();
-
-    for hunk in &diff_state.hunks {
-        match hunk.kind {
-            LiveHunkKind::Deletion => {
-                // Mark each deleted baseline line.
-                for line in hunk.old_range.clone() {
-                    overlay.lines.insert(
-                        line,
-                        LiveLineOverlay {
-                            marker: '−',
-                            marker_color: theme.diff_del_fg,
-                            bg_tint: Some(theme.diff_del_bg),
-                        },
-                    );
-                }
-            }
-            LiveHunkKind::Modification => {
-                // Mark each modified baseline line.
-                for line in hunk.old_range.clone() {
-                    overlay.lines.insert(
-                        line,
-                        LiveLineOverlay {
-                            marker: '~',
-                            marker_color: theme.git_modified,
-                            bg_tint: Some(theme.live_change_bg),
-                        },
-                    );
-                }
-            }
-            LiveHunkKind::Insertion => {
-                // Pure insertion — no old lines exist. Mark the insertion
-                // point (the line where new content would appear).
-                let marker_line = if hunk.old_range.start > 0 {
-                    hunk.old_range.start - 1
-                } else {
-                    0
-                };
-                overlay.lines.entry(marker_line).or_insert(LiveLineOverlay {
-                    marker: '+',
-                    marker_color: theme.diff_add_fg,
-                    bg_tint: Some(theme.diff_add_bg),
-                });
-            }
-        }
-    }
-
-    overlay
-}
 
 // ── Viewport state ────────────────────────────────────────────────────
 
@@ -250,12 +151,9 @@ pub const fn gutter_width(total_lines: usize) -> u16 {
 /// Width of the git gutter column (1 character).
 const GIT_GUTTER_WIDTH: u16 = 1;
 
-/// Width of the live diff gutter column (1 character).
-const LIVE_GUTTER_WIDTH: u16 = 1;
-
 // ── Rendering ─────────────────────────────────────────────────────────
 
-/// Render the editor pane (live diff gutter + git gutter + line numbers + buffer content + cursor).
+/// Render the editor pane (git gutter + line numbers + buffer content + cursor).
 ///
 /// When `highlighted` is `Some`, the lines are rendered with syntax-colored
 /// spans. Otherwise, plain white text is used.
@@ -263,8 +161,6 @@ const LIVE_GUTTER_WIDTH: u16 = 1;
 /// When `gutter_marks` is `Some`, a 1-character-wide git gutter column
 /// is rendered to the left of the line numbers with colored markers.
 ///
-/// When `live_overlay` is `Some`, a 1-character-wide live diff gutter is
-/// rendered at the far left, and changed lines receive a background tint.
 #[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
 pub fn render_editor_pane(
     area: Rect,
@@ -275,7 +171,6 @@ pub fn render_editor_pane(
     highlighted: Option<&[HighlightedLine]>,
     syntax_theme: &SyntaxTheme,
     gutter_marks: Option<&GutterMarks>,
-    live_overlay: Option<&LiveDiffOverlay>,
     theme: &Theme,
 ) {
     if area.height == 0 || area.width == 0 {
@@ -294,12 +189,7 @@ pub fn render_editor_pane(
     } else {
         0
     };
-    let live_gw = if live_overlay.is_some_and(|o| !o.is_empty()) {
-        LIVE_GUTTER_WIDTH
-    } else {
-        0
-    };
-    let total_gutter = live_gw + git_gw + gw;
+    let total_gutter = git_gw + gw;
     let content_width = area.width.saturating_sub(total_gutter) as usize;
     let viewport_height = area.height as usize;
 
@@ -333,14 +223,6 @@ pub fn render_editor_pane(
         if line_idx < total_lines {
             // Column offset accumulator — tracks how far right we are.
             let mut col_offset: u16 = 0;
-
-            // Render live diff gutter mark (if active).
-            if live_gw > 0 {
-                if let Some(overlay) = live_overlay {
-                    render_live_gutter(area.x, y, line_idx, overlay, buf);
-                }
-                col_offset += live_gw;
-            }
 
             // Render git gutter mark (if active).
             if let Some(marks) = gutter_marks {
@@ -387,18 +269,6 @@ pub fn render_editor_pane(
                 buf,
                 theme,
             );
-
-            // Apply live diff background tinting after content is rendered.
-            if let Some(overlay) = live_overlay {
-                apply_live_bg_tint(
-                    area.x + total_gutter,
-                    y,
-                    content_width,
-                    line_idx,
-                    overlay,
-                    buf,
-                );
-            }
         } else {
             // Tilde for lines past end of buffer.
             Line::from(Span::from("~").dim()).render(Rect::new(area.x, y, area.width, 1), buf);
@@ -459,56 +329,6 @@ fn render_git_gutter(
         };
         let span = Span::styled(ch, Style::new().fg(color));
         Line::from(span).render(Rect::new(x, y, GIT_GUTTER_WIDTH, 1), buf);
-    }
-}
-
-/// Render the live diff gutter mark for a single line.
-///
-/// Displays the marker character from the overlay with its assigned color:
-/// - `+` green for insertions
-/// - `−` red for deletions
-/// - `~` yellow for modifications
-fn render_live_gutter(
-    x: u16,
-    y: u16,
-    line_idx: usize,
-    overlay: &LiveDiffOverlay,
-    buf: &mut Buffer,
-) {
-    if let Some(info) = overlay.get(line_idx) {
-        // Map known marker chars to static strings to avoid a per-line
-        // `String::from(char)` heap allocation.
-        let ch: &str = match info.marker {
-            '+' => "+",
-            '−' | '-' => "−",
-            '~' => "~",
-            _ => return,
-        };
-        let span = Span::styled(ch, Style::new().fg(info.marker_color));
-        Line::from(span).render(Rect::new(x, y, LIVE_GUTTER_WIDTH, 1), buf);
-    }
-}
-
-/// Apply background color tinting to a line that is within a live diff change region.
-///
-/// This is applied *after* line content rendering so the tint overlays on top of
-/// existing syntax highlighting without replacing it.
-#[allow(clippy::cast_possible_truncation)]
-fn apply_live_bg_tint(
-    x: u16,
-    y: u16,
-    width: usize,
-    line_idx: usize,
-    overlay: &LiveDiffOverlay,
-    buf: &mut Buffer,
-) {
-    if let Some(info) = overlay.get(line_idx) {
-        if let Some(bg) = info.bg_tint {
-            for col in 0..width {
-                let cx = x + col as u16;
-                buf[(cx, y)].set_bg(bg);
-            }
-        }
     }
 }
 
@@ -785,7 +605,7 @@ fn render_welcome(area: Rect, buf: &mut Buffer, theme: &Theme) {
 }
 
 /// Map a mouse click position to a buffer position, accounting for
-/// gutter width (live diff gutter + git gutter + line numbers) and viewport offset.
+/// gutter width (git gutter + line numbers) and viewport offset.
 #[must_use]
 pub const fn click_to_position(
     click_x: u16,
@@ -794,7 +614,6 @@ pub const fn click_to_position(
     viewport: &ViewportState,
     total_lines: usize,
     has_git_gutter: bool,
-    has_live_gutter: bool,
 ) -> Option<Position> {
     // Check bounds.
     if click_x < area.x
@@ -807,12 +626,7 @@ pub const fn click_to_position(
 
     let gw = gutter_width(total_lines);
     let git_gw = if has_git_gutter { GIT_GUTTER_WIDTH } else { 0 };
-    let live_gw = if has_live_gutter {
-        LIVE_GUTTER_WIDTH
-    } else {
-        0
-    };
-    let total_gutter = live_gw + git_gw + gw;
+    let total_gutter = git_gw + gw;
 
     // Check if click is in gutter area.
     if click_x < area.x + total_gutter {
@@ -884,7 +698,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
         let vp = ViewportState::default();
         // Gutter for 100 lines = 4 cols ("100 "). Click at x=2 is in gutter.
-        let pos = click_to_position(2, 5, area, &vp, 100, false, false);
+        let pos = click_to_position(2, 5, area, &vp, 100, false);
         assert!(pos.is_none());
     }
 
@@ -893,7 +707,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
         let vp = ViewportState::default();
         // Gutter for 100 lines = 4 cols. Click at x=10 => col = 10-0-4 = 6.
-        let pos = click_to_position(10, 5, area, &vp, 100, false, false);
+        let pos = click_to_position(10, 5, area, &vp, 100, false);
         assert_eq!(pos, Some(Position::new(5, 6)));
     }
 
@@ -906,7 +720,7 @@ mod tests {
             ..ViewportState::default()
         };
         let gw = gutter_width(200);
-        let pos = click_to_position(gw + 5, 3, area, &vp, 200, false, false);
+        let pos = click_to_position(gw + 5, 3, area, &vp, 200, false);
         assert_eq!(pos, Some(Position::new(53, 15))); // line: 3+50, col: 5+10
     }
 
@@ -915,104 +729,8 @@ mod tests {
         let area = Rect::new(10, 5, 60, 20);
         let vp = ViewportState::default();
         // Click outside area.
-        assert!(click_to_position(5, 10, area, &vp, 50, false, false).is_none());
-        assert!(click_to_position(80, 10, area, &vp, 50, false, false).is_none());
+        assert!(click_to_position(5, 10, area, &vp, 50, false).is_none());
+        assert!(click_to_position(80, 10, area, &vp, 50, false).is_none());
     }
 
-    // ── Live diff overlay tests ───────────────────────────────────────
-
-    fn make_diff_state(baseline: &str, disk: &str) -> LiveDiffState {
-        use lune_core::diff::compute_diff;
-        use lune_core::ropey::Rope;
-        use std::path::PathBuf;
-
-        let base_rope = Rope::from_str(baseline);
-        let disk_rope = Rope::from_str(disk);
-        let hunks = compute_diff(&base_rope, &disk_rope);
-
-        LiveDiffState {
-            baseline: base_rope,
-            disk_content: disk_rope,
-            path: PathBuf::from("test.rs"),
-            hunks,
-            last_updated: std::time::Instant::now(),
-        }
-    }
-
-    #[test]
-    fn overlay_empty_when_no_changes() {
-        let ds = make_diff_state("line1\nline2\nline3\n", "line1\nline2\nline3\n");
-        let theme = Theme::dark();
-        let overlay = build_live_overlay(&ds, &theme);
-        assert!(overlay.is_empty());
-    }
-
-    #[test]
-    fn overlay_deletion_marks_old_lines() {
-        // Delete line2 from baseline.
-        let ds = make_diff_state("line1\nline2\nline3\n", "line1\nline3\n");
-        let theme = Theme::dark();
-        let overlay = build_live_overlay(&ds, &theme);
-
-        assert!(!overlay.is_empty());
-        // Line 1 (0-based) was deleted — should have a marker.
-        let entry = overlay.get(1).expect("line 1 should have overlay");
-        assert_eq!(entry.marker, '−');
-        assert_eq!(entry.marker_color, theme.diff_del_fg);
-        assert_eq!(entry.bg_tint, Some(theme.diff_del_bg));
-    }
-
-    #[test]
-    fn overlay_modification_marks_changed_lines() {
-        let ds = make_diff_state("line1\nline2\nline3\n", "line1\nMODIFIED\nline3\n");
-        let theme = Theme::dark();
-        let overlay = build_live_overlay(&ds, &theme);
-
-        assert!(!overlay.is_empty());
-        let entry = overlay.get(1).expect("line 1 should have overlay");
-        assert_eq!(entry.marker, '~');
-        assert_eq!(entry.marker_color, theme.git_modified);
-        assert_eq!(entry.bg_tint, Some(theme.live_change_bg));
-    }
-
-    #[test]
-    fn overlay_insertion_marks_adjacent_line() {
-        // Insert a new line between line1 and line2.
-        let ds = make_diff_state("line1\nline2\n", "line1\nNEW\nline2\n");
-        let theme = Theme::dark();
-        let overlay = build_live_overlay(&ds, &theme);
-
-        assert!(!overlay.is_empty());
-        // Insertion at old_range.start=1 => marker at line 0 (start - 1).
-        let entry = overlay.get(0).expect("line 0 should have insertion marker");
-        assert_eq!(entry.marker, '+');
-        assert_eq!(entry.marker_color, theme.diff_add_fg);
-        assert_eq!(entry.bg_tint, Some(theme.diff_add_bg));
-    }
-
-    #[test]
-    fn overlay_insertion_at_start_marks_line_zero() {
-        // Insert at the very beginning.
-        let ds = make_diff_state("line1\nline2\n", "NEW\nline1\nline2\n");
-        let theme = Theme::dark();
-        let overlay = build_live_overlay(&ds, &theme);
-
-        assert!(!overlay.is_empty());
-        // old_range.start == 0 => marker at line 0.
-        let entry = overlay.get(0).expect("line 0 should have insertion marker");
-        assert_eq!(entry.marker, '+');
-    }
-
-    #[test]
-    fn click_with_live_gutter_offset() {
-        let area = Rect::new(0, 0, 80, 24);
-        let vp = ViewportState::default();
-        // Gutter for 100 lines = 4 cols + 1 live gutter = 5 total.
-        // Click at x=5 is exactly the start of content.
-        let pos = click_to_position(5, 0, area, &vp, 100, false, true);
-        assert_eq!(pos, Some(Position::new(0, 0)));
-        // Click at x=4 is in gutter area.
-        let pos = click_to_position(4, 0, area, &vp, 100, false, true);
-        assert!(pos.is_none());
-    }
 }

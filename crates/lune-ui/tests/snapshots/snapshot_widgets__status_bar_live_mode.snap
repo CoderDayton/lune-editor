@@ -1,6 +1,0 @@
----
-source: crates/lune-ui/tests/snapshot_widgets.rs
-assertion_line: 146
-expression: buffer_to_text(&buf)
----
- NORMAL  app.rs      Ln 5, Col 1       LIVE: 3 hunks │ dev │ UTF-8 │ Rust
