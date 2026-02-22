@@ -91,6 +91,10 @@ pub enum AppCommand {
     NextTab,
     /// Switch to the previous tab.
     PrevTab,
+    /// Show the root "Editor" tab.
+    ShowEditorTab,
+    /// Show the root "Agents" tab.
+    ShowAgentsTab,
 
     // ── Panel toggles ─────────────────────────────────────────────
     /// Toggle the file tree sidebar.

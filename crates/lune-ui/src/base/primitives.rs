@@ -31,7 +31,7 @@ pub use ratatui_core::widgets::Widget;
 
 // ── Ratatui high-level widgets (overlay borders, etc.) ────────────────
 
-pub use ratatui::widgets::{Block, BorderType, Borders, Clear};
+pub use ratatui::widgets::{Block, BorderType, Borders, Clear, Tabs};
 
 // ── Crossterm events ──────────────────────────────────────────────────
 

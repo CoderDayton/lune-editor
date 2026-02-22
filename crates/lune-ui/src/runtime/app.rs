@@ -14,8 +14,8 @@ use rat_salsa::poll::{PollCrossterm, PollTimers};
 use rat_salsa::{Control, RunConfig, SalsaAppContext, SalsaContext, run_tui};
 
 use crate::primitives::{
-    Buffer, Constraint, CtEvent, Direction, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, Layout,
-    MouseButton, MouseEvent, MouseEventKind, Rect,
+    Block, Borders, Buffer, Constraint, CtEvent, Direction, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, Layout, Line, MouseButton, MouseEvent, MouseEventKind, Rect, Style, Tabs, Widget,
 };
 
 use lune_core::prelude::*;
@@ -48,7 +48,6 @@ use crate::widgets::git_panel::{self, GitPanelState};
 use crate::widgets::overlay::{self, NotificationLevel, OverlayState};
 use crate::widgets::status_bar::{self, StatusLineState};
 use crate::widgets::tab_bar::{self, TabManager};
-use crate::widgets::terminal;
 
 /// Global context — embeds the rat-salsa context and shared config.
 #[derive(Default)]
@@ -67,6 +66,26 @@ impl SalsaContext<AppEvent, Error> for LuneGlobal {
     }
 }
 
+/// Top-level application tabs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RootTab {
+    /// Main editor workspace.
+    #[default]
+    Editor,
+    /// AI/agent session overview.
+    Agents,
+}
+
+impl RootTab {
+    /// Convert to a `Tabs` selected index.
+    const fn as_index(self) -> usize {
+        match self {
+            Self::Editor => 0,
+            Self::Agents => 1,
+        }
+    }
+}
+
 /// Application state — holds all mutable application data.
 pub struct AppState {
     /// Buffer registry (all open buffers).
@@ -75,6 +94,8 @@ pub struct AppState {
     pub active_buffer: Option<BufferId>,
     /// Tab order (list of open buffer IDs).
     pub tabs: Vec<BufferId>,
+    /// Active top-level UI tab.
+    pub root_tab: RootTab,
     /// Focus manager.
     pub focus: FocusManager,
     /// Global keybindings.
@@ -101,6 +122,8 @@ pub struct AppState {
     pub overlay: OverlayState,
     /// Last computed layout splits (for mouse hit-testing).
     pub last_splits: Option<LayoutSplits>,
+    /// Area of the top-level root tabs row.
+    last_root_tabs_area: Option<Rect>,
     /// Whether the mouse is currently dragging a panel border.
     pub dragging_border: Option<DragBorder>,
     /// The editor content area from the last render (for mouse mapping).
@@ -186,6 +209,7 @@ impl AppState {
             registry: BufferRegistry::new(),
             active_buffer: None,
             tabs: Vec::new(),
+            root_tab: RootTab::Editor,
             focus: FocusManager::new(),
             keymap: Keymap::default_global(),
             vim: VimState::new(),
@@ -198,6 +222,7 @@ impl AppState {
             viewport: ViewportState::default(),
             overlay: OverlayState::default(),
             last_splits: None,
+            last_root_tabs_area: None,
             dragging_border: None,
             last_editor_content_area: None,
             workspace: None,
@@ -251,6 +276,13 @@ impl AppState {
     pub fn prev_theme(&mut self) {
         self.theme_registry.prev();
         self.apply_active_theme();
+    }
+
+    /// Switch the active top-level UI tab.
+    pub fn set_root_tab(&mut self, tab: RootTab) {
+        self.root_tab = tab;
+        // Keep focus on the editor panel by default when changing root tabs.
+        self.focus.set_active(PanelId::Editor);
     }
 
     /// Apply loaded [`Settings`] to the application state.
@@ -907,22 +939,61 @@ pub fn render(
         .tab_mgr
         .sync_from_registry(&state.tabs, state.active_buffer, &state.registry);
 
-    // Compute layout.
+    // PTY UI section is temporarily disabled.
+    state.layout.show_bottom_panel = false;
+
+    if area.width == 0 || area.height == 0 {
+        return Ok(());
+    }
+
+    let root_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(area);
+    let root_tabs_area = root_chunks[0];
+    let content_area = root_chunks[1];
+
+    state.last_root_tabs_area = Some(root_tabs_area);
+    render_root_tabs(root_tabs_area, buf, state);
+
+    match state.root_tab {
+        RootTab::Editor => render_editor_tab(content_area, buf, state),
+        RootTab::Agents => render_agents_tab(content_area, buf, state),
+    }
+
+    // Apply managed visual effects (tachyonfx) — modifies buffer cells in-place.
+    let now = Instant::now();
+    let elapsed = now.duration_since(state.last_render);
+    state.last_render = now;
+    state.effects.process(elapsed, buf, area);
+
+    // Render overlays on top.
+    overlay::render_overlay(area, buf, &mut state.overlay, &state.theme);
+
+    Ok(())
+}
+
+/// Labels for top-level root tabs.
+const ROOT_TAB_TITLES: [&str; 2] = ["Editor", "Agents"];
+/// Divider text between root tabs.
+const ROOT_TAB_DIVIDER: &str = " ";
+
+/// Render top-level root tabs.
+fn render_root_tabs(area: Rect, buf: &mut Buffer, state: &AppState) {
+    let tabs = Tabs::new(ROOT_TAB_TITLES)
+        .select(state.root_tab.as_index())
+        .style(Style::new().fg(state.theme.fg_muted).bg(state.theme.bg))
+        .highlight_style(state.theme.tab_active_focused)
+        .divider(ROOT_TAB_DIVIDER)
+        .padding("", "");
+    tabs.render(area, buf);
+}
+
+/// Render the full editor workspace tab.
+fn render_editor_tab(area: Rect, buf: &mut Buffer, state: &mut AppState) {
+    // Compute layout for the editor workspace.
     let splits = layout::compute_layout(area, &state.layout);
     state.last_splits = Some(splits.clone());
-
-    // Resize AI sessions to match the bottom panel area (minus border).
-    if let Some(bottom_area) = splits.bottom {
-        if state.layout.show_bottom_panel && !state.ai_manager.is_empty() {
-            let term_rows = bottom_area.height.saturating_sub(2).max(1);
-            let term_cols = bottom_area.width.saturating_sub(2).max(1);
-            let new_size = AiTermSize::new(term_rows, term_cols);
-            if state.last_ai_term_size != Some(new_size) {
-                state.ai_manager.resize_all(new_size);
-                state.last_ai_term_size = Some(new_size);
-            }
-        }
-    }
 
     // Render left panel (file tree).
     if let Some(left_area) = splits.left {
@@ -956,35 +1027,76 @@ pub fn render(
         }
     }
 
-    // Render bottom panel (terminal).
-    if let Some(bottom_area) = splits.bottom {
-        let term_focused = state.focus.is_focused(PanelId::Terminal);
-        let sessions = state.ai_manager.session_list();
-        let session = state.ai_manager.active_session();
-        terminal::render_terminal_panel(
-            bottom_area,
-            buf,
-            &sessions,
-            session,
-            term_focused,
-            &state.theme,
-        );
-    }
-
     // Render status bar.
     let status_state = state.build_status_line();
     status_bar::render_status_bar(splits.status, buf, &status_state, &state.theme);
+}
 
-    // Apply managed visual effects (tachyonfx) — modifies buffer cells in-place.
-    let now = Instant::now();
-    let elapsed = now.duration_since(state.last_render);
-    state.last_render = now;
-    state.effects.process(elapsed, buf, area);
+/// Render the Agents tab.
+#[allow(clippy::cast_possible_truncation)]
+fn render_agents_tab(area: Rect, buf: &mut Buffer, state: &mut AppState) {
+    state.last_splits = None;
+    state.last_editor_content_area = None;
 
-    // Render overlays on top.
-    overlay::render_overlay(area, buf, &mut state.overlay, &state.theme);
+    if area.height == 0 {
+        return;
+    }
 
-    Ok(())
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(area);
+    let content = chunks[0];
+    let status = chunks[1];
+
+    let block = Block::default()
+        .title(" Agents ")
+        .borders(Borders::ALL)
+        .border_style(Style::new().fg(state.theme.overlay_border));
+    let inner = block.inner(content);
+    block.render(content, buf);
+
+    if inner.width > 0 && inner.height > 0 {
+        let sessions = state.ai_manager.session_list();
+        if sessions.is_empty() {
+            Line::from("No agent sessions yet.")
+                .style(Style::new().fg(state.theme.fg))
+                .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
+            if inner.height > 1 {
+                Line::from("Start one from the command palette or AI actions.")
+                    .style(Style::new().fg(state.theme.fg_muted))
+                    .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
+            }
+        } else {
+            for (i, (id, name, session_state)) in
+                sessions.iter().take(inner.height as usize).enumerate()
+            {
+                let marker = if Some(*id) == state.ai_manager.active_id() {
+                    ">"
+                } else {
+                    " "
+                };
+                let status_text = match session_state {
+                    lune_ai::SessionState::Starting => "starting",
+                    lune_ai::SessionState::Running => "running",
+                    lune_ai::SessionState::Exited(_) => "exited",
+                    lune_ai::SessionState::Error => "error",
+                };
+                let row = format!("{marker} {name} [{status_text}]");
+                let row_style = if Some(*id) == state.ai_manager.active_id() {
+                    state.theme.tab_active_focused
+                } else {
+                    state.theme.tab_inactive
+                };
+                Line::from(row)
+                    .style(row_style)
+                    .render(Rect::new(inner.x, inner.y + i as u16, inner.width, 1), buf);
+            }
+        }
+    }
+
+    let status_state = state.build_status_line();
+    status_bar::render_status_bar(status, buf, &status_state, &state.theme);
 }
 
 /// Render the center area: tab bar + editor pane.
@@ -1190,9 +1302,7 @@ fn handle_terminal_event(ct_event: &CtEvent, state: &mut AppState) -> Control<Ap
         }
         CtEvent::Mouse(mouse_event) => handle_mouse_event(*mouse_event, state),
         CtEvent::Resize(_, _) => {
-            // Resize AI sessions to match the new bottom panel area.
-            // The actual area will be computed on the next render;
-            // for now, trigger a re-render so the layout recomputes.
+            // Trigger a re-render so layout-dependent regions recompute.
             Control::Changed
         }
         _ => Control::Continue,
@@ -1206,8 +1316,12 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         return handle_overlay_key(key, state);
     }
 
-    // Tab key cycles focus between panes (only outside Insert mode).
-    if key.code == KeyCode::Tab && key.modifiers.is_empty() && !state.vim.mode.is_insert() {
+    // Tab key cycles focus between panes in the Editor tab (outside Insert mode).
+    if state.root_tab == RootTab::Editor
+        && key.code == KeyCode::Tab
+        && key.modifiers.is_empty()
+        && !state.vim.mode.is_insert()
+    {
         handle_focus_next_pane(state);
         return Control::Changed;
     }
@@ -1217,12 +1331,9 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         return Control::Event(AppEvent::Command(cmd.clone()));
     }
 
-    // 3. Escape: return to editor if in file tree, git panel, or AI terminal, else normal mode.
+    // 3. Escape: return to editor if in file tree or git panel, else normal mode.
     if key.code == KeyCode::Esc {
-        if state.focus.is_focused(PanelId::FileTree)
-            || state.focus.is_focused(PanelId::GitPanel)
-            || state.focus.is_focused(PanelId::Terminal)
-        {
+        if state.focus.is_focused(PanelId::FileTree) || state.focus.is_focused(PanelId::GitPanel) {
             state.focus.focus(PanelId::Editor);
             return Control::Changed;
         }
@@ -1232,32 +1343,34 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         return Control::Changed;
     }
 
-    // 4. Route to AI terminal if focused (forward all keys to PTY).
-    if state.focus.is_focused(PanelId::Terminal) {
-        return handle_ai_terminal_key(key, state);
+    // Non-global keystrokes are editor-only while the Agents tab is active.
+    if state.root_tab == RootTab::Agents {
+        return Control::Continue;
     }
 
-    // 4a. Route to file tree if focused.
+    // 4. Route to file tree if focused.
     if state.focus.is_focused(PanelId::FileTree) {
         return handle_file_tree_key(key, state);
     }
 
-    // 4b. Route to git panel if focused.
+    // 4a. Route to git panel if focused.
     if state.focus.is_focused(PanelId::GitPanel) {
         return handle_git_panel_key(key, state);
     }
 
     // 5. Page Up / Page Down — universal navigation across all editor modes.
-    //    Cursor jumps immediately; viewport lerps smoothly via ScrollAnimation.
     if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
-        state.viewport.begin_scroll_animation();
         let page_size = state
             .last_editor_content_area
             .map_or(20, |a| (a.height as usize).saturating_sub(2).max(1));
         let extend = key.modifiers.contains(KeyModifiers::SHIFT);
-        return apply_motion(state, |buf| match key.code {
-            KeyCode::PageUp => buf.move_up_n(page_size, extend),
-            _ => buf.move_down_n(page_size, extend),
+        return apply_motion(state, |buf| {
+            for _ in 0..page_size {
+                match key.code {
+                    KeyCode::PageUp => buf.move_up(extend),
+                    _ => buf.move_down(extend),
+                }
+            }
         });
     }
 
@@ -1498,17 +1611,19 @@ fn handle_file_tree_set_expanded(state: &mut AppState, expanded: bool) -> Contro
 /// Cycle focus to the next visible pane.
 ///
 /// Builds a list of currently visible panels and advances to the next one
-/// in order: `FileTree` → `Editor` → `Terminal` → `GitPanel` → (wrap).
+/// in order: `FileTree` → `Editor` → `GitPanel` → (wrap).
 /// Panels that are not visible are skipped.
 fn handle_focus_next_pane(state: &mut AppState) {
-    let mut panes = Vec::with_capacity(4);
+    if state.root_tab != RootTab::Editor {
+        state.focus.set_active(PanelId::Editor);
+        return;
+    }
+
+    let mut panes = Vec::with_capacity(3);
     if state.layout.show_file_tree {
         panes.push(PanelId::FileTree);
     }
     panes.push(PanelId::Editor);
-    if state.layout.show_bottom_panel {
-        panes.push(PanelId::Terminal);
-    }
     if state.layout.show_git_panel {
         panes.push(PanelId::GitPanel);
     }
@@ -1571,95 +1686,6 @@ fn toggle_selected_dir(state: &mut AppState) -> Control<AppEvent> {
     Control::Changed
 }
 
-// ── AI terminal key handling ──────────────────────────────────────
-
-/// Handle key events when the AI terminal is focused.
-///
-/// Translates crossterm key events to terminal byte sequences and
-/// forwards them to the active PTY session.
-fn handle_ai_terminal_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
-    let bytes = key_event_to_bytes(key);
-    if bytes.is_empty() {
-        return Control::Continue;
-    }
-    if let Some(session) = state.ai_manager.active_session_mut() {
-        if let Err(e) = session.send_input(&bytes) {
-            log::error!("Failed to send input to AI session: {e}");
-        }
-    }
-    Control::Changed
-}
-
-/// Translate a crossterm `KeyEvent` into raw terminal byte sequence(s).
-///
-/// Maps special keys to their VT/xterm escape sequences and control
-/// characters. Returns an empty vec for keys we don't handle.
-#[allow(clippy::too_many_lines)]
-fn key_event_to_bytes(key: &KeyEvent) -> Vec<u8> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
-
-    match key.code {
-        KeyCode::Char(ch) => {
-            if ctrl {
-                // Ctrl+letter: control characters (0x01–0x1A).
-                let code = ch.to_ascii_lowercase();
-                if code.is_ascii_lowercase() {
-                    let byte = code as u8 - b'a' + 1;
-                    return vec![byte];
-                }
-            }
-            if alt {
-                // Alt+char: ESC prefix.
-                let mut bytes = vec![0x1b];
-                let mut char_buf = [0u8; 4];
-                bytes.extend_from_slice(ch.encode_utf8(&mut char_buf).as_bytes());
-                return bytes;
-            }
-            let mut char_buf = [0u8; 4];
-            ch.encode_utf8(&mut char_buf);
-            let len = ch.len_utf8();
-            char_buf[..len].to_vec()
-        }
-        KeyCode::Enter => vec![b'\r'],
-        KeyCode::Backspace => vec![0x7f],
-        KeyCode::Delete => b"\x1b[3~".to_vec(),
-        KeyCode::Tab => vec![b'\t'],
-        KeyCode::BackTab => b"\x1b[Z".to_vec(),
-        KeyCode::Esc => vec![0x1b],
-        KeyCode::Up => b"\x1b[A".to_vec(),
-        KeyCode::Down => b"\x1b[B".to_vec(),
-        KeyCode::Right => b"\x1b[C".to_vec(),
-        KeyCode::Left => b"\x1b[D".to_vec(),
-        KeyCode::Home => b"\x1b[H".to_vec(),
-        KeyCode::End => b"\x1b[F".to_vec(),
-        KeyCode::PageUp => b"\x1b[5~".to_vec(),
-        KeyCode::PageDown => b"\x1b[6~".to_vec(),
-        KeyCode::Insert => b"\x1b[2~".to_vec(),
-        KeyCode::F(n) => f_key_escape(n),
-        _ => Vec::new(),
-    }
-}
-
-/// Map F-key number to VT escape sequence.
-fn f_key_escape(n: u8) -> Vec<u8> {
-    match n {
-        1 => b"\x1bOP".to_vec(),
-        2 => b"\x1bOQ".to_vec(),
-        3 => b"\x1bOR".to_vec(),
-        4 => b"\x1bOS".to_vec(),
-        5 => b"\x1b[15~".to_vec(),
-        6 => b"\x1b[17~".to_vec(),
-        7 => b"\x1b[18~".to_vec(),
-        8 => b"\x1b[19~".to_vec(),
-        9 => b"\x1b[20~".to_vec(),
-        10 => b"\x1b[21~".to_vec(),
-        11 => b"\x1b[23~".to_vec(),
-        12 => b"\x1b[24~".to_vec(),
-        _ => Vec::new(),
-    }
-}
-
 /// Resolve the AI client kind from the current settings.
 ///
 /// Falls back to `ClaudeCode` when no settings are cached.
@@ -1716,7 +1742,7 @@ fn start_ai_session_with_context(state: &mut AppState) {
     }
 }
 
-/// Start a new AI session with the given client kind and open the panel.
+/// Start a new AI session with the given client kind.
 fn handle_ai_new_session(kind: AiClientKind, state: &mut AppState) -> Control<AppEvent> {
     let ctx = state.collect_editor_context();
     let env = ctx.to_env_vars();
@@ -1738,33 +1764,20 @@ fn handle_ai_new_session(kind: AiClientKind, state: &mut AppState) -> Control<Ap
     {
         Ok(_id) => {
             log::info!("Started AI session: {client_name}");
-            if !state.layout.show_bottom_panel {
-                state.layout.toggle_bottom_panel();
-            }
-            state.focus.focus(PanelId::Terminal);
         }
         Err(e) => {
-            // Spawn failed (binary not found or PTY error) — close silently.
+            // Spawn failed (binary not found or PTY error).
             log::warn!("AI session launch failed ({client_name}): {e}");
-            // If the panel was opened optimistically, close it again.
-            if state.layout.show_bottom_panel && state.ai_manager.is_empty() {
-                state.layout.show_bottom_panel = false;
-            }
         }
     }
     Control::Changed
 }
 
-/// Ensure the AI panel is open and focused, starting a context-aware
-/// session if none exists.
-fn ensure_ai_panel_open(state: &mut AppState) {
-    if !state.layout.show_bottom_panel {
-        state.layout.toggle_bottom_panel();
-    }
+/// Ensure at least one AI session exists.
+fn ensure_ai_session(state: &mut AppState) {
     if state.ai_manager.is_empty() {
         start_ai_session_with_context(state);
     }
-    state.focus.focus(PanelId::Terminal);
 }
 
 /// Send a prompt string to the active AI session's PTY.
@@ -1787,7 +1800,7 @@ fn send_prompt_to_ai(state: &mut AppState, prompt: &str) {
 /// environment so the AI client sees it as context. The user then types
 /// their prompt directly into the session.
 fn handle_ai_ask_selection(state: &mut AppState) -> Control<AppEvent> {
-    ensure_ai_panel_open(state);
+    ensure_ai_session(state);
     Control::Changed
 }
 
@@ -1810,7 +1823,7 @@ fn handle_ai_refactor_file(state: &mut AppState) -> Control<AppEvent> {
         return Control::Changed;
     }
 
-    ensure_ai_panel_open(state);
+    ensure_ai_session(state);
 
     let prompt = format!("Refactor {file_path}");
     send_prompt_to_ai(state, &prompt);
@@ -1844,7 +1857,7 @@ fn handle_ai_summarize_changes(state: &mut AppState) -> Control<AppEvent> {
         return Control::Changed;
     }
 
-    ensure_ai_panel_open(state);
+    ensure_ai_session(state);
 
     let prompt = format!("Summarize these changes:\n{summary}");
     send_prompt_to_ai(state, &prompt);
@@ -1983,27 +1996,27 @@ fn apply_arrow_motion(key: &KeyEvent, state: &mut AppState, extend: bool) -> Con
 fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEvent> {
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => handle_mouse_click(mouse, state),
-        MouseEventKind::Drag(MouseButton::Left) => handle_mouse_drag(mouse, state),
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if state.root_tab == RootTab::Editor {
+                handle_mouse_drag(mouse, state)
+            } else {
+                Control::Continue
+            }
+        }
         MouseEventKind::Up(MouseButton::Left) => {
             state.dragging_border = None;
             Control::Continue
         }
         MouseEventKind::ScrollUp => {
-            if state.focus.is_focused(PanelId::Terminal) {
-                if let Some(session) = state.ai_manager.active_session_mut() {
-                    session.scroll_up(3);
-                }
-            } else {
+            if state.root_tab == RootTab::Editor {
                 state.viewport.scroll_up(3);
+                Control::Changed
+            } else {
+                Control::Continue
             }
-            Control::Changed
         }
         MouseEventKind::ScrollDown => {
-            if state.focus.is_focused(PanelId::Terminal) {
-                if let Some(session) = state.ai_manager.active_session_mut() {
-                    session.scroll_down(3);
-                }
-            } else {
+            if state.root_tab == RootTab::Editor {
                 let total = state
                     .active_buf()
                     .map_or(0, lune_core::buffer::TextBuffer::line_count);
@@ -2011,8 +2024,10 @@ fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
                     .last_editor_content_area
                     .map_or(20, |a| a.height as usize);
                 state.viewport.scroll_down(3, total, height);
+                Control::Changed
+            } else {
+                Control::Continue
             }
-            Control::Changed
         }
         _ => Control::Continue,
     }
@@ -2027,6 +2042,20 @@ const fn point_in_rect(col: u16, row: u16, r: Rect) -> bool {
 #[allow(clippy::cast_possible_truncation)]
 fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEvent> {
     let (col, row) = (mouse.column, mouse.row);
+
+    // Root tabs area.
+    if let Some(tab_area) = state.last_root_tabs_area {
+        if point_in_rect(col, row, tab_area) {
+            if let Some(tab) = root_tab_hit_test(col, tab_area) {
+                state.set_root_tab(tab);
+                return Control::Changed;
+            }
+        }
+    }
+
+    if state.root_tab != RootTab::Editor {
+        return Control::Continue;
+    }
 
     // Check panel borders first (start drag).
     if let Some(ref splits) = state.last_splits {
@@ -2073,16 +2102,6 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             }
         }
 
-        // Terminal (bottom panel) area.
-        if state.layout.show_bottom_panel {
-            if let Some(bottom_area) = splits.bottom {
-                if point_in_rect(col, row, bottom_area) {
-                    state.focus.focus(PanelId::Terminal);
-                    return Control::Changed;
-                }
-            }
-        }
-
         // Tab bar (first row of center).
         if row == splits.center.y {
             let tab_area = Rect::new(splits.center.x, splits.center.y, splits.center.width, 1);
@@ -2124,6 +2143,26 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
     }
 
     Control::Continue
+}
+
+/// Hit-test the root tabs row and return the clicked tab.
+fn root_tab_hit_test(col: u16, area: Rect) -> Option<RootTab> {
+    let mut x = area.x;
+    for (i, label) in ROOT_TAB_TITLES.iter().enumerate() {
+        let width = label.len() as u16;
+        if col >= x && col < x.saturating_add(width) {
+            return Some(match i {
+                0 => RootTab::Editor,
+                1 => RootTab::Agents,
+                _ => return None,
+            });
+        }
+        x = x.saturating_add(width);
+        if i + 1 < ROOT_TAB_TITLES.len() {
+            x = x.saturating_add(ROOT_TAB_DIVIDER.len() as u16);
+        }
+    }
+    None
 }
 
 /// Close a specific tab by buffer ID (used by mouse click and keyboard).
@@ -2341,6 +2380,14 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             state.cycle_tab(-1);
             Control::Changed
         }
+        AppCommand::ShowEditorTab => {
+            state.set_root_tab(RootTab::Editor);
+            Control::Changed
+        }
+        AppCommand::ShowAgentsTab => {
+            state.set_root_tab(RootTab::Agents);
+            Control::Changed
+        }
         // Panel toggles and focus.
         AppCommand::ToggleFileTree
         | AppCommand::ToggleTerminal
@@ -2404,7 +2451,6 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             if let Some(id) = state.ai_manager.active_id() {
                 state.ai_manager.close_session(id);
                 if state.ai_manager.is_empty() {
-                    state.layout.show_bottom_panel = false;
                     state.focus.set_active(PanelId::Editor);
                 }
             }
@@ -2479,20 +2525,11 @@ fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEv
             Control::Changed
         }
         AppCommand::ToggleTerminal => {
-            state.layout.toggle_bottom_panel();
-            if state.layout.show_bottom_panel {
-                if state.ai_manager.is_empty() {
-                    // No session yet — ask which client to open.
-                    state.overlay.open_ai_client_picker();
-                } else {
-                    state.focus.focus(PanelId::Terminal);
-                }
-            } else {
-                state.focus.set_active(PanelId::Editor);
-            }
-            state
-                .effects
-                .start_panel_transition(PanelId::Terminal, state.theme.accent);
+            state.layout.show_bottom_panel = false;
+            state.overlay.notify(
+                "PTY panel is temporarily removed from the UI",
+                NotificationLevel::Info,
+            );
             Control::Changed
         }
         AppCommand::ToggleGitPanel => {
@@ -2629,6 +2666,7 @@ fn handle_file_tree_command(cmd: &AppCommand, state: &mut AppState) -> Control<A
 fn handle_open_file(path: &std::path::Path, state: &mut AppState) -> Control<AppEvent> {
     match state.open_file(path) {
         Ok(_) => {
+            state.set_root_tab(RootTab::Editor);
             state.focus.focus(PanelId::Editor);
             state.status_message = format!("Opened: {}", path.display());
         }
@@ -3264,6 +3302,18 @@ mod tests {
     }
 
     #[test]
+    fn command_switch_root_tabs() {
+        let mut state = AppState::new();
+        assert_eq!(state.root_tab, RootTab::Editor);
+
+        let _ = handle_command(&AppCommand::ShowAgentsTab, &mut state);
+        assert_eq!(state.root_tab, RootTab::Agents);
+
+        let _ = handle_command(&AppCommand::ShowEditorTab, &mut state);
+        assert_eq!(state.root_tab, RootTab::Editor);
+    }
+
+    #[test]
     fn command_enter_modes() {
         let mut state = AppState::new();
         let _ = handle_command(&AppCommand::EnterInsertMode, &mut state);
@@ -3416,12 +3466,12 @@ mod tests {
     }
 
     #[test]
-    fn ai_ask_selection_opens_panel() {
+    fn ai_ask_selection_does_not_open_terminal_panel() {
         let mut state = AppState::new();
         let result = handle_ai_ask_selection(&mut state);
         assert!(matches!(result, Control::Changed));
-        // Always opens the AI panel regardless of whether text is selected.
-        assert!(state.layout.show_bottom_panel);
+        // PTY UI section is temporarily removed.
+        assert!(!state.layout.show_bottom_panel);
     }
 
     #[test]

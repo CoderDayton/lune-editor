@@ -85,9 +85,10 @@ impl Keymap {
             (Char('w'), CTRL, AppCommand::CloseTab),
             (Tab, CTRL, AppCommand::NextTab),
             (BackTab, CTRL_SHIFT, AppCommand::PrevTab),
+            (Char('1'), CTRL, AppCommand::ShowEditorTab),
+            (Char('2'), CTRL, AppCommand::ShowAgentsTab),
             // Panel toggles
             (Char('b'), CTRL, AppCommand::ToggleFileTree),
-            (Char('j'), CTRL, AppCommand::ToggleTerminal),
             (Char('g'), CTRL, AppCommand::ToggleGitPanel),
             // AI commands
             (Char('A'), CTRL_SHIFT, AppCommand::AiAskSelection),
@@ -319,6 +320,8 @@ pub fn parse_command(s: &str) -> Option<AppCommand> {
         "close_tab" => Some(AppCommand::CloseTab),
         "next_tab" => Some(AppCommand::NextTab),
         "prev_tab" => Some(AppCommand::PrevTab),
+        "show_editor_tab" => Some(AppCommand::ShowEditorTab),
+        "show_agents_tab" => Some(AppCommand::ShowAgentsTab),
         // Panels
         "toggle_file_tree" => Some(AppCommand::ToggleFileTree),
         "toggle_terminal" | "toggle_ai_panel" => Some(AppCommand::ToggleTerminal),
@@ -394,6 +397,15 @@ mod tests {
         let km = Keymap::default_global();
         let event = key_event(KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert_eq!(km.lookup(&event), Some(&AppCommand::Save));
+    }
+
+    #[test]
+    fn default_keymap_has_root_tab_switches() {
+        let km = Keymap::default_global();
+        let editor = key_event(KeyCode::Char('1'), KeyModifiers::CONTROL);
+        let agents = key_event(KeyCode::Char('2'), KeyModifiers::CONTROL);
+        assert_eq!(km.lookup(&editor), Some(&AppCommand::ShowEditorTab));
+        assert_eq!(km.lookup(&agents), Some(&AppCommand::ShowAgentsTab));
     }
 
     #[test]
@@ -514,6 +526,14 @@ mod tests {
         assert_eq!(parse_command("next_tab"), Some(AppCommand::NextTab));
         assert_eq!(parse_command("prev_tab"), Some(AppCommand::PrevTab));
         assert_eq!(parse_command("close_tab"), Some(AppCommand::CloseTab));
+        assert_eq!(
+            parse_command("show_editor_tab"),
+            Some(AppCommand::ShowEditorTab)
+        );
+        assert_eq!(
+            parse_command("show_agents_tab"),
+            Some(AppCommand::ShowAgentsTab)
+        );
         assert_eq!(
             parse_command("toggle_file_tree"),
             Some(AppCommand::ToggleFileTree)
