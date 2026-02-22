@@ -182,7 +182,7 @@ These require human verification and should be documented as a checklist.
 
 ### Step 6: Manual test checklist
 
-1. Create `docs/TESTING.md` with the manual test scenarios from Category 4.
+1. Create `docs/guides/testing.md` with the manual test scenarios from Category 4.
 2. Include expected results for each scenario.
 3. Track last-verified date and terminal/platform for each scenario.
 

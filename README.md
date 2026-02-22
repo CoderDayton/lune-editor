@@ -28,6 +28,7 @@
 - [Git Panel](#git-panel)
 - [Themes](#themes)
 - [Architecture](#architecture)
+- [Documentation](#documentation)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -336,6 +337,15 @@ lune-editor/
 **Event loop** (rat-salsa framework): crossterm input → `AppCommand` dispatch → state update → ratatui render → flush. File watcher, autosave timer, and AI PTY events are additional async sources.
 
 **State persistence:** Open files, scroll offsets, layout, and active tab are saved to a per-workspace sled database at `~/.config/lune-editor/state/`. Dirty buffers are captured on crash and restored on next launch.
+
+---
+
+## Documentation
+
+- Docs index: `docs/README.md`
+- Architecture/product spec: `docs/specs/sdd.md`
+- Testing guide: `docs/guides/testing.md`
+- Implementation plans: `docs/plans/sdd/00-index.md`
 
 ---
 

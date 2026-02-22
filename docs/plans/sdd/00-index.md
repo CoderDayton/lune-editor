@@ -1,6 +1,6 @@
 # Lune Editor — SDD Implementation Plan
 
-> Comprehensive build plan derived from [docs/SDD.md](../../SDD.md).
+> Comprehensive build plan derived from [docs/specs/sdd.md](../../specs/sdd.md).
 > Each numbered file in this directory covers one vertical slice.
 
 ## Naming
@@ -80,8 +80,8 @@ lune-editor/
 ├── src/
 │   └── main.rs             # binary entry point, wires crates together
 ├── docs/
-│   ├── SDD.md
-│   └── plans/SDD/          # this directory
+│   ├── specs/sdd.md
+│   └── plans/sdd/          # this directory
 └── tests/                  # integration tests
 ```
 
