@@ -37,7 +37,7 @@
 
 Most terminal editors make you choose: raw speed *or* modern features. Lune doesn't.
 
-It runs entirely in your terminal, starts instantly, and stays out of your way — while shipping a native Git panel, incremental tree-sitter highlighting, an embedded PTY terminal, and live AI assistance that sees your editor context. No plugins required.
+It runs entirely in your terminal, starts instantly, and stays out of your way — while shipping a native Git panel, incremental tree-sitter highlighting, an embedded PTY terminal, and AI assistance that sees your editor context. No plugins required.
 
 ---
 
@@ -45,7 +45,7 @@ It runs entirely in your terminal, starts instantly, and stays out of your way �
 
 - ⚡ **Zero-compromise performance** — LTO + codegen-units=1 release build; rope-based buffers handle multi-MB files without stutter
 - 🌲 **Tree-sitter syntax highlighting** — incremental, O(1) amortized per keystroke; language registry is extensible
-- 🤖 **Built-in AI (Live Mode)** — Claude-backed assistant with PTY session and full editor context; accept/reject suggestions inline
+- 🤖 **Built-in AI** — Claude-backed assistant with PTY session and full editor context for contextual prompting and refactors
 - 🗂 **Native Git panel** — stage, unstage, diff, and inspect status without leaving the editor (libgit2)
 - 💻 **Embedded terminal** — full PTY inside a split pane; run build commands, tests, and scripts inline
 - 🎨 **TOML themes** — ship-ready dark theme, easy to extend; hot-reload from `~/.config/lune-editor/themes/`
@@ -145,8 +145,8 @@ lune /path/to/repo
 **AI-assisted refactoring**
 ```bash
 lune ~/my-project
-# Ctrl+` to toggle Live Mode
-# Select code · Ctrl+Shift+A to ask AI · accept or reject inline
+# Ctrl+` to toggle AI panel
+# Select code · Ctrl+Shift+A to ask AI
 ```
 
 ---
@@ -180,7 +180,6 @@ show_hidden = false
 
 [ai]
 default_client = "claude"   # any CLI AI tool: claude, aider, etc.
-live_mode_enabled = false
 
 theme = "Lune Dark"
 ```
@@ -262,8 +261,6 @@ Lune ships a native AI manager that launches any CLI AI tool (`claude`, `aider`,
 lune ~/my-project
 ```
 
-**Live Mode** (`Ctrl+`` `): streams your editor context (open file, cursor position, visible lines) to the AI session in real time.
-
 **Point query** (`Ctrl+Shift+A`): opens the AI prompt. Your current selection is automatically included as context — just type your question.
 
 Lune launches the AI client as a subprocess in the embedded terminal using your local install (e.g. `claude`, `aider`, or any CLI tool). No API key configuration inside Lune is required — the client handles auth however it normally does.
@@ -319,7 +316,7 @@ lune-editor/
 └── crates/
     ├── lune-core/        # Buffers, settings, tree-sitter, search, undo, crash recovery
     ├── lune-ui/          # ratatui TUI: event loop, widgets, vim state, themes, effects
-    ├── lune-ai/          # AI manager, PTY session, Live Mode controller, client traits
+    ├── lune-ai/          # AI manager, PTY session, client traits
     └── lune-git/         # Git service (libgit2): status, diffs, stage/unstage
 ```
 

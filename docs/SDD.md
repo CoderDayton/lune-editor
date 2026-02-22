@@ -14,7 +14,6 @@ It will have a toggleable file tree like vscode and git integration.
 
 Image attachment is a simple AI Generation reference or inspiration.
 
-Special feature will be live mode: follow claude codes edits in real time and show diffs in the editor.
 
 DELIVERABLE:
 SDD.md file
@@ -24,7 +23,7 @@ SDD.md file
 
 ## 0. Overview
 
-Tachyon Editor is a Rust terminal-based code editor with a VS Code–inspired UX, built on Ratatui, rat-salsa, rat-widget, and tachyonfx, with first-class embedded AI client support (e.g., Claude Code) and live edit-following mode.[web:2][web:3][web:4][web:6][web:10][web:15][web:8]  
+Tachyon Editor is a Rust terminal-based code editor with a VS Code–inspired UX, built on Ratatui, rat-salsa, rat-widget, and tachyonfx, with first-class embedded AI client support (e.g., Claude Code).[web:2][web:3][web:4][web:6][web:10][web:15][web:8]  
 It provides a mouse-driven, optionally modal (vim-like) interface, a toggleable file tree, and Git integration, while exposing rich editor context to AI clients and rendering real-time diffs of AI-driven changes.
 
 ---
@@ -35,7 +34,6 @@ It provides a mouse-driven, optionally modal (vim-like) interface, a toggleable 
 
 - Provide a fast, fully keyboard- and mouse-operable terminal editor that feels structurally similar to VS Code (panels, tabs, status bar, command palette).  
 - Integrate one or more AI coding assistants (initially Claude Code) via embedded terminals with deep context from the editor (active file, selection, open tabs, workspace metadata).  
-- Implement a “Live Mode” that follows AI edits in real time and overlays diffs directly in the editor buffers.  
 - Offer a predictable, extensible Rust architecture: clear separation of UI rendering, event loop, editor core, AI integration, and VCS layer.
 
 ### 1.2 Non-Goals (V1)
@@ -52,7 +50,7 @@ It provides a mouse-driven, optionally modal (vim-like) interface, a toggleable 
 - **Ratatui**: terminal UI framework for layout, widgets, and rendering.[web:2][web:3][web:4][web:6]  
 - **rat-salsa**: application event loop and crossterm integration for structured event-driven TUIs.[web:10]  
 - **rat-widget** (+ rat-widget-extra as needed): extended widgets with rat-event–based event handling for complex, interactive controls.[web:15][web:11][web:14]  
-- **tachyonfx**: shader-like visual effects applied post-render for transitions, focus hints, and live diff highlighting.[web:8][web:12]  
+- **tachyonfx**: shader-like visual effects applied post-render for transitions, focus hints, and diff highlighting.[web:8][web:12]  
 - **Claude Code** (example AI client): external CLI run inside a pseudo-terminal, communicating via stdin/stdout and the workspace file system.
 
 ---
@@ -69,7 +67,6 @@ It provides a mouse-driven, optionally modal (vim-like) interface, a toggleable 
 
 - Open a project directory, navigate via a file tree, edit multiple files in tabs, and commit via built-in Git panel.  
 - Invoke an embedded Claude Code terminal with context (current file, selection, workspace summary) to request refactors or code generation.  
-- Enable Live Mode to watch AI edits stream in and see inline diff markings, with quick accept/reject operations.  
 - Use vim mode for modal keybindings while retaining mouse interactions for selection, resizing, and panel toggles.
 
 ---
@@ -81,7 +78,7 @@ It provides a mouse-driven, optionally modal (vim-like) interface, a toggleable 
 1. **UI Layer (Ratatui + rat-widget + tachyonfx)**  
    - Layouts: top-level splits (file tree, editor, AI terminal, status bar), tabs, popups, diff overlays.[web:2][web:4][web:15][web:8]  
    - Widgets: file tree, tab bar, editor buffers, embedded terminal, Git panel, command palette, notifications.[web:15]  
-   - Effects: focus glow, selection highlighting, live diff animations via tachyonfx post-processing on rendered buffers.[web:8]
+   - Effects: focus glow, selection highlighting, and diff animations via tachyonfx post-processing on rendered buffers.[web:8]
 
 2. **Event Loop + Input Layer (rat-salsa + rat-event)**  
    - Centralized event loop over crossterm events and timers using rat-salsa.[web:10]  
@@ -94,7 +91,6 @@ It provides a mouse-driven, optionally modal (vim-like) interface, a toggleable 
 4. **AI Integration Layer**  
    - PTY manager for embedded AI client sessions (Claude Code).  
    - Context provider that collects editor state and serializes into prompts/CLI flags/env vars.  
-   - Live Mode controller that tracks AI-induced file diffs and signals the UI.
 
 5. **Persistence and Services**  
    - Settings (keymaps, themes, AI presets), recent workspaces, cached AI context summaries.  
@@ -147,14 +143,12 @@ It provides a mouse-driven, optionally modal (vim-like) interface, a toggleable 
   - “Summarize workspace changes” sends list of modified files and short diffs.  
 - Maintain AI session history within embedded terminal while enabling copy/paste and scrollback.  
 
-### 5.6 Live Mode and Diffs
 
 - Detect file changes made by AI (through the file system) and map them to loaded buffers.  
 - Compute diffs incrementally and overlay them:
   - Inserted lines: highlighted background or left-bar markers.  
   - Deleted lines: virtual diff lines in a side gutter or ghost lines view.  
   - Modified lines: inline highlight.  
-- Live Mode has explicit states: Off, Preview, Follow:
   - Off: changes only refresh when files are manually reloaded.  
   - Preview: diff shown but cursor remains where user left it.  
   - Follow: cursor automatically tracks AI-driven edits as they stream in.  
@@ -244,7 +238,6 @@ struct TextBuffer {
 - File tree widget queries `Workspace` for children lazily to avoid blocking on deep trees.
 - File system changes are captured via a watcher thread (e.g., `notify` crate), posted to UI as `FsEvent::FileChanged(PathBuf)`.
 
-When an open buffer’s file is modified externally (AI or Git operations), the editor core generates a diff and triggers Live Mode logic if enabled.
 
 ### 6.5 Git Integration
 
@@ -254,7 +247,6 @@ When an open buffer’s file is modified externally (AI or Git operations), the 
     - selection that opens per-file diff view in right sidebar or as overlay.
 - Editor gutter shows Git markers based on diff hunks between current buffer content and HEAD.
 
-Live Mode can reuse the same diff engine but with baseline set to “pre-AI edit” revision instead of HEAD.
 
 ### 6.6 Embedded AI Client Integration
 
@@ -295,7 +287,6 @@ struct AiSession {
 
 AI client remains an external process; Tachyon Editor never parses its internal protocol, only its terminal output and resulting file system changes.
 
-### 6.7 Live Mode and Diff Handling
 
 **Change Detection**
 
@@ -304,7 +295,7 @@ AI client remains an external process; Tachyon Editor never parses its internal 
 
 1. Read new file contents into a shadow buffer.
 2. Run diff engine (e.g., Myers) between current in-editor contents and on-disk version.
-3. Store resulting hunks in `LiveDiffState` associated with the buffer.
+3. Store resulting hunks in buffer-associated diff state.
 
 **Rendering**
 
@@ -316,7 +307,6 @@ AI client remains an external process; Tachyon Editor never parses its internal 
 **User Controls**
 
 - Keybindings:
-    - Toggle Live Mode (Off/Preview/Follow).
     - Next/previous hunk navigation.
     - Accept/Reject hunk or entire file.
 - Accept applies the diff directly to the buffer; Reject reverts to pre-AI contents or selectively reverts hunks.
@@ -328,10 +318,8 @@ AI client remains an external process; Tachyon Editor never parses its internal 
 - tachyonfx operates on Ratatui buffers after widgets have been rendered, modifying cell colors and characters to produce shader-like effects.[web:8]
 - Effects usages:
     - Highlight currently focused pane with a subtle glow or gradient border.
-    - Animate Live Mode diffs with fade or pulse to differentiate AI changes from manual edits.
     - Provide transient “AI thinking” indicator in the status bar using timed effects and interpolation.[web:8][web:12]
 
-Effects are configured via the EffectDsl to allow declarative animation definitions bound to state transitions (e.g., Live Mode entering Follow).[web:12]
 
 ---
 
@@ -412,12 +400,10 @@ Effects are configured via the EffectDsl to allow declarative animation definiti
 
 - Unit tests:
     - Buffer operations (insert/delete, undo/redo, search/replace).
-    - Diff engine and Live Mode hunk application.
     - Workspace file tree navigation and Git state mapping.
 - Integration tests:
     - Event-routing correctness in rat-salsa, including mouse + vim mode co-existence.[web:10]
     - PTY lifecycle with a mock AI CLI that writes known edits to files.
-    - Live Mode: sequence of external file edits and expected diff overlays.
 
 
 ### 10.2 Manual Scenarios
@@ -455,4 +441,3 @@ S3 (Apply: actionable step): Define an initial Rust crate layout (`crates/ui`, `
 [^13]: https://stackoverflow.com/questions/79015134/piping-the-final-output-of-a-ratatui-rust-app-while-still-showing-the-tui-applic
 [^14]: https://lib.rs/crates/rat-event
 [^15]: https://crates.io/crates/rat-widget```
-

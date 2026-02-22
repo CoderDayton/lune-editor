@@ -151,7 +151,6 @@ pub enum FileOp {
 2. `FsEvent::FileChanged(path)`:
    - If path matches an open buffer → check if buffer is dirty. If clean, auto-reload. If dirty, show notification "File changed on disk".
    - Invalidate workspace cache for parent directory.
-   - If Live Mode is active, delegate to Live Mode handler (plan 09).
 3. `FsEvent::FileCreated/FileDeleted`:
    - Invalidate cache for parent directory.
    - If deleted file has an open buffer, mark buffer as orphaned.

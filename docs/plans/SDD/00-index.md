@@ -41,7 +41,7 @@ Add file tree, workspace abstraction, and syntax highlighting so the editor is u
 
 ---
 
-### Phase 3 — Git & AI (files 07–09)
+### Phase 3 — Git & AI (files 07–08)
 
 Integrate version control and the embedded AI client — the two differentiating features.
 
@@ -49,9 +49,7 @@ Integrate version control and the embedded AI client — the two differentiating
 |------|-------|------------------|
 | [07-git-integration.md](07-git-integration.md) | Git service, gutter, staging | `GitService`, inline gutter markers, stage/unstage/commit, diff view panel |
 | [08-ai-integration.md](08-ai-integration.md) | PTY manager, context, terminal | `AiSession`, embedded terminal widget, context provider, command patterns |
-| [09-live-mode.md](09-live-mode.md) | Live Mode, diff overlay | File change detection, diff engine, Off/Preview/Follow states, accept/reject hunks |
-
-**Phase 3 exit criteria:** Git status in gutter, stage/commit from editor, launch Claude Code with editor context, Live Mode shows streaming AI diffs.
+**Phase 3 exit criteria:** Git status in gutter, stage/commit from editor, launch Claude Code with editor context.
 
 ---
 
@@ -63,7 +61,7 @@ Visual effects, persistence, and comprehensive testing.
 |------|-------|------------------|
 | [10-effects.md](10-effects.md) | tachyonfx visual effects | Focus glow, diff animations, AI thinking indicator, effect DSL bindings |
 | [11-persistence.md](11-persistence.md) | Settings, themes, keymaps | TOML config files, theme system, keymap customization, workspace state save/restore |
-| [12-testing.md](12-testing.md) | Test strategy | Unit tests (buffer, diff, git), integration tests (event routing, PTY, Live Mode), manual scenarios |
+| [12-testing.md](12-testing.md) | Test strategy | Unit tests (buffer, diff, git), integration tests (event routing, PTY), manual scenarios |
 
 **Phase 4 exit criteria:** Polished visual experience, persistent user settings, crash recovery, >80% unit test coverage on core modules.
 
@@ -77,7 +75,7 @@ lune-editor/
 ├── crates/
 │   ├── lune-core/          # buffer, rope, undo/redo, diff, search
 │   ├── lune-ui/            # ratatui widgets, layout, effects, event routing
-│   ├── lune-ai/            # PTY manager, context provider, Live Mode
+│   ├── lune-ai/            # PTY manager, context provider
 │   └── lune-git/           # Git service (libgit2/CLI wrapper)
 ├── src/
 │   └── main.rs             # binary entry point, wires crates together

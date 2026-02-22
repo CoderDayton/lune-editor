@@ -72,7 +72,6 @@ pub struct MockAiClient {
 | `pty` | Spawn, read/write, resize, kill | Integration with `/bin/cat` |
 | `session` | Lifecycle, error handling | Integration with mock process |
 | `context` | Context collection, encoding formats | Unit tests |
-| `live_mode` | State transitions, diff tracking, accept/reject | Unit tests with mock data |
 
 **`lune-ui` tests**
 
@@ -104,8 +103,6 @@ Located in `tests/` at workspace root.
 | `test_file_tree_navigation` | Create workspace, expand dirs, open file from tree |
 | `test_git_workflow` | Init repo, modify file, stage, commit, verify status updates |
 | `test_ai_session_lifecycle` | Start mock AI process, send input, receive output, stop |
-| `test_live_mode_detect_changes` | Enable Live Mode, modify file externally, verify diff hunks |
-| `test_live_mode_accept_reject` | Generate diff, accept hunk, verify buffer; reject hunk, verify revert |
 | `test_crash_recovery` | Write recovery state, simulate startup, verify recovery prompt |
 | `test_settings_merge` | Global + workspace-local config merge correctly |
 | `test_vim_editing` | Enter vim mode, execute command sequences, verify buffer state |
@@ -116,14 +113,13 @@ These require human verification and should be documented as a checklist.
 
 1. **Large project navigation**: Open a 500+ file project, browse file tree, open 10+ files, switch between them.
 2. **AI interaction**: Launch Claude Code, send contextual queries, verify context is correct.
-3. **Live Mode streaming**: Enable Follow mode, run an AI refactor, watch diffs stream in.
-4. **Git workflows**: Stage individual hunks, commit, see gutter markers update.
-5. **Terminal compatibility**: Test on kitty, alacritty, WezTerm, tmux, macOS Terminal.app, Windows Terminal.
-6. **Resize behavior**: Resize terminal aggressively while editing — no panics or layout breaks.
-7. **Performance under load**: Edit a 50K-line file with syntax highlighting and git gutter — must remain responsive.
-8. **Theme switching**: Switch between dark and light themes — all UI elements update.
-9. **Crash recovery**: Kill the process, relaunch, verify recovery prompt with correct files.
-10. **Vim + mouse coexistence**: Use vim keybindings and mouse interchangeably.
+3. **Git workflows**: Stage individual hunks, commit, see gutter markers update.
+4. **Terminal compatibility**: Test on kitty, alacritty, WezTerm, tmux, macOS Terminal.app, Windows Terminal.
+5. **Resize behavior**: Resize terminal aggressively while editing — no panics or layout breaks.
+6. **Performance under load**: Edit a 50K-line file with syntax highlighting and git gutter — must remain responsive.
+7. **Theme switching**: Switch between dark and light themes — all UI elements update.
+8. **Crash recovery**: Kill the process, relaunch, verify recovery prompt with correct files.
+9. **Vim + mouse coexistence**: Use vim keybindings and mouse interchangeably.
 
 ---
 
@@ -158,7 +154,7 @@ These require human verification and should be documented as a checklist.
    - Editor pane with syntax-highlighted Rust code.
    - Status bar in various states.
    - File tree with expanded/collapsed directories.
-   - Diff overlay in Live Mode.
+   - Git gutter and diff view rendering.
 3. Update snapshots when intentional UI changes are made.
 
 ### Step 4: Integration test suite
@@ -196,7 +192,7 @@ These require human verification and should be documented as a checklist.
 
 - [ ] Unit tests exist for all public functions in `lune-core`
 - [ ] Property-based tests cover buffer ops, diff engine, and serialization
-- [ ] Integration tests cover: open/edit/save, git workflow, AI session, Live Mode, crash recovery
+- [ ] Integration tests cover: open/edit/save, git workflow, AI session, crash recovery
 - [ ] UI snapshot tests cover key widget states
 - [ ] CI runs all tests on every push/PR
 - [ ] Coverage reporting is set up and visible

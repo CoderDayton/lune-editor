@@ -100,16 +100,7 @@ These scenarios require human verification. Record results before tagging a rele
 
 **Expected:** AI client spawns in embedded PTY, context is accurate, no stale data.
 
-### 3. Live Mode streaming
-
-- [ ] Enable Live Mode (toggle on)
-- [ ] Trigger an AI-driven file modification
-- [ ] Observe diff hunks streaming into the editor in real time
-- [ ] Verify auto-follow scrolls to changes
-
-**Expected:** Diffs appear incrementally, editor stays responsive, auto-follow works.
-
-### 4. Git workflows
+### 3. Git workflows
 
 - [ ] Modify a tracked file, verify gutter markers appear (added/modified lines)
 - [ ] Open the git panel, see unstaged changes listed
@@ -120,7 +111,7 @@ These scenarios require human verification. Record results before tagging a rele
 
 **Expected:** All git state transitions reflected in UI immediately.
 
-### 5. Terminal compatibility
+### 4. Terminal compatibility
 
 Test on each terminal emulator. Record pass/fail per terminal.
 
@@ -135,7 +126,7 @@ Test on each terminal emulator. Record pass/fail per terminal.
 
 **Expected:** No visual artifacts, all keybindings work, mouse clicks register correctly.
 
-### 6. Resize behavior
+### 5. Resize behavior
 
 - [ ] Resize terminal rapidly while editing (drag corner)
 - [ ] Resize to very small (e.g., 40x10)
@@ -144,7 +135,7 @@ Test on each terminal emulator. Record pass/fail per terminal.
 
 **Expected:** Layout adapts, no crashes, content remains intact.
 
-### 7. Performance under load
+### 6. Performance under load
 
 - [ ] Open a 50,000+ line file
 - [ ] Enable syntax highlighting
@@ -154,7 +145,7 @@ Test on each terminal emulator. Record pass/fail per terminal.
 
 **Expected:** Scrolling remains smooth (>30 fps feel), edits are instant, no perceptible lag.
 
-### 8. Theme switching
+### 7. Theme switching
 
 - [ ] Start in dark theme
 - [ ] Switch to light theme via command palette
@@ -164,7 +155,7 @@ Test on each terminal emulator. Record pass/fail per terminal.
 
 **Expected:** Instant theme switch, no stale colors, all widgets respect theme.
 
-### 9. Crash recovery
+### 8. Crash recovery
 
 - [ ] Open several files and make unsaved edits
 - [ ] Kill the process (`kill -9 <pid>`)
@@ -174,7 +165,7 @@ Test on each terminal emulator. Record pass/fail per terminal.
 
 **Expected:** State database preserves workspace state, recovery is seamless.
 
-### 10. Vim and mouse coexistence
+### 9. Vim and mouse coexistence
 
 - [ ] Use vim keybindings (hjkl, dd, yy, p, /, etc.)
 - [ ] Click with mouse to reposition cursor
@@ -198,7 +189,7 @@ cargo test --workspace -- --ignored
 cargo build --release
 ```
 
-Plus: at minimum, manual tests 1, 4, 6, 7, 8, 9 verified on the primary development terminal.
+Plus: at minimum, manual tests 1, 3, 5, 6, 7, 8 verified on the primary development terminal.
 
 ---
 

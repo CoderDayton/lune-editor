@@ -2,11 +2,11 @@
 
 > **Phase:** 4 (Polish & Robustness)
 > **Estimated effort:** 1–2 sessions (~4–6 hours)
-> **Prerequisites:** [04-ui-layout.md](04-ui-layout.md), [09-live-mode.md](09-live-mode.md)
+> **Prerequisites:** [04-ui-layout.md](04-ui-layout.md), [07-git-integration.md](07-git-integration.md)
 
 ## Goal
 
-Integrate tachyonfx to add shader-like visual effects to the editor: focus glow on active panels, smooth diff animations in Live Mode, AI "thinking" indicators, and subtle transitions for state changes. Effects enhance UX without blocking or slowing the render pipeline.
+Integrate tachyonfx to add shader-like visual effects to the editor: focus glow on active panels, smooth diff animations, AI "thinking" indicators, and subtle transitions for state changes. Effects enhance UX without blocking or slowing the render pipeline.
 
 ---
 
@@ -84,15 +84,15 @@ pub struct EffectConfig {
 3. Trigger on `FocusChanged` events.
 4. **Verify:** click between panels, see focus glow transition smoothly.
 
-### Step 3: Live Mode diff animations
+### Step 3: Diff animations
 
-1. When new diff hunks appear in Live Mode:
+1. When new diff hunks appear:
    - **Fade-in**: new added lines fade from transparent to green highlight over 300ms.
    - **Pulse**: just-changed lines pulse briefly (brightness oscillation, 2 cycles over 500ms).
 2. When a hunk is accepted: flash green and fade out.
 3. When a hunk is rejected: flash red and fade out.
 4. Use line-targeted effects via `EffectTarget::EditorLines`.
-5. **Verify:** trigger AI change in Live Mode, see animated diff appearance.
+5. **Verify:** open a diff with new hunks and see animated diff appearance.
 
 ### Step 4: AI thinking indicator
 
@@ -137,7 +137,7 @@ pub struct EffectConfig {
 ## Acceptance Criteria
 
 - [ ] Focus glow transitions smoothly between panels
-- [ ] Live Mode diffs fade in with visible animation
+- [ ] Diffs fade in with visible animation
 - [ ] Accept/reject hunks produce visual feedback (flash)
 - [ ] AI thinking indicator animates in the status bar
 - [ ] Notifications animate in/out
