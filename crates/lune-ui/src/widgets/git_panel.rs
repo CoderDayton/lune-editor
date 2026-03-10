@@ -12,6 +12,7 @@ use lune_core::workspace::FileStatus;
 use lune_git::{GitFileStatus, GitStatus};
 
 use crate::theme::Theme;
+use crate::widgets::diff_view::DiffViewState;
 
 /// State of the git panel widget.
 #[derive(Clone, Debug)]
@@ -24,6 +25,8 @@ pub struct GitPanelState {
     pub selected: usize,
     /// Scroll offset.
     pub scroll: usize,
+    /// Diff view state for the currently selected file.
+    pub diff_view: DiffViewState,
 }
 
 /// A single entry in the git panel (section header or file).
@@ -47,12 +50,13 @@ impl Default for GitPanelState {
 
 impl GitPanelState {
     /// Create an empty git panel state.
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             status: None,
             entries: Vec::new(),
             selected: 0,
             scroll: 0,
+            diff_view: DiffViewState::default(),
         }
     }
 

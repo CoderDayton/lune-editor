@@ -124,6 +124,15 @@ pub enum AppCommand {
     /// Delete the selected file tree entry (with confirmation).
     DeleteEntry,
 
+    /// Confirmed: create a new file at the given path.
+    CreateFileConfirmed(PathBuf),
+    /// Confirmed: create a new directory at the given path.
+    CreateDirConfirmed(PathBuf),
+    /// Confirmed: rename from old path to new path.
+    RenameConfirmed { from: PathBuf, to: PathBuf },
+    /// Confirmed: delete a file or directory at the given path.
+    DeleteConfirmed(PathBuf),
+
     // ── Editor commands ───────────────────────────────────────────
     /// Undo the last edit.
     Undo,
@@ -133,6 +142,8 @@ pub enum AppCommand {
     Find,
     /// Open find-and-replace dialog.
     Replace,
+    /// Open the language selector picker overlay.
+    OpenLanguagePicker,
 
     // ── Vim mode transitions ──────────────────────────────────────
     /// Enter vim normal mode.
@@ -159,6 +170,12 @@ pub enum AppCommand {
     GitDiscardConfirmed(PathBuf),
     /// Refresh git status (manual trigger).
     GitRefresh,
+    /// Stage the current hunk in the diff view.
+    GitStageHunk,
+    /// Unstage the current hunk in the diff view.
+    GitUnstageHunk,
+    /// Discard the current hunk in the diff view (requires confirmation).
+    GitDiscardHunk,
 
     // ── AI commands ──────────────────────────────────────────────────
     /// Ask the AI about the current selection (sends selection context).

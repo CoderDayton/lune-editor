@@ -11,11 +11,12 @@ use crate::primitives::{
     Block, BorderType, Borders, Buffer, Clear, Line, Rect, Span, Style, Stylize, Widget,
 };
 
+use crate::effects::blend_toward;
 use crate::event::AppCommand;
 use crate::primitives::Color;
 use crate::theme::Theme;
 use lune_ai::session::AiClientKind;
-use lune_core::language::lang;
+use lune_core::language::{lang, LanguageId};
 
 // ── Overlay kinds ─────────────────────────────────────────────────────
 
@@ -37,6 +38,10 @@ pub enum OverlayKind {
     FilePicker,
     /// AI client picker (choose which client to launch).
     AiClientPicker,
+    /// Inline text input dialog (new file, rename, etc.).
+    InputDialog,
+    /// Language selector (fuzzy-filtered list of all known languages).
+    LanguagePicker,
 }
 
 // ── Overlay state ─────────────────────────────────────────────────────
@@ -54,6 +59,12 @@ pub struct OverlayState {
     pub notifications: Vec<Notification>,
     /// AI client picker state.
     pub ai_client_picker: AiClientPickerState,
+    /// Input dialog state (for file operations).
+    pub input_dialog: Option<InputDialogState>,
+    /// Find/replace bar state.
+    pub find_replace: FindReplaceState,
+    /// Language picker state.
+    pub language_picker: LanguagePickerState,
 }
 
 impl OverlayState {
@@ -91,6 +102,32 @@ impl OverlayState {
     /// Close whatever overlay is open.
     pub fn close(&mut self) {
         self.active = None;
+    }
+
+    /// Open an input dialog.
+    pub fn open_input_dialog(&mut self, state: InputDialogState) {
+        self.input_dialog = Some(state);
+        self.active = Some(OverlayKind::InputDialog);
+    }
+
+    /// Open find bar (no replace row).
+    pub fn open_find(&mut self) {
+        self.find_replace.show_replace = false;
+        self.find_replace.active_field = FindReplaceField::Find;
+        self.active = Some(OverlayKind::FindReplace);
+    }
+
+    /// Open find and replace bar.
+    pub fn open_find_replace(&mut self) {
+        self.find_replace.show_replace = true;
+        self.find_replace.active_field = FindReplaceField::Find;
+        self.active = Some(OverlayKind::FindReplace);
+    }
+
+    /// Open the language picker loaded with the given language list.
+    pub fn open_language_picker(&mut self, languages: Vec<LanguageId>) {
+        self.language_picker = LanguagePickerState::new(languages);
+        self.active = Some(OverlayKind::LanguagePicker);
     }
 
     /// Open a confirmation dialog.
@@ -278,11 +315,15 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
         palette_cmd("Next AI Session", AppCommand::AiNextSession),
         palette_cmd("Previous AI Session", AppCommand::AiPrevSession),
         palette_cmd("Toggle Git Panel", AppCommand::ToggleGitPanel),
+        palette_cmd("Stage Hunk", AppCommand::GitStageHunk),
+        palette_cmd("Unstage Hunk", AppCommand::GitUnstageHunk),
+        palette_cmd("Discard Hunk", AppCommand::GitDiscardHunk),
         palette_cmd("Undo", AppCommand::Undo),
         palette_cmd("Redo", AppCommand::Redo),
         palette_cmd("Find", AppCommand::Find),
         palette_cmd("Find and Replace", AppCommand::Replace),
         palette_cmd("Quit", AppCommand::Quit),
+        palette_cmd("Select Language", AppCommand::OpenLanguagePicker),
     ];
 
     // Language change commands.
@@ -447,6 +488,300 @@ impl AiClientPickerState {
     #[must_use]
     pub fn selected_kind(&self) -> Option<AiClientKind> {
         self.entries.get(self.selected).map(|e| e.kind.clone())
+    }
+}
+
+// ── Language picker ───────────────────────────────────────────────────
+
+/// State for the language selector overlay.
+#[derive(Clone, Debug, Default)]
+pub struct LanguagePickerState {
+    /// All available language IDs (sorted alphabetically, deduplicated).
+    pub all_languages: Vec<LanguageId>,
+    /// Currently displayed (filtered) subset.
+    pub filtered: Vec<LanguageId>,
+    /// Highlighted index into `filtered`.
+    pub selected: usize,
+    /// Filter input string.
+    pub input: String,
+    /// Scroll offset for the visible list window.
+    pub scroll_offset: usize,
+}
+
+impl LanguagePickerState {
+    /// Build from a list of language IDs (sorts and deduplicates).
+    #[must_use]
+    pub fn new(mut languages: Vec<LanguageId>) -> Self {
+        languages.sort_by_key(|l| l.0);
+        languages.dedup();
+        let filtered = languages.clone();
+        Self {
+            all_languages: languages,
+            filtered,
+            selected: 0,
+            input: String::new(),
+            scroll_offset: 0,
+        }
+    }
+
+    /// Re-filter `all_languages` by `input` (case-insensitive substring).
+    pub fn update_filter(&mut self) {
+        let query = self.input.to_lowercase();
+        self.filtered = if query.is_empty() {
+            self.all_languages.clone()
+        } else {
+            self.all_languages
+                .iter()
+                .filter(|l| l.0.to_lowercase().contains(&query))
+                .copied()
+                .collect()
+        };
+        self.selected = 0;
+        self.scroll_offset = 0;
+    }
+
+    /// Move selection down (wraps).
+    pub fn select_next(&mut self) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        self.selected = (self.selected + 1) % self.filtered.len();
+        self.ensure_visible(10);
+    }
+
+    /// Move selection up (wraps).
+    pub fn select_prev(&mut self) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        self.selected = self
+            .selected
+            .checked_sub(1)
+            .unwrap_or(self.filtered.len() - 1);
+        self.ensure_visible(10);
+    }
+
+    /// Scroll so that `selected` is within a window of `list_height` rows.
+    const fn ensure_visible(&mut self, list_height: usize) {
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        } else if self.selected >= self.scroll_offset + list_height {
+            self.scroll_offset = self.selected + 1 - list_height;
+        }
+    }
+
+    /// The currently selected language, if any.
+    #[must_use]
+    pub fn selected_lang(&self) -> Option<LanguageId> {
+        self.filtered.get(self.selected).copied()
+    }
+
+    /// Append a character to the filter input.
+    pub fn type_char(&mut self, c: char) {
+        self.input.push(c);
+        self.update_filter();
+    }
+
+    /// Remove the last character from the filter input.
+    pub fn backspace(&mut self) {
+        self.input.pop();
+        self.update_filter();
+    }
+}
+
+// ── Input dialog ──────────────────────────────────────────────────────
+
+/// Action to perform when an input dialog is confirmed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InputDialogAction {
+    /// Create a new file in the given parent directory.
+    CreateFile { parent: PathBuf },
+    /// Create a new directory in the given parent directory.
+    CreateDir { parent: PathBuf },
+    /// Rename an entry (from is the current path).
+    Rename { from: PathBuf },
+}
+
+/// State for the inline input dialog overlay.
+#[derive(Clone, Debug)]
+pub struct InputDialogState {
+    /// Dialog title (e.g. "New File", "Rename").
+    pub title: String,
+    /// Current input text.
+    pub input: String,
+    /// Cursor position within the input (byte offset).
+    pub cursor_pos: usize,
+    /// Hint text shown when input is empty.
+    pub hint: String,
+    /// The action to perform on confirm.
+    pub action: InputDialogAction,
+}
+
+impl InputDialogState {
+    /// Create a new input dialog state.
+    pub fn new(title: impl Into<String>, hint: impl Into<String>, action: InputDialogAction) -> Self {
+        Self {
+            title: title.into(),
+            input: String::new(),
+            cursor_pos: 0,
+            hint: hint.into(),
+            action,
+        }
+    }
+
+    /// Create with pre-filled input text (e.g. for rename).
+    #[must_use]
+    pub fn with_input(mut self, input: impl Into<String>) -> Self {
+        self.input = input.into();
+        self.cursor_pos = self.input.len();
+        self
+    }
+
+    /// Type a character at the cursor position.
+    pub fn type_char(&mut self, ch: char) {
+        self.input.insert(self.cursor_pos, ch);
+        self.cursor_pos += ch.len_utf8();
+    }
+
+    /// Delete the character before the cursor.
+    pub fn backspace(&mut self) {
+        if self.cursor_pos > 0 {
+            // Find the previous character boundary.
+            let prev = self.input[..self.cursor_pos]
+                .char_indices()
+                .next_back()
+                .map_or(0, |(i, _)| i);
+            self.input.drain(prev..self.cursor_pos);
+            self.cursor_pos = prev;
+        }
+    }
+
+    /// Delete the character at the cursor.
+    pub fn delete(&mut self) {
+        if self.cursor_pos < self.input.len() {
+            let next = self.input[self.cursor_pos..]
+                .char_indices()
+                .nth(1)
+                .map_or(self.input.len(), |(i, _)| self.cursor_pos + i);
+            self.input.drain(self.cursor_pos..next);
+        }
+    }
+
+    /// Move cursor left by one character.
+    pub fn move_left(&mut self) {
+        if self.cursor_pos > 0 {
+            self.cursor_pos = self.input[..self.cursor_pos]
+                .char_indices()
+                .next_back()
+                .map_or(0, |(i, _)| i);
+        }
+    }
+
+    /// Move cursor right by one character.
+    pub fn move_right(&mut self) {
+        if self.cursor_pos < self.input.len() {
+            self.cursor_pos = self.input[self.cursor_pos..]
+                .char_indices()
+                .nth(1)
+                .map_or(self.input.len(), |(i, _)| self.cursor_pos + i);
+        }
+    }
+
+    /// Move cursor to the start.
+    pub const fn home(&mut self) {
+        self.cursor_pos = 0;
+    }
+
+    /// Move cursor to the end.
+    pub fn end(&mut self) {
+        self.cursor_pos = self.input.len();
+    }
+
+    /// Validate the input. Returns an error message if invalid, None if OK.
+    pub fn validate(&self) -> Option<&'static str> {
+        let trimmed = self.input.trim();
+        if trimmed.is_empty() {
+            return Some("Name cannot be empty");
+        }
+        if trimmed.contains('/') || trimmed.contains('\\') {
+            return Some("Name cannot contain path separators");
+        }
+        None
+    }
+}
+
+// ── Find/Replace ──────────────────────────────────────────────────────
+
+/// Which field is active in the find/replace bar.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FindReplaceField {
+    #[default]
+    Find,
+    Replace,
+}
+
+/// State for the find/replace overlay bar.
+#[derive(Clone, Debug, Default)]
+pub struct FindReplaceState {
+    /// Current find input.
+    pub find_input: String,
+    /// Current replace input.
+    pub replace_input: String,
+    /// Which field is active.
+    pub active_field: FindReplaceField,
+    /// Whether search is case-sensitive.
+    pub case_sensitive: bool,
+    /// Whether to show the replace row.
+    pub show_replace: bool,
+    /// Cached search results from the active buffer.
+    pub search_state: lune_core::search::SearchState,
+}
+
+impl FindReplaceState {
+    /// Type a character into the active field.
+    pub fn type_char(&mut self, ch: char) {
+        match self.active_field {
+            FindReplaceField::Find => self.find_input.push(ch),
+            FindReplaceField::Replace => self.replace_input.push(ch),
+        }
+    }
+
+    /// Delete the last character from the active field.
+    pub fn backspace(&mut self) {
+        match self.active_field {
+            FindReplaceField::Find => { self.find_input.pop(); }
+            FindReplaceField::Replace => { self.replace_input.pop(); }
+        }
+    }
+
+    /// Toggle between find and replace fields.
+    pub const fn toggle_field(&mut self) {
+        self.active_field = match self.active_field {
+            FindReplaceField::Find => {
+                if self.show_replace { FindReplaceField::Replace } else { FindReplaceField::Find }
+            }
+            FindReplaceField::Replace => FindReplaceField::Find,
+        };
+    }
+
+    /// Toggle case sensitivity.
+    pub const fn toggle_case(&mut self) {
+        self.case_sensitive = !self.case_sensitive;
+    }
+
+    /// Format the match count display.
+    #[must_use]
+    pub fn match_display(&self) -> String {
+        let count = self.search_state.match_count();
+        if self.find_input.is_empty() {
+            String::new()
+        } else if count == 0 {
+            "No results".to_string()
+        } else if let Some(idx) = self.search_state.current_match {
+            format!("{} of {count}", idx + 1)
+        } else {
+            format!("{count} results")
+        }
     }
 }
 
@@ -670,6 +1005,29 @@ pub struct Notification {
     pub created: Instant,
 }
 
+/// Notification TTL in seconds.
+const NOTIFICATION_TTL_SECS: f32 = 4.0;
+/// Seconds before expiry when fade-out begins.
+const NOTIFICATION_FADE_SECS: f32 = 1.0;
+
+impl Notification {
+    /// Remaining vitality: 1.0 when fresh, fading to 0.0 during the
+    /// final second before expiry.
+    #[must_use]
+    pub fn vitality(&self) -> f32 {
+        let elapsed = self.created.elapsed().as_secs_f32();
+        if elapsed >= NOTIFICATION_TTL_SECS {
+            return 0.0;
+        }
+        let fade_start = NOTIFICATION_TTL_SECS - NOTIFICATION_FADE_SECS;
+        if elapsed <= fade_start {
+            1.0
+        } else {
+            (NOTIFICATION_TTL_SECS - elapsed) / NOTIFICATION_FADE_SECS
+        }
+    }
+}
+
 // ── Rendering ─────────────────────────────────────────────────────────
 
 /// Render the active overlay on top of the main layout.
@@ -684,8 +1042,7 @@ pub fn render_overlay(area: Rect, buf: &mut Buffer, overlay: &mut OverlayState, 
             render_command_palette(area, buf, &mut overlay.command_palette, theme);
         }
         Some(OverlayKind::FindReplace) => {
-            // Placeholder — will be implemented with search integration.
-            render_centered_popup(area, buf, "Find & Replace", &["(Coming soon)"], theme);
+            render_find_replace(area, buf, &overlay.find_replace, theme);
         }
         Some(OverlayKind::ConfirmDialog { message, .. }) => {
             render_centered_popup(
@@ -701,6 +1058,14 @@ pub fn render_overlay(area: Rect, buf: &mut Buffer, overlay: &mut OverlayState, 
         }
         Some(OverlayKind::AiClientPicker) => {
             render_ai_client_picker(area, buf, &overlay.ai_client_picker, theme);
+        }
+        Some(OverlayKind::InputDialog) => {
+            if let Some(ref dialog) = overlay.input_dialog {
+                render_input_dialog(area, buf, dialog, theme);
+            }
+        }
+        Some(OverlayKind::LanguagePicker) => {
+            render_language_picker(area, buf, &overlay.language_picker, theme);
         }
         None => {}
     }
@@ -786,6 +1151,168 @@ fn render_ai_client_picker(
     if hint_y > inner.y + 1 + state.entries.len() as u16 {
         Line::from(Span::from(" ↑↓ select · Enter open · Esc cancel").dim())
             .render(Rect::new(inner.x, hint_y, inner.width, 1), buf);
+    }
+}
+
+/// Render the language picker popup.
+#[allow(clippy::cast_possible_truncation)]
+fn render_language_picker(
+    area: Rect,
+    buf: &mut Buffer,
+    state: &LanguagePickerState,
+    theme: &Theme,
+) {
+    // Popup dimensions: 40% wide, tall enough for input + up to 12 items + footer.
+    let popup_w = (area.width * 40 / 100).max(36).min(area.width);
+    let list_rows = (state.filtered.len() as u16).min(12);
+    let popup_h = (2 + 1 + list_rows + 1 + 2).min(area.height); // border*2 + input + sep + items + footer
+    let popup_x = area.x + (area.width - popup_w) / 2;
+    let popup_y = area.y + (area.height - popup_h) / 3;
+
+    let popup_rect = Rect::new(popup_x, popup_y, popup_w, popup_h);
+    Clear.render(popup_rect, buf);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .title(" Select Language ")
+        .style(Style::new().fg(theme.overlay_border));
+    let inner = block.inner(popup_rect);
+    block.render(popup_rect, buf);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    // Input row.
+    let cursor = if state.input.is_empty() { "█" } else { "" };
+    let input_str = format!(" > {}{}", state.input, cursor);
+    Line::from(Span::from(input_str))
+        .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
+
+    if inner.height <= 1 {
+        return;
+    }
+
+    // Separator.
+    let sep = "─".repeat(inner.width as usize);
+    Line::from(Span::from(sep).dim())
+        .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
+
+    if inner.height <= 2 {
+        return;
+    }
+
+    let list_y_start = inner.y + 2;
+    let footer_y = inner.y + inner.height.saturating_sub(1);
+    let list_y_end = footer_y;
+    let visible_rows = list_y_end.saturating_sub(list_y_start) as usize;
+
+    if state.filtered.is_empty() {
+        Line::from(Span::from("  No matches").dim())
+            .render(Rect::new(inner.x, list_y_start, inner.width, 1), buf);
+    } else {
+        for (row, (idx, lang)) in state
+            .filtered
+            .iter()
+            .enumerate()
+            .skip(state.scroll_offset)
+            .take(visible_rows)
+            .enumerate()
+        {
+            let y = list_y_start + row as u16;
+            if y >= list_y_end {
+                break;
+            }
+            let label = format!("  {}", lang.name());
+            let max_w = inner.width.saturating_sub(2) as usize;
+            let label = if label.len() > max_w {
+                format!("{}…", &label[..max_w.saturating_sub(1)])
+            } else {
+                label
+            };
+            if idx == state.selected {
+                Line::from(Span::styled(label, theme.overlay_selected))
+                    .render(Rect::new(inner.x, y, inner.width, 1), buf);
+            } else {
+                Line::from(Span::from(label))
+                    .render(Rect::new(inner.x, y, inner.width, 1), buf);
+            }
+        }
+    }
+
+    // Footer hint.
+    if footer_y > list_y_start {
+        Line::from(Span::from(" ↑↓ select · Enter confirm · Esc cancel").dim())
+            .render(Rect::new(inner.x, footer_y, inner.width, 1), buf);
+    }
+}
+
+/// Render the inline input dialog popup.
+#[allow(clippy::cast_possible_truncation)]
+fn render_input_dialog(area: Rect, buf: &mut Buffer, state: &InputDialogState, theme: &Theme) {
+    let popup_w = (area.width * 50 / 100).max(30).min(area.width);
+    let popup_h: u16 = 5;
+    let popup_x = area.x + (area.width - popup_w) / 2;
+    let popup_y = area.y + (area.height - popup_h) / 3;
+
+    let popup_rect = Rect::new(popup_x, popup_y, popup_w, popup_h);
+    Clear.render(popup_rect, buf);
+
+    let title = format!(" {} ", state.title);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .title(title)
+        .style(Style::new().fg(theme.overlay_border));
+    let inner = block.inner(popup_rect);
+    block.render(popup_rect, buf);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    // Input line with block cursor.
+    let display_text = if state.input.is_empty() {
+        Span::from(state.hint.as_str()).dim()
+    } else {
+        Span::from(state.input.as_str())
+    };
+
+    let input_area = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), 1);
+    Line::from(display_text).render(input_area, buf);
+
+    // Draw block cursor.
+    {
+        let cursor_x = inner.x + 1 + state.input[..state.cursor_pos].chars().count() as u16;
+        if cursor_x < inner.x + inner.width.saturating_sub(1) {
+            let cursor_char = state.input[state.cursor_pos..]
+                .chars()
+                .next()
+                .unwrap_or(' ');
+            let cursor_span = Span::styled(
+                cursor_char.to_string(),
+                Style::new().fg(theme.bg).bg(theme.fg),
+            );
+            Line::from(cursor_span).render(Rect::new(cursor_x, inner.y, 1, 1), buf);
+        }
+    }
+
+    // Validation error or hint.
+    if inner.height > 1 {
+        if let Some(err) = state.validate() {
+            if !state.input.is_empty() {
+                Line::from(Span::from(err).fg(theme.notif_error))
+                    .render(Rect::new(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), 1), buf);
+            }
+        }
+    }
+
+    // Footer hint.
+    let footer_y = inner.y + inner.height.saturating_sub(1);
+    if footer_y > inner.y {
+        Line::from(Span::from(" Enter confirm · Esc cancel").dim())
+            .render(Rect::new(inner.x, footer_y, inner.width, 1), buf);
     }
 }
 
@@ -966,6 +1493,88 @@ fn truncate_path_display(path: &Path, max_len: usize) -> String {
     }
 }
 
+/// Render the find/replace bar at the top-right of the editor area.
+#[allow(clippy::cast_possible_truncation)]
+fn render_find_replace(
+    area: Rect,
+    buf: &mut Buffer,
+    state: &FindReplaceState,
+    theme: &Theme,
+) {
+    let bar_w = (area.width * 40 / 100).max(30).min(area.width);
+    let rows: u16 = if state.show_replace { 3 } else { 2 };
+    let bar_x = area.x + area.width - bar_w;
+    let bar_y = area.y;
+
+    let bar_rect = Rect::new(bar_x, bar_y, bar_w, rows);
+    Clear.render(bar_rect, buf);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .style(Style::new().fg(theme.overlay_border));
+    let inner = block.inner(bar_rect);
+    block.render(bar_rect, buf);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    // Find row.
+    let find_label = "Find: ";
+    let case_indicator = if state.case_sensitive { "[Aa]" } else { "[aa]" };
+    let match_info = state.match_display();
+    let extra_len = find_label.len() + case_indicator.len() + match_info.len() + 2;
+    let input_w = (inner.width as usize).saturating_sub(extra_len);
+
+    let find_style = if state.active_field == FindReplaceField::Find {
+        Style::new().bold()
+    } else {
+        Style::new().dim()
+    };
+
+    let visible_input = if state.find_input.len() > input_w {
+        &state.find_input[state.find_input.len() - input_w..]
+    } else {
+        &state.find_input
+    };
+
+    let find_line = vec![
+        Span::from(find_label),
+        Span::styled(format!("{visible_input:<input_w$}"), find_style),
+        Span::from(" "),
+        Span::from(match_info).dim(),
+        Span::from(" "),
+        Span::from(case_indicator).dim(),
+    ];
+    Line::from(find_line).render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
+
+    // Replace row (if visible).
+    if state.show_replace && inner.height > 1 {
+        let replace_label = "Replace: ";
+        let replace_input_w = (inner.width as usize).saturating_sub(replace_label.len() + 1);
+
+        let replace_style = if state.active_field == FindReplaceField::Replace {
+            Style::new().bold()
+        } else {
+            Style::new().dim()
+        };
+
+        let visible_replace = if state.replace_input.len() > replace_input_w {
+            &state.replace_input[state.replace_input.len() - replace_input_w..]
+        } else {
+            &state.replace_input
+        };
+
+        let replace_line = vec![
+            Span::from(replace_label),
+            Span::styled(format!("{visible_replace:<replace_input_w$}"), replace_style),
+        ];
+        Line::from(replace_line)
+            .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
+    }
+}
+
 /// Render a generic centered popup with a title and message lines.
 #[allow(clippy::cast_possible_truncation)]
 fn render_centered_popup(
@@ -1004,7 +1613,10 @@ fn render_centered_popup(
     }
 }
 
-/// Render toast notifications in the bottom-right corner.
+/// Block characters for progress indicator (8 levels of fill).
+const PROGRESS_BLOCKS: &[char] = &['\u{258F}', '\u{258E}', '\u{258D}', '\u{258C}', '\u{258B}', '\u{258A}', '\u{2589}', '\u{2588}'];
+
+/// Render toast notifications in the bottom-right corner with fade-out.
 #[allow(clippy::cast_possible_truncation)]
 fn render_notifications(
     area: Rect,
@@ -1020,28 +1632,61 @@ fn render_notifications(
     let mut y = area.y + area.height;
 
     for notif in notifications.iter().rev().take(5) {
-        if y < area.y + 2 {
+        if y < area.y + 3 {
             break;
         }
 
+        let vitality = notif.vitality();
         let msg_width = (notif.message.len() as u16 + 4).min(max_width);
         let x = area.x + area.width - msg_width;
-        y = y.saturating_sub(2);
+        y = y.saturating_sub(3); // 2 rows per notification + 1 gap
 
-        let rect = Rect::new(x, y, msg_width, 1);
-        Clear.render(rect, buf);
+        // Notification text row.
+        let text_rect = Rect::new(x, y, msg_width, 1);
+        Clear.render(text_rect, buf);
 
-        let style = match notif.level {
-            NotificationLevel::Info => Style::new().fg(theme.notif_info),
-            NotificationLevel::Warning => Style::new().fg(theme.notif_warn),
-            NotificationLevel::Error => Style::new().fg(theme.notif_error),
+        let base_fg = match notif.level {
+            NotificationLevel::Info => theme.notif_info,
+            NotificationLevel::Warning => theme.notif_warn,
+            NotificationLevel::Error => theme.notif_error,
+        };
+
+        // Fade toward black as vitality decreases.
+        let fg = if vitality < 1.0 {
+            blend_toward(base_fg, 0, 0, 0, 1.0 - vitality)
+        } else {
+            base_fg
         };
 
         let text = format!(
             " {} ",
             &notif.message[..notif.message.len().min((msg_width - 2) as usize)]
         );
-        Line::from(Span::from(text).style(style)).render(rect, buf);
+        Line::from(Span::from(text).style(Style::new().fg(fg))).render(text_rect, buf);
+
+        // Progress bar row.
+        let bar_rect = Rect::new(x, y + 1, msg_width, 1);
+        Clear.render(bar_rect, buf);
+
+        let filled_width = vitality * f32::from(msg_width);
+        #[allow(clippy::cast_sign_loss)]
+        let full_blocks = filled_width.max(0.0) as usize;
+        #[allow(clippy::cast_precision_loss)]
+        let fraction = filled_width - full_blocks as f32;
+        #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss)]
+        let partial_idx = (fraction * PROGRESS_BLOCKS.len() as f32) as usize;
+
+        let mut bar = String::with_capacity(msg_width as usize);
+        for _ in 0..full_blocks.min(msg_width as usize) {
+            bar.push('\u{2588}');
+        }
+        if full_blocks < msg_width as usize && partial_idx > 0 && partial_idx < PROGRESS_BLOCKS.len() {
+            bar.push(PROGRESS_BLOCKS[partial_idx]);
+        }
+
+        let bar_fg = blend_toward(base_fg, 0, 0, 0, 0.5);
+        Line::from(Span::from(bar).style(Style::new().fg(bar_fg)))
+            .render(bar_rect, buf);
     }
 }
 
@@ -1712,5 +2357,250 @@ mod tests {
         overlay.open_ai_client_picker();
         overlay.close();
         assert!(!overlay.is_active());
+    }
+
+    // ── Input dialog tests ────────────────────────────────────────────
+
+    #[test]
+    fn input_dialog_type_and_backspace() {
+        let mut d = InputDialogState::new("Test", "hint", InputDialogAction::CreateFile { parent: PathBuf::from("/tmp") });
+        d.type_char('h');
+        d.type_char('e');
+        d.type_char('l');
+        assert_eq!(d.input, "hel");
+        assert_eq!(d.cursor_pos, 3);
+        d.backspace();
+        assert_eq!(d.input, "he");
+        assert_eq!(d.cursor_pos, 2);
+    }
+
+    #[test]
+    fn input_dialog_cursor_movement() {
+        let mut d = InputDialogState::new("Test", "hint", InputDialogAction::CreateFile { parent: PathBuf::from("/tmp") });
+        d.type_char('a');
+        d.type_char('b');
+        d.type_char('c');
+        d.home();
+        assert_eq!(d.cursor_pos, 0);
+        d.move_right();
+        assert_eq!(d.cursor_pos, 1);
+        d.end();
+        assert_eq!(d.cursor_pos, 3);
+        d.move_left();
+        assert_eq!(d.cursor_pos, 2);
+    }
+
+    #[test]
+    fn input_dialog_delete() {
+        let mut d = InputDialogState::new("Test", "hint", InputDialogAction::CreateFile { parent: PathBuf::from("/tmp") });
+        d.type_char('a');
+        d.type_char('b');
+        d.type_char('c');
+        d.home();
+        d.delete();
+        assert_eq!(d.input, "bc");
+        assert_eq!(d.cursor_pos, 0);
+    }
+
+    #[test]
+    fn input_dialog_validate_empty() {
+        let d = InputDialogState::new("Test", "hint", InputDialogAction::CreateFile { parent: PathBuf::from("/tmp") });
+        assert!(d.validate().is_some());
+    }
+
+    #[test]
+    fn input_dialog_validate_path_separator() {
+        let mut d = InputDialogState::new("Test", "hint", InputDialogAction::CreateFile { parent: PathBuf::from("/tmp") });
+        d.type_char('a');
+        d.type_char('/');
+        d.type_char('b');
+        assert!(d.validate().is_some());
+    }
+
+    #[test]
+    fn input_dialog_validate_ok() {
+        let mut d = InputDialogState::new("Test", "hint", InputDialogAction::CreateFile { parent: PathBuf::from("/tmp") });
+        d.type_char('f');
+        d.type_char('o');
+        d.type_char('o');
+        assert!(d.validate().is_none());
+    }
+
+    #[test]
+    fn input_dialog_with_input_prefill() {
+        let d = InputDialogState::new("Rename", "new name", InputDialogAction::Rename { from: PathBuf::from("/old") })
+            .with_input("old_name.txt");
+        assert_eq!(d.input, "old_name.txt");
+        assert_eq!(d.cursor_pos, 12);
+    }
+
+    #[test]
+    fn vitality_fresh_is_one() {
+        let notif = Notification {
+            message: "test".to_string(),
+            level: NotificationLevel::Info,
+            created: Instant::now(),
+        };
+        assert!((notif.vitality() - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn vitality_at_expiry_is_zero() {
+        let notif = Notification {
+            message: "test".to_string(),
+            level: NotificationLevel::Info,
+            created: Instant::now() - std::time::Duration::from_secs(5),
+        };
+        assert!(notif.vitality() <= 0.0);
+    }
+
+    #[test]
+    fn vitality_during_fade_is_between() {
+        let notif = Notification {
+            message: "test".to_string(),
+            level: NotificationLevel::Info,
+            created: Instant::now() - std::time::Duration::from_millis(3500),
+        };
+        let v = notif.vitality();
+        assert!(v > 0.0 && v < 1.0, "vitality during fade should be 0 < {v} < 1");
+    }
+
+    #[test]
+    fn overlay_open_input_dialog() {
+        let mut overlay = OverlayState::default();
+        let state = InputDialogState::new("New File", "filename", InputDialogAction::CreateFile { parent: PathBuf::from("/tmp") });
+        overlay.open_input_dialog(state);
+        assert!(overlay.is_active());
+        assert!(matches!(overlay.active, Some(OverlayKind::InputDialog)));
+        assert!(overlay.input_dialog.is_some());
+    }
+
+    #[test]
+    fn find_replace_type_and_backspace() {
+        let mut state = FindReplaceState::default();
+        state.type_char('h');
+        state.type_char('i');
+        assert_eq!(state.find_input, "hi");
+        state.backspace();
+        assert_eq!(state.find_input, "h");
+    }
+
+    #[test]
+    fn find_replace_toggle_field() {
+        let mut state = FindReplaceState::default();
+        state.show_replace = true;
+        assert_eq!(state.active_field, FindReplaceField::Find);
+        state.toggle_field();
+        assert_eq!(state.active_field, FindReplaceField::Replace);
+        state.toggle_field();
+        assert_eq!(state.active_field, FindReplaceField::Find);
+    }
+
+    #[test]
+    fn find_replace_toggle_field_no_replace() {
+        let mut state = FindReplaceState::default();
+        state.show_replace = false;
+        state.toggle_field();
+        // Should stay on Find when replace is hidden.
+        assert_eq!(state.active_field, FindReplaceField::Find);
+    }
+
+    #[test]
+    fn find_replace_toggle_case() {
+        let mut state = FindReplaceState::default();
+        assert!(!state.case_sensitive);
+        state.toggle_case();
+        assert!(state.case_sensitive);
+    }
+
+    #[test]
+    fn find_replace_match_display_empty() {
+        let state = FindReplaceState::default();
+        assert_eq!(state.match_display(), "");
+    }
+
+    #[test]
+    fn find_replace_open_methods() {
+        let mut overlay = OverlayState::default();
+        overlay.open_find();
+        assert!(overlay.is_active());
+        assert!(!overlay.find_replace.show_replace);
+        overlay.close();
+
+        overlay.open_find_replace();
+        assert!(overlay.is_active());
+        assert!(overlay.find_replace.show_replace);
+    }
+
+    #[test]
+    fn language_picker_new_sorts_and_dedupes() {
+        use lune_core::language::lang;
+        let langs = vec![lang::PYTHON, lang::RUST, lang::PYTHON, lang::GO];
+        let picker = LanguagePickerState::new(langs);
+        // sorted: Go, Python, Rust — Python deduped
+        assert_eq!(picker.all_languages.len(), 3);
+        assert_eq!(picker.filtered.len(), 3);
+        assert_eq!(picker.all_languages[0], lang::GO);
+        assert_eq!(picker.all_languages[1], lang::PYTHON);
+        assert_eq!(picker.all_languages[2], lang::RUST);
+    }
+
+    #[test]
+    fn language_picker_filter_by_input() {
+        use lune_core::language::lang;
+        let mut picker =
+            LanguagePickerState::new(vec![lang::RUST, lang::RUBY, lang::PYTHON, lang::GO]);
+        picker.type_char('r');
+        // "r" matches Rust, Ruby (case-insensitive)
+        assert_eq!(picker.filtered.len(), 2);
+        picker.type_char('u');
+        // "ru" matches Rust, Ruby
+        assert_eq!(picker.filtered.len(), 2);
+        picker.type_char('s');
+        // "rus" matches only Rust
+        assert_eq!(picker.filtered.len(), 1);
+        assert_eq!(picker.selected_lang(), Some(lang::RUST));
+    }
+
+    #[test]
+    fn language_picker_backspace_restores_filter() {
+        use lune_core::language::lang;
+        let mut picker = LanguagePickerState::new(vec![lang::RUST, lang::PYTHON]);
+        picker.type_char('r');
+        assert_eq!(picker.filtered.len(), 1);
+        picker.backspace();
+        assert_eq!(picker.filtered.len(), 2);
+    }
+
+    #[test]
+    fn language_picker_navigation_wraps() {
+        use lune_core::language::lang;
+        let mut picker = LanguagePickerState::new(vec![lang::RUST, lang::PYTHON]);
+        assert_eq!(picker.selected, 0);
+        picker.select_next();
+        assert_eq!(picker.selected, 1);
+        picker.select_next(); // wraps to 0
+        assert_eq!(picker.selected, 0);
+        picker.select_prev(); // wraps to 1
+        assert_eq!(picker.selected, 1);
+    }
+
+    #[test]
+    fn language_picker_empty_filter_no_match() {
+        use lune_core::language::lang;
+        let mut picker = LanguagePickerState::new(vec![lang::RUST, lang::PYTHON]);
+        picker.type_char('z'); // no language contains 'z'
+        assert!(picker.filtered.is_empty());
+        assert_eq!(picker.selected_lang(), None);
+    }
+
+    #[test]
+    fn language_picker_overlay_opens_correctly() {
+        use lune_core::language::lang;
+        let mut overlay = OverlayState::default();
+        overlay.open_language_picker(vec![lang::RUST, lang::PYTHON]);
+        assert!(overlay.is_active());
+        assert!(matches!(overlay.active, Some(OverlayKind::LanguagePicker)));
+        assert_eq!(overlay.language_picker.all_languages.len(), 2);
     }
 }

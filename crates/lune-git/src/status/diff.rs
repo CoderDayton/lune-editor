@@ -117,6 +117,72 @@ impl GitService {
     }
 }
 
+impl DiffHunk {
+    /// Format this hunk as a valid unified diff patch string.
+    ///
+    /// The result can be parsed by `git2::Diff::from_buffer()`.
+    pub fn to_patch(&self, path: &Path) -> String {
+        use std::fmt::Write;
+        let path_str = path.display();
+        let mut buf = String::new();
+        writeln!(buf, "diff --git a/{path_str} b/{path_str}").unwrap();
+        writeln!(buf, "--- a/{path_str}").unwrap();
+        writeln!(buf, "+++ b/{path_str}").unwrap();
+        writeln!(
+            buf,
+            "@@ -{},{} +{},{} @@",
+            self.old_start, self.old_count, self.new_start, self.new_count
+        )
+        .unwrap();
+        for line in &self.lines {
+            let prefix = match line.kind {
+                DiffLineKind::Context => ' ',
+                DiffLineKind::Addition => '+',
+                DiffLineKind::Deletion => '-',
+            };
+            let content = &line.content;
+            if content.ends_with('\n') {
+                write!(buf, "{prefix}{content}").unwrap();
+            } else {
+                writeln!(buf, "{prefix}{content}").unwrap();
+            }
+        }
+        buf
+    }
+
+    /// Format this hunk as a reverse patch (for unstaging/discarding).
+    ///
+    /// Swaps additions and deletions, and swaps old/new line counts.
+    pub fn to_reverse_patch(&self, path: &Path) -> String {
+        use std::fmt::Write;
+        let path_str = path.display();
+        let mut buf = String::new();
+        writeln!(buf, "diff --git a/{path_str} b/{path_str}").unwrap();
+        writeln!(buf, "--- a/{path_str}").unwrap();
+        writeln!(buf, "+++ b/{path_str}").unwrap();
+        // Swap old/new counts in the header.
+        writeln!(
+            buf,
+            "@@ -{},{} +{},{} @@",
+            self.new_start, self.new_count, self.old_start, self.old_count
+        )
+        .unwrap();
+        for line in &self.lines {
+            let (prefix, content) = match line.kind {
+                DiffLineKind::Context => (' ', &line.content),
+                DiffLineKind::Addition => ('-', &line.content), // swap: + becomes -
+                DiffLineKind::Deletion => ('+', &line.content), // swap: - becomes +
+            };
+            if content.ends_with('\n') {
+                write!(buf, "{prefix}{content}").unwrap();
+            } else {
+                writeln!(buf, "{prefix}{content}").unwrap();
+            }
+        }
+        buf
+    }
+}
+
 /// Walk a `git2::Diff` and collect all file diffs.
 ///
 /// Uses `Diff::print` which provides a single callback instead of
@@ -294,6 +360,51 @@ mod tests {
 
         let diffs = svc.diff_all().expect("diff_all");
         assert!(diffs.len() >= 2);
+    }
+
+    #[test]
+    fn hunk_to_patch_format() {
+        let hunk = DiffHunk {
+            header: "@@ -1,3 +1,4 @@".to_owned(),
+            old_start: 1,
+            old_count: 3,
+            new_start: 1,
+            new_count: 4,
+            lines: vec![
+                DiffLine { kind: DiffLineKind::Context, content: "line1\n".to_owned(), old_lineno: Some(1), new_lineno: Some(1) },
+                DiffLine { kind: DiffLineKind::Deletion, content: "old\n".to_owned(), old_lineno: Some(2), new_lineno: None },
+                DiffLine { kind: DiffLineKind::Addition, content: "new\n".to_owned(), old_lineno: None, new_lineno: Some(2) },
+                DiffLine { kind: DiffLineKind::Addition, content: "extra\n".to_owned(), old_lineno: None, new_lineno: Some(3) },
+                DiffLine { kind: DiffLineKind::Context, content: "line3\n".to_owned(), old_lineno: Some(3), new_lineno: Some(4) },
+            ],
+        };
+        let patch = hunk.to_patch(Path::new("test.txt"));
+        // Should be parseable by git2.
+        assert!(git2::Diff::from_buffer(patch.as_bytes()).is_ok());
+        assert!(patch.contains("+new\n"));
+        assert!(patch.contains("-old\n"));
+    }
+
+    #[test]
+    fn hunk_to_reverse_patch_swaps() {
+        let hunk = DiffHunk {
+            header: "@@ -1,2 +1,3 @@".to_owned(),
+            old_start: 1,
+            old_count: 2,
+            new_start: 1,
+            new_count: 3,
+            lines: vec![
+                DiffLine { kind: DiffLineKind::Context, content: "ctx\n".to_owned(), old_lineno: Some(1), new_lineno: Some(1) },
+                DiffLine { kind: DiffLineKind::Addition, content: "added\n".to_owned(), old_lineno: None, new_lineno: Some(2) },
+                DiffLine { kind: DiffLineKind::Context, content: "ctx2\n".to_owned(), old_lineno: Some(2), new_lineno: Some(3) },
+            ],
+        };
+        let patch = hunk.to_reverse_patch(Path::new("test.txt"));
+        // Reverse should swap + and -.
+        assert!(patch.contains("-added\n"));
+        assert!(!patch.contains("+added"));
+        // Should be parseable.
+        assert!(git2::Diff::from_buffer(patch.as_bytes()).is_ok());
     }
 
     #[test]

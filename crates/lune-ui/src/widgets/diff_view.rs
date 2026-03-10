@@ -103,6 +103,14 @@ impl DiffViewState {
         let max = self.total_lines().saturating_sub(viewport_height);
         self.scroll = (self.scroll + n).min(max);
     }
+
+    /// Get the current hunk and the file path, if available.
+    #[must_use]
+    pub fn current_hunk_data(&self) -> Option<(&std::path::Path, &lune_git::diff::DiffHunk)> {
+        let diff = self.diff.as_ref()?;
+        let hunk = diff.hunks.get(self.current_hunk)?;
+        Some((diff.path.as_path(), hunk))
+    }
 }
 
 /// Render the diff view in unified mode.

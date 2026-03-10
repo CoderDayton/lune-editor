@@ -23,7 +23,7 @@ use lune_core::settings::Settings;
 use lune_core::watcher::{FileWatcher, WatchEvent};
 use lune_core::workspace::EntryKind;
 use lune_core::workspace_state::make_relative;
-use lune_git::{GitService, GutterMarks};
+use lune_git::{GitService, GutterMark, GutterMarks};
 
 use lune_ai::context::{
     extract_selection_text, EditorContext, FileContext, GitStatusSummary, SelectionContext,
@@ -157,6 +157,10 @@ pub struct AppState {
     git_service: Option<GitService>,
     /// Per-buffer git gutter marks (cached).
     gutter_marks: FxHashMap<BufferId, GutterMarks>,
+    /// Previous gutter marks snapshot for detecting new lines (diff fade-in).
+    prev_gutter_marks: FxHashMap<BufferId, GutterMarks>,
+    /// Monotonic counter for unique diff fade-in effect IDs.
+    diff_fade_counter: u64,
     /// Git branch name for the status bar.
     pub git_branch: String,
     /// Git ahead/behind counts.
@@ -174,6 +178,7 @@ pub struct AppState {
     /// AI session manager.
     pub ai_manager: AiManager,
     /// Last known AI terminal size (to avoid redundant resizes).
+    #[allow(dead_code)]
     last_ai_term_size: Option<AiTermSize>,
     /// Whether the AI thinking effect is currently active.
     ai_thinking_active: bool,
@@ -245,6 +250,8 @@ impl AppState {
             theme_registry: ThemeRegistry::new(),
             git_service: None,
             gutter_marks: FxHashMap::default(),
+            prev_gutter_marks: FxHashMap::default(),
+            diff_fade_counter: 0,
             git_branch: String::new(),
             git_ahead: 0,
             git_behind: 0,
@@ -287,7 +294,7 @@ impl AppState {
     }
 
     /// Switch the active top-level UI tab.
-    pub fn set_root_tab(&mut self, tab: RootTab) {
+    pub const fn set_root_tab(&mut self, tab: RootTab) {
         self.root_tab = tab;
         // Keep focus on the editor panel by default when changing root tabs.
         self.focus.set_active(PanelId::Editor);
@@ -685,8 +692,31 @@ impl AppState {
                     if let Some(rel) = git.repo_relative(path) {
                         let content = buf.text();
                         match git.gutter_marks(&rel, &content) {
-                            Ok(marks) => {
-                                self.gutter_marks.insert(id, marks);
+                            Ok(new_marks) => {
+                                // Detect newly-added lines for fade-in.
+                                if let (Some(prev), Some(content_area)) =
+                                    (self.prev_gutter_marks.get(&id), self.last_editor_content_area)
+                                {
+                                    if id == self.active_buffer.unwrap_or(id) {
+                                        for (&line, mark) in &new_marks.marks {
+                                            if *mark == GutterMark::Added
+                                                && !prev.marks.contains_key(&line)
+                                            {
+                                                let screen_row =
+                                                    line.saturating_sub(self.viewport.top_line);
+                                                if screen_row < content_area.height as usize {
+                                                    self.diff_fade_counter += 1;
+                                                    self.effects.start_diff_fade_in(
+                                                        self.diff_fade_counter,
+                                                        self.theme.diff_add_fg,
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                self.prev_gutter_marks.insert(id, new_marks.clone());
+                                self.gutter_marks.insert(id, new_marks);
                             }
                             Err(e) => {
                                 log::debug!(
@@ -1170,6 +1200,15 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         .active_buffer
         .and_then(|id| state.gutter_marks.get(&id));
 
+    // Pass search state to the editor pane when find/replace is active.
+    let search_state = if matches!(state.overlay.active, Some(overlay::OverlayKind::FindReplace))
+        && state.overlay.find_replace.search_state.has_matches()
+    {
+        Some(&state.overlay.find_replace.search_state)
+    } else {
+        None
+    };
+
     editor_pane::render_editor_pane(
         content_area,
         buf,
@@ -1180,6 +1219,7 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         highlighted.as_deref(),
         &state.syntax_theme,
         active_gutter,
+        search_state,
         &state.theme,
     );
 }
@@ -1447,16 +1487,11 @@ fn handle_overlay_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
                 _ => Control::Continue,
             }
         }
-        Some(overlay::OverlayKind::FindReplace) => {
-            if key.code == KeyCode::Esc {
-                close_overlay(state);
-                Control::Changed
-            } else {
-                Control::Continue
-            }
-        }
+        Some(overlay::OverlayKind::FindReplace) => handle_find_replace_key(key, state),
         Some(overlay::OverlayKind::FilePicker) => handle_file_picker_key(key, state),
         Some(overlay::OverlayKind::AiClientPicker) => handle_ai_client_picker_key(key, state),
+        Some(overlay::OverlayKind::InputDialog) => handle_input_dialog_key(key, state),
+        Some(overlay::OverlayKind::LanguagePicker) => handle_language_picker_key(key, state),
         None => Control::Continue,
     }
 }
@@ -1576,6 +1611,232 @@ fn handle_ai_client_picker_key(key: &KeyEvent, state: &mut AppState) -> Control<
             Control::Changed
         }
         _ => Control::Continue,
+    }
+}
+
+/// Handle key events for the language picker overlay.
+fn handle_language_picker_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    match key.code {
+        KeyCode::Esc => {
+            close_overlay(state);
+            Control::Changed
+        }
+        KeyCode::Enter => {
+            let lang = state.overlay.language_picker.selected_lang();
+            lang.map_or(Control::Continue, |l| {
+                close_overlay(state);
+                Control::Event(AppEvent::Command(AppCommand::ChangeLanguage(l)))
+            })
+        }
+        KeyCode::Up => {
+            state.overlay.language_picker.select_prev();
+            Control::Changed
+        }
+        KeyCode::Down => {
+            state.overlay.language_picker.select_next();
+            Control::Changed
+        }
+        KeyCode::Backspace => {
+            state.overlay.language_picker.backspace();
+            Control::Changed
+        }
+        KeyCode::Char(c) => {
+            state.overlay.language_picker.type_char(c);
+            Control::Changed
+        }
+        _ => Control::Continue,
+    }
+}
+
+/// Handle key events for the input dialog overlay.
+fn handle_input_dialog_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    use overlay::InputDialogAction;
+
+    match key.code {
+        KeyCode::Esc => {
+            state.overlay.input_dialog = None;
+            close_overlay(state);
+            Control::Changed
+        }
+        KeyCode::Enter => {
+            let Some(ref dialog) = state.overlay.input_dialog else {
+                return Control::Continue;
+            };
+            if dialog.validate().is_some() {
+                return Control::Continue;
+            }
+            let input = dialog.input.trim().to_owned();
+            let action = dialog.action.clone();
+            state.overlay.input_dialog = None;
+            close_overlay(state);
+            let cmd = match action {
+                InputDialogAction::CreateFile { parent } => {
+                    AppCommand::CreateFileConfirmed(parent.join(&input))
+                }
+                InputDialogAction::CreateDir { parent } => {
+                    AppCommand::CreateDirConfirmed(parent.join(&input))
+                }
+                InputDialogAction::Rename { from } => {
+                    let to = from.parent().map_or_else(
+                        || PathBuf::from(&input),
+                        |p| p.join(&input),
+                    );
+                    AppCommand::RenameConfirmed { from, to }
+                }
+            };
+            Control::Event(AppEvent::Command(cmd))
+        }
+        KeyCode::Char(ch) if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            if let Some(ref mut dialog) = state.overlay.input_dialog {
+                dialog.type_char(ch);
+            }
+            Control::Changed
+        }
+        KeyCode::Backspace => {
+            if let Some(ref mut dialog) = state.overlay.input_dialog {
+                dialog.backspace();
+            }
+            Control::Changed
+        }
+        KeyCode::Delete => {
+            if let Some(ref mut dialog) = state.overlay.input_dialog {
+                dialog.delete();
+            }
+            Control::Changed
+        }
+        KeyCode::Left => {
+            if let Some(ref mut dialog) = state.overlay.input_dialog {
+                dialog.move_left();
+            }
+            Control::Changed
+        }
+        KeyCode::Right => {
+            if let Some(ref mut dialog) = state.overlay.input_dialog {
+                dialog.move_right();
+            }
+            Control::Changed
+        }
+        KeyCode::Home => {
+            if let Some(ref mut dialog) = state.overlay.input_dialog {
+                dialog.home();
+            }
+            Control::Changed
+        }
+        KeyCode::End => {
+            if let Some(ref mut dialog) = state.overlay.input_dialog {
+                dialog.end();
+            }
+            Control::Changed
+        }
+        _ => Control::Continue,
+    }
+}
+
+/// Handle key events for the find/replace overlay.
+fn handle_find_replace_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    use overlay::FindReplaceField;
+
+    match key.code {
+        KeyCode::Esc => {
+            state.overlay.find_replace.search_state = SearchState::default();
+            close_overlay(state);
+            Control::Changed
+        }
+        KeyCode::Enter => {
+            // Next match.
+            let next = TextBuffer::search_next(&state.overlay.find_replace.search_state);
+            if let Some(idx) = next {
+                state.overlay.find_replace.search_state.current_match = Some(idx);
+                navigate_to_current_match(state);
+            }
+            Control::Changed
+        }
+        KeyCode::Tab | KeyCode::BackTab => {
+            state.overlay.find_replace.toggle_field();
+            Control::Changed
+        }
+        KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
+            state.overlay.find_replace.toggle_case();
+            update_find_search(state);
+            Control::Changed
+        }
+        KeyCode::Char('r')
+            if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                && state.overlay.find_replace.show_replace =>
+        {
+            // Replace current match.
+            let search = state.overlay.find_replace.search_state.clone();
+            let replacement = state.overlay.find_replace.replace_input.clone();
+            let new_state = state
+                .active_buf_mut()
+                .map(|buf| buf.replace_current(&search, &replacement));
+            if let Some(new_state) = new_state {
+                state.overlay.find_replace.search_state = new_state;
+                state.update_active_highlighter();
+            }
+            Control::Changed
+        }
+        KeyCode::Char('l')
+            if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                && state.overlay.find_replace.show_replace =>
+        {
+            // Replace all.
+            let search = state.overlay.find_replace.search_state.clone();
+            let replacement = state.overlay.find_replace.replace_input.clone();
+            let count = search.match_count();
+            let new_state = state
+                .active_buf_mut()
+                .map(|buf| buf.replace_all(&search, &replacement));
+            if let Some(new_state) = new_state {
+                state.overlay.find_replace.search_state = new_state;
+                state.update_active_highlighter();
+                state.overlay.notify(
+                    format!("Replaced {count} occurrences"),
+                    NotificationLevel::Info,
+                );
+            }
+            Control::Changed
+        }
+        KeyCode::Char(ch) if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            state.overlay.find_replace.type_char(ch);
+            if state.overlay.find_replace.active_field == FindReplaceField::Find {
+                update_find_search(state);
+            }
+            Control::Changed
+        }
+        KeyCode::Backspace => {
+            state.overlay.find_replace.backspace();
+            if state.overlay.find_replace.active_field == FindReplaceField::Find {
+                update_find_search(state);
+            }
+            Control::Changed
+        }
+        _ => Control::Continue,
+    }
+}
+
+/// Run the search on the active buffer and update the find/replace state.
+fn update_find_search(state: &mut AppState) {
+    let query = state.overlay.find_replace.find_input.clone();
+    let case_sensitive = state.overlay.find_replace.case_sensitive;
+    let new_search = state
+        .active_buf()
+        .map(|buf| buf.search(&query, case_sensitive));
+    if let Some(search) = new_search {
+        state.overlay.find_replace.search_state = search;
+    }
+    navigate_to_current_match(state);
+}
+
+/// Move the cursor and viewport to the current search match.
+fn navigate_to_current_match(state: &mut AppState) {
+    if let Some(idx) = state.overlay.find_replace.search_state.current_match {
+        if let Some(&(start, _end)) = state.overlay.find_replace.search_state.matches.get(idx) {
+            if let Some(buf) = state.active_buf_mut() {
+                buf.cursor.primary = Selection::cursor(start);
+            }
+            state.viewport_follow_cursor = true;
+        }
     }
 }
 
@@ -2090,10 +2351,9 @@ fn set_viewport_from_scrollbar_row(
 }
 
 /// Handle left mouse button click.
-#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
 fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEvent> {
     let (col, row) = (mouse.column, mouse.row);
-
     // Root tabs area.
     if let Some(tab_area) = state.last_root_tabs_area {
         if point_in_rect(col, row, tab_area) {
@@ -2182,7 +2442,6 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             }
         }
     }
-
     // Editor content area — set cursor.
     if let Some(content_area) = state.last_editor_content_area {
         let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
@@ -2215,6 +2474,7 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
 fn root_tab_hit_test(col: u16, area: Rect) -> Option<RootTab> {
     let mut x = area.x;
     for (i, label) in ROOT_TAB_TITLES.iter().enumerate() {
+        #[allow(clippy::cast_possible_truncation)]
         let width = label.len() as u16;
         if col >= x && col < x.saturating_add(width) {
             return Some(match i {
@@ -2225,7 +2485,9 @@ fn root_tab_hit_test(col: u16, area: Rect) -> Option<RootTab> {
         }
         x = x.saturating_add(width);
         if i + 1 < ROOT_TAB_TITLES.len() {
-            x = x.saturating_add(ROOT_TAB_DIVIDER.len() as u16);
+            #[allow(clippy::cast_possible_truncation)]
+            let divider_width = ROOT_TAB_DIVIDER.len() as u16;
+            x = x.saturating_add(divider_width);
         }
     }
     None
@@ -2480,7 +2742,8 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
         | AppCommand::ToggleGitPanel
         | AppCommand::FocusNextPane
         | AppCommand::OpenCommandPalette
-        | AppCommand::OpenFilePicker => handle_panel_command(cmd, state),
+        | AppCommand::OpenFilePicker
+        | AppCommand::OpenLanguagePicker => handle_panel_command(cmd, state),
         AppCommand::Undo => {
             apply_buf_edit(state, TextBuffer::undo);
             Control::Changed
@@ -2508,10 +2771,27 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
         | AppCommand::NewFile
         | AppCommand::NewDir
         | AppCommand::RenameEntry
-        | AppCommand::DeleteEntry => handle_file_tree_command(cmd, state),
-        AppCommand::Find | AppCommand::Replace => {
-            // TODO: implement find/replace
-            Control::Continue
+        | AppCommand::DeleteEntry
+        | AppCommand::CreateFileConfirmed(_)
+        | AppCommand::CreateDirConfirmed(_)
+        | AppCommand::RenameConfirmed { .. }
+        | AppCommand::DeleteConfirmed(_) => handle_file_tree_command(cmd, state),
+        AppCommand::Find => {
+            state.overlay.open_find();
+            state.focus.focus(PanelId::CommandPalette);
+            // Trigger initial search if there's already text in the find input.
+            if !state.overlay.find_replace.find_input.is_empty() {
+                update_find_search(state);
+            }
+            Control::Changed
+        }
+        AppCommand::Replace => {
+            state.overlay.open_find_replace();
+            state.focus.focus(PanelId::CommandPalette);
+            if !state.overlay.find_replace.find_input.is_empty() {
+                update_find_search(state);
+            }
+            Control::Changed
         }
         AppCommand::ChangeLanguage(lang_id) => handle_change_language(*lang_id, state),
         // Git operations.
@@ -2524,6 +2804,9 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             Control::Changed
         }
         AppCommand::GitDiscardConfirmed(path) => handle_git_discard_confirmed(path, state),
+        AppCommand::GitStageHunk => handle_git_hunk_op(state, "stage"),
+        AppCommand::GitUnstageHunk => handle_git_hunk_op(state, "unstage"),
+        AppCommand::GitDiscardHunk => handle_git_hunk_op(state, "discard"),
         // AI commands.
         AppCommand::AiAskSelection => handle_ai_ask_selection(state),
         AppCommand::AiRefactorFile => handle_ai_refactor_file(state),
@@ -2650,6 +2933,12 @@ fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEv
             state.focus.focus(PanelId::CommandPalette); // Reuse overlay focus
             Control::Changed
         }
+        AppCommand::OpenLanguagePicker => {
+            let langs = LanguageRegistry::new().known_languages();
+            state.overlay.open_language_picker(langs);
+            state.focus.focus(PanelId::CommandPalette);
+            Control::Changed
+        }
         _ => Control::Continue,
     }
 }
@@ -2697,6 +2986,25 @@ fn handle_save_all(state: &mut AppState) -> Control<AppEvent> {
     Control::Changed
 }
 
+/// Determine the context directory for file tree operations.
+///
+/// If the selected entry is a directory, returns it. If it's a file, returns
+/// its parent. Falls back to the workspace root or CWD.
+fn file_tree_context_dir(state: &AppState) -> PathBuf {
+    if let Some(path) = state.file_tree.selected_path() {
+        if state.file_tree.selected_is_dir() {
+            return path.to_path_buf();
+        }
+        if let Some(parent) = path.parent() {
+            return parent.to_path_buf();
+        }
+    }
+    state
+        .workspace
+        .as_ref()
+        .map_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")), |ws| ws.root().to_path_buf())
+}
+
 /// Handle file-tree–related commands.
 fn handle_file_tree_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
     match cmd {
@@ -2723,29 +3031,185 @@ fn handle_file_tree_command(cmd: &AppCommand, state: &mut AppState) -> Control<A
             }
             Control::Changed
         }
-        AppCommand::NewFile | AppCommand::NewDir => {
-            // TODO: implement input dialog for file/dir name
-            state
-                .overlay
-                .notify("Input dialogs not yet implemented", NotificationLevel::Info);
+        AppCommand::NewFile => {
+            let parent = file_tree_context_dir(state);
+            let dialog = overlay::InputDialogState::new(
+                "New File",
+                "filename",
+                overlay::InputDialogAction::CreateFile { parent },
+            );
+            state.overlay.open_input_dialog(dialog);
+            state.focus.focus(PanelId::CommandPalette);
+            Control::Changed
+        }
+        AppCommand::NewDir => {
+            let parent = file_tree_context_dir(state);
+            let dialog = overlay::InputDialogState::new(
+                "New Directory",
+                "directory name",
+                overlay::InputDialogAction::CreateDir { parent },
+            );
+            state.overlay.open_input_dialog(dialog);
+            state.focus.focus(PanelId::CommandPalette);
             Control::Changed
         }
         AppCommand::RenameEntry => {
-            // TODO: implement rename input dialog
-            state
-                .overlay
-                .notify("Rename not yet implemented", NotificationLevel::Info);
+            let Some(path) = state.file_tree.selected_path().map(Path::to_path_buf) else {
+                return Control::Continue;
+            };
+            let current_name = path
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            let dialog = overlay::InputDialogState::new(
+                "Rename",
+                "new name",
+                overlay::InputDialogAction::Rename { from: path },
+            )
+            .with_input(current_name);
+            state.overlay.open_input_dialog(dialog);
+            state.focus.focus(PanelId::CommandPalette);
             Control::Changed
         }
         AppCommand::DeleteEntry => {
-            // TODO: implement delete confirmation dialog
-            state
-                .overlay
-                .notify("Delete not yet implemented", NotificationLevel::Info);
+            let Some(path) = state.file_tree.selected_path().map(Path::to_path_buf) else {
+                return Control::Continue;
+            };
+            let name = path
+                .file_name()
+                .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+            state.overlay.open_confirm(
+                format!("Delete \"{name}\"?"),
+                AppCommand::DeleteConfirmed(path),
+            );
+            state.focus.focus(PanelId::CommandPalette);
             Control::Changed
         }
+        AppCommand::CreateFileConfirmed(path) => handle_create_file(path, state),
+        AppCommand::CreateDirConfirmed(path) => handle_create_dir(path, state),
+        AppCommand::RenameConfirmed { from, to } => handle_rename(from, to, state),
+        AppCommand::DeleteConfirmed(path) => handle_delete(path, state),
         _ => Control::Continue,
     }
+}
+
+/// Handle confirmed file creation.
+fn handle_create_file(path: &Path, state: &mut AppState) -> Control<AppEvent> {
+    if let Some(ref mut ws) = state.workspace {
+        match ws.execute(&lune_core::workspace::FileOp::CreateFile(path.to_path_buf())) {
+            Ok(()) => {
+                if let Err(e) = state.file_tree.refresh(ws) {
+                    log::error!("Failed to refresh file tree: {e}");
+                }
+                state.overlay.notify(
+                    format!(
+                        "Created: {}",
+                        path.file_name().unwrap_or_default().to_string_lossy()
+                    ),
+                    NotificationLevel::Info,
+                );
+            }
+            Err(e) => {
+                state
+                    .overlay
+                    .notify(format!("Create failed: {e}"), NotificationLevel::Error);
+            }
+        }
+    }
+    handle_open_file(path, state)
+}
+
+/// Handle confirmed directory creation.
+fn handle_create_dir(path: &Path, state: &mut AppState) -> Control<AppEvent> {
+    if let Some(ref mut ws) = state.workspace {
+        match ws.execute(&lune_core::workspace::FileOp::CreateDir(path.to_path_buf())) {
+            Ok(()) => {
+                if let Err(e) = state.file_tree.refresh(ws) {
+                    log::error!("Failed to refresh file tree: {e}");
+                }
+                state.file_tree.select_by_path(path, 20);
+                state.overlay.notify(
+                    format!(
+                        "Created: {}",
+                        path.file_name().unwrap_or_default().to_string_lossy()
+                    ),
+                    NotificationLevel::Info,
+                );
+            }
+            Err(e) => {
+                state
+                    .overlay
+                    .notify(format!("Create failed: {e}"), NotificationLevel::Error);
+            }
+        }
+    }
+    Control::Changed
+}
+
+/// Handle confirmed rename.
+fn handle_rename(from: &Path, to: &Path, state: &mut AppState) -> Control<AppEvent> {
+    if let Some(ref mut ws) = state.workspace {
+        match ws.execute(&lune_core::workspace::FileOp::Rename {
+            from: from.to_path_buf(),
+            to: to.to_path_buf(),
+        }) {
+            Ok(()) => {
+                if let Err(e) = state.file_tree.refresh(ws) {
+                    log::error!("Failed to refresh file tree: {e}");
+                }
+                state.file_tree.select_by_path(to, 20);
+                for &id in &state.tabs {
+                    if let Some(buf) = state.registry.get_mut(id) {
+                        if buf.file_path.as_deref() == Some(from) {
+                            buf.file_path = Some(to.to_path_buf());
+                        }
+                    }
+                }
+                state
+                    .overlay
+                    .notify("Renamed successfully", NotificationLevel::Info);
+            }
+            Err(e) => {
+                state
+                    .overlay
+                    .notify(format!("Rename failed: {e}"), NotificationLevel::Error);
+            }
+        }
+    }
+    Control::Changed
+}
+
+/// Handle confirmed delete.
+fn handle_delete(path: &Path, state: &mut AppState) -> Control<AppEvent> {
+    if let Some(ref mut ws) = state.workspace {
+        match ws.execute(&lune_core::workspace::FileOp::Delete(path.to_path_buf())) {
+            Ok(()) => {
+                if let Err(e) = state.file_tree.refresh(ws) {
+                    log::error!("Failed to refresh file tree: {e}");
+                }
+                let to_close: Vec<_> = state
+                    .tabs
+                    .iter()
+                    .copied()
+                    .filter(|&id| {
+                        state
+                            .registry
+                            .get(id)
+                            .is_some_and(|b| b.file_path.as_deref() == Some(path))
+                    })
+                    .collect();
+                for id in to_close {
+                    close_tab_by_id(state, id);
+                }
+                state.overlay.notify("Deleted", NotificationLevel::Info);
+            }
+            Err(e) => {
+                state
+                    .overlay
+                    .notify(format!("Delete failed: {e}"), NotificationLevel::Error);
+            }
+        }
+    }
+    Control::Changed
 }
 
 /// Handle the `OpenFile` command: open a file and switch to editor.
@@ -2922,6 +3386,45 @@ fn handle_git_discard_confirmed(path: &Path, state: &mut AppState) -> Control<Ap
                     .overlay
                     .notify(format!("Discard failed: {e}"), NotificationLevel::Error);
             }
+        }
+    }
+    Control::Changed
+}
+
+/// Handle per-hunk git operations (stage/unstage/discard).
+fn handle_git_hunk_op(state: &mut AppState, op: &str) -> Control<AppEvent> {
+    let Some((path, hunk)) = state.git_panel.diff_view.current_hunk_data() else {
+        return Control::Continue;
+    };
+    let path = path.to_path_buf();
+    let hunk = hunk.clone();
+    let Some(ref git) = state.git_service else {
+        return Control::Continue;
+    };
+    let result = match op {
+        "stage" => git.stage_hunk(&path, &hunk),
+        "unstage" => git.unstage_hunk(&path, &hunk),
+        "discard" => git.discard_hunk(&path, &hunk),
+        _ => return Control::Continue,
+    };
+    match result {
+        Ok(()) => {
+            state.status_message = format!("{op} hunk: {}", path.display());
+            state.refresh_git();
+            // Re-fetch the diff for the current file.
+            if let Some(ref git) = state.git_service {
+                match git.diff_file(&path) {
+                    Ok(Some(diff)) => state.git_panel.diff_view.set_diff(diff),
+                    Ok(None) => state.git_panel.diff_view.clear(),
+                    Err(e) => log::error!("Failed to re-fetch diff: {e}"),
+                }
+            }
+        }
+        Err(e) => {
+            state.status_message = format!("{op} hunk failed: {e}");
+            state
+                .overlay
+                .notify(format!("{op} hunk failed: {e}"), NotificationLevel::Error);
         }
     }
     Control::Changed

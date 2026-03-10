@@ -179,7 +179,7 @@ impl Default for UndoStack {
 
 impl UndoStack {
     /// Read-only access to the underlying entries.
-    pub(crate) fn entries(&self) -> &VecDeque<Transaction> {
+    pub(crate) const fn entries(&self) -> &VecDeque<Transaction> {
         &self.entries
     }
 

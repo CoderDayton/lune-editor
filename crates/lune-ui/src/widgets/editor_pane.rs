@@ -178,6 +178,7 @@ pub fn render_editor_pane(
     highlighted: Option<&[HighlightedLine]>,
     syntax_theme: &SyntaxTheme,
     gutter_marks: Option<&GutterMarks>,
+    search_matches: Option<&lune_core::search::SearchState>,
     theme: &Theme,
 ) {
     if area.height == 0 || area.width == 0 {
@@ -277,6 +278,7 @@ pub fn render_editor_pane(
                 cursor,
                 vim_mode,
                 selection.as_ref(),
+                search_matches,
                 hl_line,
                 syntax_theme,
                 buf,
@@ -443,6 +445,7 @@ fn render_line_content(
     cursor: &Position,
     vim_mode: VimMode,
     selection: Option<&(Position, Position)>,
+    search_matches: Option<&lune_core::search::SearchState>,
     hl_line: Option<&HighlightedLine>,
     theme: &SyntaxTheme,
     buf: &mut Buffer,
@@ -464,6 +467,13 @@ fn render_line_content(
         }
     } else {
         Line::from(char_window(line_text, left_col, width)).render(rect, buf);
+    }
+
+    // Apply search match highlighting.
+    if let Some(search) = search_matches {
+        apply_search_highlight(
+            x, y, width, line_idx, left_col, search, buf, ui_theme,
+        );
     }
 
     // Apply selection highlighting.
@@ -635,6 +645,56 @@ fn apply_selection_highlight(
         }
         let cx = x + screen_col as u16;
         buf[(cx, y)].set_style(sel_style);
+    }
+}
+
+/// Apply search match highlighting to a line.
+#[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
+fn apply_search_highlight(
+    x: u16,
+    y: u16,
+    width: usize,
+    line_idx: usize,
+    left_col: usize,
+    search: &lune_core::search::SearchState,
+    buf: &mut Buffer,
+    theme: &Theme,
+) {
+    let current_idx = search.current_match;
+
+    for (i, &(start, end)) in search.matches.iter().enumerate() {
+        // Only highlight matches that touch this line.
+        if end.line < line_idx || start.line > line_idx {
+            continue;
+        }
+
+        let col_start = if start.line == line_idx {
+            start.col.saturating_sub(left_col)
+        } else {
+            0
+        };
+        let col_end = if end.line == line_idx {
+            end.col.saturating_sub(left_col)
+        } else {
+            width
+        };
+
+        if col_start >= width || col_end == 0 || col_start >= col_end {
+            continue;
+        }
+
+        let is_current = current_idx == Some(i);
+        let bg = if is_current {
+            theme.search_current_bg
+        } else {
+            theme.search_match_bg
+        };
+
+        for col in col_start..col_end.min(width) {
+            let cell_x = x + col as u16;
+            let cell = &mut buf[(cell_x, y)];
+            cell.set_bg(bg);
+        }
     }
 }
 

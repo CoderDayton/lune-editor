@@ -232,6 +232,7 @@ fn snapshot_editor_pane_welcome() {
         None,
         &syntax_theme,
         None,
+        None,
         &theme,
     );
 
@@ -258,6 +259,7 @@ fn snapshot_editor_pane_with_content() {
         None,
         &syntax_theme,
         None,
+        None,
         &theme,
     );
 
@@ -283,6 +285,7 @@ fn snapshot_editor_pane_insert_mode() {
         VimMode::Insert,
         None,
         &syntax_theme,
+        None,
         None,
         &theme,
     );

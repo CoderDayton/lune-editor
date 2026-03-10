@@ -22,6 +22,8 @@ pub enum EffectId {
     Notification,
     /// Brightness flash on panel open/close transitions.
     PanelTransition(PanelId),
+    /// Per-line fade-in when new diff hunks appear.
+    DiffFadeIn(u64),
 }
 
 /// Configuration for individual effect types.
@@ -55,6 +57,8 @@ pub struct EffectDefs {
     pub notification_flash: EffectConfig,
     /// Brightness flash on panel open/close.
     pub panel_transition: EffectConfig,
+    /// Fade-in for newly-added diff lines.
+    pub diff_fade_in: EffectConfig,
 }
 
 impl Default for EffectDefs {
@@ -65,6 +69,7 @@ impl Default for EffectDefs {
             ai_thinking: EffectConfig::new(0.6),
             notification_flash: EffectConfig::new(0.20),
             panel_transition: EffectConfig::new(0.15),
+            diff_fade_in: EffectConfig::new(0.30),
         }
     }
 }
@@ -206,6 +211,18 @@ impl LuneEffects {
     pub fn cancel_panel_transition(&mut self, panel: PanelId) {
         self.manager
             .cancel_unique_effect(EffectId::PanelTransition(panel));
+    }
+
+    // ── Diff fade-in ──────────────────────────────────────────────────
+
+    /// Start a per-line fade-in effect for a newly-added diff line.
+    pub fn start_diff_fade_in(&mut self, id: u64, tint: Color) {
+        if !self.defs.is_enabled(&self.defs.diff_fade_in) {
+            return;
+        }
+        let intensity = self.defs.diff_fade_in.intensity;
+        let effect = create_diff_fade_in(intensity, tint);
+        self.manager.add_unique_effect(EffectId::DiffFadeIn(id), effect);
     }
 
     // ── Step 7: Configuration helpers ─────────────────────────────────
@@ -350,6 +367,31 @@ fn create_panel_transition(intensity: f32, accent: Color) -> Effect {
     )
 }
 
+// ── Diff fade-in ────────────────────────────────────────────────────────
+
+/// Duration of the diff fade-in effect in milliseconds.
+const DIFF_FADE_IN_MS: u32 = 400;
+
+/// Create a fade-in effect for a single diff line.
+///
+/// Starts bright and decays to normal with an ease-out curve.
+fn create_diff_fade_in(intensity: f32, tint: Color) -> Effect {
+    let Color::Rgb(tr, tg, tb) = tint else {
+        return create_diff_fade_in(intensity, Color::Rgb(60, 180, 80));
+    };
+
+    fx::effect_fn_buf(
+        (),
+        Duration::from_millis(DIFF_FADE_IN_MS),
+        move |_state: &mut (), ctx, buf: &mut Buffer| {
+            let alpha = ctx.alpha();
+            // Ease-out: bright at start, decays to normal.
+            let t = intensity * (1.0 - alpha).powi(2);
+            brighten_area(buf, ctx.area, tr, tg, tb, t);
+        },
+    )
+}
+
 // ── Shared helpers ──────────────────────────────────────────────────────
 
 /// Brighten all cells in an area toward a target color at the given intensity.
@@ -404,6 +446,29 @@ pub fn blend_toward(color: Color, tr: u8, tg: u8, tb: u8, t: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diff_fade_in_id_ordering() {
+        let a = EffectId::DiffFadeIn(0);
+        let b = EffectId::DiffFadeIn(1);
+        assert!(a < b);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn start_diff_fade_in_runs() {
+        let mut fx = LuneEffects::new();
+        fx.start_diff_fade_in(0, Color::Rgb(60, 180, 80));
+        assert!(fx.is_running());
+    }
+
+    #[test]
+    fn diff_fade_in_noop_when_disabled() {
+        let mut fx = LuneEffects::new();
+        fx.disable_all();
+        fx.start_diff_fade_in(0, Color::Rgb(60, 180, 80));
+        assert!(!fx.is_running());
+    }
 
     #[test]
     fn effect_id_ordering() {

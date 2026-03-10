@@ -170,6 +170,12 @@ pub struct Theme {
     /// Foreground color for hint/shortcut text in overlays.
     pub overlay_hint_fg: Color,
 
+    // ── Search highlights ──────────────────────────────────────────────────────
+    /// Background for the currently active search match.
+    pub search_current_bg: Color,
+    /// Background for other (non-current) search matches.
+    pub search_match_bg: Color,
+
     // ── Welcome screen ────────────────────────────────────────────
     /// Style for the welcome screen title.
     pub welcome_title: Style,
@@ -275,6 +281,10 @@ impl Theme {
             overlay_file_fg: text,
             overlay_hint_fg: surface2,
 
+            // Search highlights
+            search_current_bg: Color::Rgb(200, 150, 50),
+            search_match_bg: Color::Rgb(80, 80, 40),
+
             // Welcome screen
             welcome_title: Style::new().fg(accent).add_modifier(Modifier::BOLD),
             welcome_text: Style::new().fg(subtext0),
@@ -374,6 +384,10 @@ impl Theme {
             overlay_dir_fg: teal,
             overlay_file_fg: text,
             overlay_hint_fg: surface2,
+
+            // Search highlights
+            search_current_bg: Color::Rgb(255, 220, 100),
+            search_match_bg: Color::Rgb(220, 220, 150),
 
             // Welcome screen
             welcome_title: Style::new().fg(accent).add_modifier(Modifier::BOLD),

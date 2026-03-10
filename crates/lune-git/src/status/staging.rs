@@ -65,6 +65,41 @@ impl GitService {
         Ok(oid)
     }
 
+    /// Stage a single hunk by applying its patch to the index.
+    pub fn stage_hunk(&self, rel_path: &Path, hunk: &crate::diff::DiffHunk) -> Result<()> {
+        let patch = hunk.to_patch(rel_path);
+        let diff = git2::Diff::from_buffer(patch.as_bytes())
+            .context("failed to parse hunk patch")?;
+        self.repo()
+            .apply(&diff, git2::ApplyLocation::Index, None)
+            .context("failed to apply hunk to index")?;
+        Ok(())
+    }
+
+    /// Unstage a single hunk by applying its reverse patch to the index.
+    pub fn unstage_hunk(&self, rel_path: &Path, hunk: &crate::diff::DiffHunk) -> Result<()> {
+        let patch = hunk.to_reverse_patch(rel_path);
+        let diff = git2::Diff::from_buffer(patch.as_bytes())
+            .context("failed to parse reverse hunk patch")?;
+        self.repo()
+            .apply(&diff, git2::ApplyLocation::Index, None)
+            .context("failed to apply reverse hunk to index")?;
+        Ok(())
+    }
+
+    /// Discard a single hunk by applying its reverse patch to the working directory.
+    ///
+    /// **Destructive** — caller should confirm with user before calling.
+    pub fn discard_hunk(&self, rel_path: &Path, hunk: &crate::diff::DiffHunk) -> Result<()> {
+        let patch = hunk.to_reverse_patch(rel_path);
+        let diff = git2::Diff::from_buffer(patch.as_bytes())
+            .context("failed to parse reverse hunk patch")?;
+        self.repo()
+            .apply(&diff, git2::ApplyLocation::WorkDir, None)
+            .context("failed to apply reverse hunk to workdir")?;
+        Ok(())
+    }
+
     /// Discard changes to a working tree file by checking out the HEAD version.
     ///
     /// **Destructive** — caller should confirm with user before calling.
@@ -148,6 +183,51 @@ mod tests {
         let head = svc.repo().head().unwrap().peel_to_commit().unwrap();
         assert_eq!(head.id(), oid);
         assert_eq!(head.message(), Some("test commit"));
+    }
+
+    #[test]
+    fn stage_hunk_partial() {
+        // Use a 20-line file with modifications at lines 2 and 18 so that
+        // the two change sites are 15 lines apart — well beyond the 7-line
+        // minimum required to produce two separate hunks at context=3.
+        let initial = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nline20\n";
+        let (dir, svc) = repo_with_file("hello.txt", initial);
+
+        // Modify lines 2 and 18 (two distant locations → two hunks).
+        let modified = "line1\nMODIFIED2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nMODIFIED18\nline19\nline20\n";
+        fs::write(
+            dir.path().join("hello.txt"),
+            modified,
+        ).unwrap();
+
+        let diff = svc.diff_file(Path::new("hello.txt")).unwrap().unwrap();
+        assert!(diff.hunks.len() >= 2, "expected at least 2 hunks, got {}", diff.hunks.len());
+
+        // Stage only the first hunk.
+        svc.stage_hunk(Path::new("hello.txt"), &diff.hunks[0]).unwrap();
+
+        // Check: staged diff should have 1 hunk, workdir diff should still have 1 hunk.
+        let staged = svc.diff_staged(Path::new("hello.txt")).unwrap();
+        assert!(staged.is_some(), "should have staged changes");
+        let staged = staged.unwrap();
+        assert_eq!(staged.hunks.len(), 1, "should have exactly 1 staged hunk");
+
+        let workdir = svc.diff_file(Path::new("hello.txt")).unwrap();
+        assert!(workdir.is_some(), "should still have unstaged changes");
+    }
+
+    #[test]
+    fn discard_hunk_restores_lines() {
+        let (dir, svc) = repo_with_file("hello.txt", "aaa\nbbb\nccc\n");
+        fs::write(dir.path().join("hello.txt"), "aaa\nXXX\nccc\n").unwrap();
+
+        let diff = svc.diff_file(Path::new("hello.txt")).unwrap().unwrap();
+        assert_eq!(diff.hunks.len(), 1);
+
+        svc.discard_hunk(Path::new("hello.txt"), &diff.hunks[0]).unwrap();
+
+        let content = fs::read_to_string(dir.path().join("hello.txt")).unwrap();
+        assert_eq!(content, "aaa\nbbb\nccc\n");
     }
 
     #[test]
