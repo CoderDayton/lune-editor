@@ -227,13 +227,12 @@ fn snapshot_editor_pane_welcome() {
         &mut buf,
         None, // No buffer → welcome screen
         &mut viewport,
+        true,
         VimMode::Normal,
         None,
         &syntax_theme,
         None,
-        None,
         &theme,
-        std::time::Duration::ZERO,
     );
 
     insta::assert_snapshot!("editor_pane_welcome", buffer_to_text(&buf));
@@ -254,13 +253,12 @@ fn snapshot_editor_pane_with_content() {
         &mut buf,
         Some(&text_buf),
         &mut viewport,
+        true,
         VimMode::Normal,
         None,
         &syntax_theme,
         None,
-        None,
         &theme,
-        std::time::Duration::ZERO,
     );
 
     insta::assert_snapshot!("editor_pane_with_content", buffer_to_text(&buf));
@@ -281,13 +279,12 @@ fn snapshot_editor_pane_insert_mode() {
         &mut buf,
         Some(&text_buf),
         &mut viewport,
+        true,
         VimMode::Insert,
         None,
         &syntax_theme,
         None,
-        None,
         &theme,
-        std::time::Duration::ZERO,
     );
 
     insta::assert_snapshot!("editor_pane_insert_mode", buffer_to_text(&buf));

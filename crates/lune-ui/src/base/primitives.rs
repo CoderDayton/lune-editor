@@ -25,13 +25,15 @@ pub use ratatui_core::style::{Color, Modifier, Style, Stylize};
 
 pub use ratatui_core::text::{Line, Span};
 
-// ── Widget trait ──────────────────────────────────────────────────────
+// ── Widget traits ─────────────────────────────────────────────────────
 
-pub use ratatui_core::widgets::Widget;
+pub use ratatui_core::widgets::{StatefulWidget, Widget};
 
 // ── Ratatui high-level widgets (overlay borders, etc.) ────────────────
 
-pub use ratatui::widgets::{Block, BorderType, Borders, Clear, Tabs};
+pub use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs,
+};
 
 // ── Crossterm events ──────────────────────────────────────────────────
 

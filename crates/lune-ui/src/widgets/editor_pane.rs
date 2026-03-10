@@ -7,7 +7,10 @@
 //! When syntax highlighting data is available, lines are rendered with
 //! styled spans from the theme instead of plain text.
 
-use crate::primitives::{Buffer, Line, Rect, Span, Style, Stylize, Widget};
+use crate::primitives::{
+    Buffer, Line, Modifier, Rect, Scrollbar, ScrollbarOrientation, ScrollbarState, Span,
+    StatefulWidget, Style, Stylize, Widget,
+};
 
 use smallvec::SmallVec;
 
@@ -125,10 +128,7 @@ impl ViewportState {
 
     /// Scroll down by N lines, clamped to total line count.
     pub fn scroll_down(&mut self, n: usize, total_lines: usize, viewport_height: usize) {
-        // Allow scrolling beyond the last screenful so content can reach the
-        // top of the viewport, minus a small margin to always show one line.
-        let min_visible = 1.min(viewport_height);
-        let max_top = total_lines.saturating_sub(min_visible);
+        let max_top = total_lines.saturating_sub(viewport_height.max(1));
         self.top_line = (self.top_line + n).min(max_top);
     }
 }
@@ -150,6 +150,12 @@ pub const fn gutter_width(total_lines: usize) -> u16 {
 
 /// Width of the git gutter column (1 character).
 const GIT_GUTTER_WIDTH: u16 = 1;
+/// Width of the editor scrollbar column (1 character).
+const SCROLLBAR_WIDTH: u16 = 1;
+/// Minimal vertical scrollbar track symbol.
+const SCROLLBAR_TRACK: &str = "│";
+/// High-contrast scrollbar thumb symbol.
+const SCROLLBAR_THUMB: &str = "█";
 
 // ── Rendering ─────────────────────────────────────────────────────────
 
@@ -167,6 +173,7 @@ pub fn render_editor_pane(
     buf: &mut Buffer,
     text_buf: Option<&TextBuffer>,
     viewport: &mut ViewportState,
+    follow_cursor: bool,
     vim_mode: VimMode,
     highlighted: Option<&[HighlightedLine]>,
     syntax_theme: &SyntaxTheme,
@@ -189,13 +196,18 @@ pub fn render_editor_pane(
     } else {
         0
     };
-    let total_gutter = git_gw + gw;
-    let content_width = area.width.saturating_sub(total_gutter) as usize;
     let viewport_height = area.height as usize;
+    let total_gutter = git_gw + gw;
+    let show_scrollbar =
+        area.width > total_gutter + SCROLLBAR_WIDTH && total_lines > viewport_height;
+    let scrollbar_width = if show_scrollbar { SCROLLBAR_WIDTH } else { 0 };
+    let content_width = area.width.saturating_sub(total_gutter + scrollbar_width) as usize;
 
-    // Scroll viewport to keep cursor visible.
+    // Keep viewport snapped to cursor only when requested by the caller.
     let cursor = &text_buf.cursor.primary.head;
-    viewport.scroll_to_cursor(cursor.line, cursor.col, viewport_height, content_width);
+    if follow_cursor {
+        viewport.scroll_to_cursor(cursor.line, cursor.col, viewport_height, content_width);
+    }
 
     // Prepare the line cache: re-fetches only if revision or viewport changed.
     viewport
@@ -219,6 +231,7 @@ pub fn render_editor_pane(
     for row in 0..viewport_height {
         let line_idx = viewport.top_line + row;
         let y = area.y + row as u16;
+        clear_editor_row(area.x, y, area.width, buf, theme);
 
         if line_idx < total_lines {
             // Column offset accumulator — tracks how far right we are.
@@ -271,8 +284,25 @@ pub fn render_editor_pane(
             );
         } else {
             // Tilde for lines past end of buffer.
-            Line::from(Span::from("~").dim()).render(Rect::new(area.x, y, area.width, 1), buf);
+            Line::from(Span::from("~").dim()).render(
+                Rect::new(area.x, y, area.width.saturating_sub(scrollbar_width), 1),
+                buf,
+            );
         }
+    }
+
+    if show_scrollbar {
+        render_vertical_scrollbar(area, total_lines, viewport, viewport_height, buf, theme);
+    }
+}
+
+/// Clear a single editor row so stale text does not persist between frames.
+fn clear_editor_row(x: u16, y: u16, width: u16, buf: &mut Buffer, theme: &Theme) {
+    let clear_style = Style::new().fg(theme.fg).bg(theme.bg);
+    for dx in 0..width {
+        let cell = &mut buf[(x + dx, y)];
+        cell.set_symbol(" ");
+        cell.set_style(clear_style);
     }
 }
 
@@ -330,6 +360,41 @@ fn render_git_gutter(
         let span = Span::styled(ch, Style::new().fg(color));
         Line::from(span).render(Rect::new(x, y, GIT_GUTTER_WIDTH, 1), buf);
     }
+}
+
+/// Render the editor's vertical scrollbar.
+fn render_vertical_scrollbar(
+    area: Rect,
+    total_lines: usize,
+    viewport: &ViewportState,
+    viewport_height: usize,
+    buf: &mut Buffer,
+    theme: &Theme,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let viewport_len = viewport_height.max(1);
+    let max_top = total_lines.saturating_sub(viewport_len);
+    // Represent the scroll domain as "top-line positions":
+    // 0..=max_top. This makes thumb size proportional to visible/total and
+    // ensures the thumb reaches the end at EOF.
+    let scroll_domain_len = max_top.saturating_add(1).max(1);
+
+    let mut state = ScrollbarState::new(scroll_domain_len)
+        .position(viewport.top_line.min(max_top))
+        .viewport_content_length(viewport_len);
+
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(Some(SCROLLBAR_TRACK))
+        .thumb_symbol(SCROLLBAR_THUMB)
+        .track_style(Style::new().fg(theme.fg_dim))
+        .thumb_style(Style::new().fg(theme.accent).add_modifier(Modifier::BOLD));
+
+    StatefulWidget::render(scrollbar, area, buf, &mut state);
 }
 
 /// Extract a `&str` window into `s` starting at char offset `start` for `width` chars.
@@ -607,6 +672,54 @@ fn render_welcome(area: Rect, buf: &mut Buffer, theme: &Theme) {
 /// Map a mouse click position to a buffer position, accounting for
 /// gutter width (git gutter + line numbers) and viewport offset.
 #[must_use]
+pub const fn is_on_scrollbar(
+    click_x: u16,
+    click_y: u16,
+    area: Rect,
+    total_lines: usize,
+    has_git_gutter: bool,
+) -> bool {
+    if click_x < area.x
+        || click_y < area.y
+        || click_x >= area.x + area.width
+        || click_y >= area.y + area.height
+    {
+        return false;
+    }
+
+    let gw = gutter_width(total_lines);
+    let git_gw = if has_git_gutter { GIT_GUTTER_WIDTH } else { 0 };
+    let total_gutter = git_gw + gw;
+    let has_scrollbar =
+        area.width > total_gutter + SCROLLBAR_WIDTH && total_lines > area.height as usize;
+    has_scrollbar && click_x >= area.x + area.width.saturating_sub(SCROLLBAR_WIDTH)
+}
+
+/// Convert a scrollbar row hit/drag position to a viewport top-line.
+///
+/// Returns `None` when the content does not overflow the viewport.
+#[must_use]
+pub fn scrollbar_row_to_top_line(row: u16, area: Rect, total_lines: usize) -> Option<usize> {
+    let viewport_height = area.height as usize;
+    let max_top = total_lines.saturating_sub(viewport_height.max(1));
+    if max_top == 0 || area.height == 0 {
+        return None;
+    }
+
+    let min_y = area.y;
+    let max_y = area.y + area.height.saturating_sub(1);
+    let clamped = row.clamp(min_y, max_y);
+    let rel = (clamped - area.y) as usize;
+    let denom = area.height.saturating_sub(1) as usize;
+    if denom == 0 {
+        return Some(0);
+    }
+    Some((rel * max_top + denom / 2) / denom)
+}
+
+/// Map a mouse click position to a buffer position, accounting for
+/// gutter width (git gutter + line numbers) and viewport offset.
+#[must_use]
 pub const fn click_to_position(
     click_x: u16,
     click_y: u16,
@@ -627,6 +740,10 @@ pub const fn click_to_position(
     let gw = gutter_width(total_lines);
     let git_gw = if has_git_gutter { GIT_GUTTER_WIDTH } else { 0 };
     let total_gutter = git_gw + gw;
+    // Ignore clicks on the scrollbar column.
+    if is_on_scrollbar(click_x, click_y, area, total_lines, has_git_gutter) {
+        return None;
+    }
 
     // Check if click is in gutter area.
     if click_x < area.x + total_gutter {
@@ -690,7 +807,7 @@ mod tests {
         vp.scroll_down(10, 100, 20);
         assert_eq!(vp.top_line, 10);
         vp.scroll_down(200, 100, 20);
-        assert_eq!(vp.top_line, 99); // max = 100 - 1 (last line at top)
+        assert_eq!(vp.top_line, 80); // max = 100 - 20 (last full screen)
     }
 
     #[test]
@@ -733,4 +850,25 @@ mod tests {
         assert!(click_to_position(80, 10, area, &vp, 50, false).is_none());
     }
 
+    #[test]
+    fn click_on_scrollbar_returns_none() {
+        let area = Rect::new(0, 0, 80, 24);
+        let vp = ViewportState::default();
+        assert!(click_to_position(79, 6, area, &vp, 200, false).is_none());
+    }
+
+    #[test]
+    fn is_on_scrollbar_only_when_overflowing() {
+        let area = Rect::new(0, 0, 80, 24);
+        assert!(is_on_scrollbar(79, 6, area, 200, false));
+        assert!(!is_on_scrollbar(79, 6, area, 10, false));
+    }
+
+    #[test]
+    fn scrollbar_row_to_top_line_maps_full_range() {
+        let area = Rect::new(0, 0, 80, 20);
+        // max_top = 100 - 20 = 80
+        assert_eq!(scrollbar_row_to_top_line(0, area, 100), Some(0));
+        assert_eq!(scrollbar_row_to_top_line(19, area, 100), Some(80));
+    }
 }

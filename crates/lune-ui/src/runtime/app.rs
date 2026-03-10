@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::Error;
 use crossbeam::channel::{self, Receiver, TryRecvError};
 use rat_salsa::poll::{PollCrossterm, PollTimers};
-use rat_salsa::{Control, RunConfig, SalsaAppContext, SalsaContext, run_tui};
+use rat_salsa::{run_tui, Control, RunConfig, SalsaAppContext, SalsaContext};
 
 use crate::primitives::{
     Block, Borders, Buffer, Constraint, CtEvent, Direction, KeyCode, KeyEvent, KeyEventKind,
@@ -26,8 +26,8 @@ use lune_core::workspace_state::make_relative;
 use lune_git::{GitService, GutterMarks};
 
 use lune_ai::context::{
-    EditorContext, FileContext, GitStatusSummary, SelectionContext, TabContext,
-    extract_selection_text,
+    extract_selection_text, EditorContext, FileContext, GitStatusSummary, SelectionContext,
+    TabContext,
 };
 use lune_ai::{AiClientKind, AiManager, TermSize as AiTermSize};
 
@@ -118,6 +118,11 @@ pub struct AppState {
     pub tab_mgr: TabManager,
     /// Editor viewport state.
     pub viewport: ViewportState,
+    /// Whether editor rendering should keep the viewport snapped to the cursor.
+    ///
+    /// Mouse-wheel scrolling disables this so users can freely browse away
+    /// from the cursor; cursor-movement/edit actions re-enable it.
+    viewport_follow_cursor: bool,
     /// Overlay state (command palette, notifications).
     pub overlay: OverlayState,
     /// Last computed layout splits (for mouse hit-testing).
@@ -198,6 +203,8 @@ pub enum DragBorder {
     Right,
     /// Dragging the upper content / bottom panel border.
     Bottom,
+    /// Dragging the editor scrollbar thumb/track.
+    Scrollbar,
 }
 
 impl AppState {
@@ -220,6 +227,7 @@ impl AppState {
             layout: LayoutState::default(),
             tab_mgr: TabManager::new(),
             viewport: ViewportState::default(),
+            viewport_follow_cursor: true,
             overlay: OverlayState::default(),
             last_splits: None,
             last_root_tabs_area: None,
@@ -741,7 +749,7 @@ impl AppState {
                 let fp = b
                     .file_path
                     .as_ref()
-                    .map_or_else(String::new, |p| p.display().to_string());
+                    .map_or_else(String::new, |p| self.status_path_display(p));
                 let pos = &b.cursor.primary.head;
                 (fp, b.is_dirty(), pos.line + 1, pos.col + 1)
             })
@@ -758,6 +766,32 @@ impl AppState {
             ai_status: self.build_ai_status(),
             file_type: self.detect_file_type(),
             message: self.status_message.clone(),
+        }
+    }
+
+    /// Build a status-bar file path display rooted at the workspace folder.
+    ///
+    /// Examples:
+    /// - `lune-editor/Cargo.toml`
+    /// - `lune-editor/crates/lune-ui/src/runtime/app.rs`
+    fn status_path_display(&self, path: &Path) -> String {
+        let Some(ws) = self.workspace.as_ref() else {
+            return path.display().to_string();
+        };
+
+        let root = ws.root();
+        let Ok(rel) = path.strip_prefix(root) else {
+            return path.display().to_string();
+        };
+
+        let root_name = root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("workspace");
+        if rel.as_os_str().is_empty() {
+            root_name.to_string()
+        } else {
+            format!("{root_name}/{}", rel.display())
         }
     }
 
@@ -1141,6 +1175,7 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         buf,
         text_buf,
         &mut state.viewport,
+        state.viewport_follow_cursor,
         state.vim.mode,
         highlighted.as_deref(),
         &state.syntax_theme,
@@ -1923,6 +1958,7 @@ fn handle_insert_mode(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
 
     if mutates_text {
         state.update_active_highlighter();
+        state.viewport_follow_cursor = true;
     }
     result
 }
@@ -2010,6 +2046,7 @@ fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
         MouseEventKind::ScrollUp => {
             if state.root_tab == RootTab::Editor {
                 state.viewport.scroll_up(3);
+                state.viewport_follow_cursor = false;
                 Control::Changed
             } else {
                 Control::Continue
@@ -2024,6 +2061,7 @@ fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
                     .last_editor_content_area
                     .map_or(20, |a| a.height as usize);
                 state.viewport.scroll_down(3, total, height);
+                state.viewport_follow_cursor = false;
                 Control::Changed
             } else {
                 Control::Continue
@@ -2036,6 +2074,19 @@ fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
 /// Check if a point is inside a rect.
 const fn point_in_rect(col: u16, row: u16, r: Rect) -> bool {
     col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
+}
+
+/// Set the editor viewport top-line from a scrollbar row position.
+fn set_viewport_from_scrollbar_row(
+    state: &mut AppState,
+    row: u16,
+    content_area: Rect,
+    total_lines: usize,
+) {
+    if let Some(top) = editor_pane::scrollbar_row_to_top_line(row, content_area, total_lines) {
+        state.viewport.top_line = top;
+        state.viewport_follow_cursor = false;
+    }
 }
 
 /// Handle left mouse button click.
@@ -2055,6 +2106,20 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
 
     if state.root_tab != RootTab::Editor {
         return Control::Continue;
+    }
+
+    // Scrollbar area — click to jump and begin drag.
+    if let Some(content_area) = state.last_editor_content_area {
+        let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
+        let has_git = state
+            .active_buffer
+            .is_some_and(|id| state.gutter_marks.contains_key(&id));
+        if editor_pane::is_on_scrollbar(col, row, content_area, total_lines, has_git) {
+            set_viewport_from_scrollbar_row(state, row, content_area, total_lines);
+            state.focus.set_active(PanelId::Editor);
+            state.dragging_border = Some(DragBorder::Scrollbar);
+            return Control::Changed;
+        }
     }
 
     // Check panel borders first (start drag).
@@ -2138,6 +2203,7 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
                 let clamped_col = pos.col.min(buf.line_len(clamped_line).saturating_sub(1));
                 buf.cursor = CursorState::at(Position::new(clamped_line, clamped_col));
             }
+            state.viewport_follow_cursor = true;
             return Control::Changed;
         }
     }
@@ -2188,6 +2254,15 @@ fn handle_mouse_drag(mouse: MouseEvent, state: &mut AppState) -> Control<AppEven
         return Control::Continue;
     };
 
+    if matches!(border, DragBorder::Scrollbar) {
+        if let Some(content_area) = state.last_editor_content_area {
+            let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
+            set_viewport_from_scrollbar_row(state, mouse.row, content_area, total_lines);
+            return Control::Changed;
+        }
+        return Control::Continue;
+    }
+
     let Some(ref splits) = state.last_splits else {
         return Control::Continue;
     };
@@ -2213,6 +2288,7 @@ fn handle_mouse_drag(mouse: MouseEvent, state: &mut AppState) -> Control<AppEven
                 state.layout.set_bottom_panel_height_pct(bottom_pct);
             }
         }
+        DragBorder::Scrollbar => unreachable!(),
     }
 
     Control::Changed
@@ -2258,6 +2334,7 @@ fn apply_vim_action(action: &VimAction, state: &mut AppState) -> Control<AppEven
                 let clamped = (*line).min(buf.line_count().saturating_sub(1));
                 buf.cursor = CursorState::at(Position::new(clamped, 0));
             }
+            state.viewport_follow_cursor = true;
             Control::Changed
         }
         VimAction::OpenLineBelow => {
@@ -2266,6 +2343,7 @@ fn apply_vim_action(action: &VimAction, state: &mut AppState) -> Control<AppEven
                 let pos = buf.cursor.primary.head;
                 buf.insert(pos, "\n");
             }
+            state.viewport_follow_cursor = true;
             state.update_active_highlighter();
             Control::Changed
         }
@@ -2276,6 +2354,7 @@ fn apply_vim_action(action: &VimAction, state: &mut AppState) -> Control<AppEven
                 buf.insert(pos, "\n");
                 buf.cursor = CursorState::at(pos);
             }
+            state.viewport_follow_cursor = true;
             state.update_active_highlighter();
             Control::Changed
         }
@@ -2287,6 +2366,7 @@ fn apply_vim_action(action: &VimAction, state: &mut AppState) -> Control<AppEven
                     buf.delete(pos, end);
                 }
             }
+            state.viewport_follow_cursor = true;
             state.update_active_highlighter();
             Control::Changed
         }
@@ -2304,6 +2384,7 @@ fn apply_vim_action(action: &VimAction, state: &mut AppState) -> Control<AppEven
                     buf.delete(start, end);
                 }
             }
+            state.viewport_follow_cursor = true;
             state.update_active_highlighter();
             Control::Changed
         }
@@ -2341,6 +2422,7 @@ fn apply_motion(state: &mut AppState, f: impl FnOnce(&mut TextBuffer)) -> Contro
     if let Some(buf) = state.active_buf_mut() {
         f(buf);
     }
+    state.viewport_follow_cursor = true;
     Control::Changed
 }
 
@@ -2349,6 +2431,7 @@ fn apply_buf_edit(state: &mut AppState, f: fn(&mut TextBuffer) -> bool) {
     if let Some(buf) = state.active_buf_mut() {
         let _ = f(buf);
     }
+    state.viewport_follow_cursor = true;
     state.update_active_highlighter();
 }
 
@@ -2370,14 +2453,17 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
         AppCommand::SaveAll => handle_save_all(state),
         AppCommand::CloseTab => {
             state.close_active_tab();
+            state.viewport_follow_cursor = true;
             Control::Changed
         }
         AppCommand::NextTab => {
             state.cycle_tab(1);
+            state.viewport_follow_cursor = true;
             Control::Changed
         }
         AppCommand::PrevTab => {
             state.cycle_tab(-1);
+            state.viewport_follow_cursor = true;
             Control::Changed
         }
         AppCommand::ShowEditorTab => {
@@ -2668,6 +2754,7 @@ fn handle_open_file(path: &std::path::Path, state: &mut AppState) -> Control<App
         Ok(_) => {
             state.set_root_tab(RootTab::Editor);
             state.focus.focus(PanelId::Editor);
+            state.viewport_follow_cursor = true;
             state.status_message = format!("Opened: {}", path.display());
         }
         Err(e) => {

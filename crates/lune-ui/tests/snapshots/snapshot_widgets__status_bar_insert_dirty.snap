@@ -1,6 +1,5 @@
 ---
 source: crates/lune-ui/tests/snapshot_widgets.rs
-assertion_line: 104
 expression: buffer_to_text(&buf)
 ---
- INSERT  lib.rs [+]Ln 100, Col 1feature/tests │ UTF-8 │ Rust │ AI: Connected
+ INSERT     Ln 100, Col 1 | feature/tests    | UTF-8   | Rust     | AI: Conne...
