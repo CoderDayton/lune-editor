@@ -31,6 +31,8 @@ use lune_ai::context::{
 };
 use lune_ai::{AiClientKind, AiManager, TermSize as AiTermSize};
 
+use arboard::Clipboard;
+
 use crate::highlight;
 use crate::highlight::theme::SyntaxTheme;
 use crate::theme::Theme;
@@ -2161,16 +2163,58 @@ fn handle_ai_summarize_changes(state: &mut AppState) -> Control<AppEvent> {
 }
 
 /// Handle key events in insert mode — characters are inserted.
+#[allow(clippy::too_many_lines)]
 fn handle_insert_mode(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
     let extend = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    // Ctrl+key shortcuts — must intercept before text-insertion match.
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return match key.code {
+            KeyCode::Char('a') => handle_select_all(state),
+            KeyCode::Char('c') => handle_copy(state),
+            KeyCode::Char('x') => handle_cut(state),
+            KeyCode::Char('v') => handle_paste(state),
+            KeyCode::Char('d') => handle_duplicate_line(state),
+            KeyCode::Backspace => handle_delete_word_left(state),
+            KeyCode::Delete => handle_delete_word_right(state),
+            KeyCode::Home => apply_motion(state, |buf| buf.move_buffer_start(extend)),
+            KeyCode::End => apply_motion(state, |buf| buf.move_buffer_end(extend)),
+            // Ctrl+Arrow handled by apply_arrow_motion
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+                apply_arrow_motion(key, state, extend)
+            }
+            _ => Control::Continue,
+        };
+    }
+
+    // Alt+Up/Down — move line.
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        return match key.code {
+            KeyCode::Up => handle_move_line_up(state),
+            KeyCode::Down => handle_move_line_down(state),
+            _ => Control::Continue,
+        };
+    }
+
     let mutates_text = matches!(
         key.code,
-        KeyCode::Char(_) | KeyCode::Enter | KeyCode::Backspace | KeyCode::Delete | KeyCode::Tab
+        KeyCode::Char(_)
+            | KeyCode::Enter
+            | KeyCode::Backspace
+            | KeyCode::Delete
+            | KeyCode::Tab
+            | KeyCode::BackTab
     );
 
     let result = match key.code {
         KeyCode::Char(ch) => {
             if let Some(buf) = state.active_buf_mut() {
+                // If there's a selection, delete it first then insert.
+                let sel = buf.cursor.primary.clone();
+                if !sel.is_cursor() {
+                    let (s, e) = sel.ordered();
+                    buf.delete(s, e);
+                }
                 let pos = buf.cursor.primary.head;
                 buf.insert(pos, &ch.to_string());
             }
@@ -2178,6 +2222,11 @@ fn handle_insert_mode(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
         }
         KeyCode::Enter => {
             if let Some(buf) = state.active_buf_mut() {
+                let sel = buf.cursor.primary.clone();
+                if !sel.is_cursor() {
+                    let (s, e) = sel.ordered();
+                    buf.delete(s, e);
+                }
                 let pos = buf.cursor.primary.head;
                 buf.insert(pos, "\n");
             }
@@ -2185,30 +2234,37 @@ fn handle_insert_mode(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
         }
         KeyCode::Backspace => {
             if let Some(buf) = state.active_buf_mut() {
-                let pos = buf.cursor.primary.head;
-                if pos.col > 0 {
-                    buf.delete(Position::new(pos.line, pos.col - 1), pos);
-                } else if pos.line > 0 {
-                    let prev_len = buf.line_len(pos.line - 1).saturating_sub(1);
-                    buf.delete(Position::new(pos.line - 1, prev_len), pos);
+                let sel = buf.cursor.primary.clone();
+                if sel.is_cursor() {
+                    let pos = buf.cursor.primary.head;
+                    if pos.col > 0 {
+                        buf.delete(Position::new(pos.line, pos.col - 1), pos);
+                    } else if pos.line > 0 {
+                        let prev_len = buf.line_len(pos.line - 1).saturating_sub(1);
+                        buf.delete(Position::new(pos.line - 1, prev_len), pos);
+                    }
+                } else {
+                    let (s, e) = sel.ordered();
+                    buf.delete(s, e);
                 }
             }
             Control::Changed
         }
         KeyCode::Delete => {
             if let Some(buf) = state.active_buf_mut() {
-                let pos = buf.cursor.primary.head;
-                buf.delete(pos, Position::new(pos.line, pos.col + 1));
+                let sel = buf.cursor.primary.clone();
+                if sel.is_cursor() {
+                    let pos = buf.cursor.primary.head;
+                    buf.delete(pos, Position::new(pos.line, pos.col + 1));
+                } else {
+                    let (s, e) = sel.ordered();
+                    buf.delete(s, e);
+                }
             }
             Control::Changed
         }
-        KeyCode::Tab => {
-            if let Some(buf) = state.active_buf_mut() {
-                let pos = buf.cursor.primary.head;
-                buf.insert(pos, "    ");
-            }
-            Control::Changed
-        }
+        KeyCode::Tab => handle_tab_or_indent(state),
+        KeyCode::BackTab => handle_shift_tab(state),
         KeyCode::Home => apply_motion(state, |buf| buf.move_line_start(extend)),
         KeyCode::End => apply_motion(state, |buf| buf.move_line_end(extend)),
         KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
@@ -2273,12 +2329,17 @@ fn handle_visual_mode(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
 }
 
 /// Map arrow keys to cursor motion. Returns `Continue` for non-arrow keys.
+///
+/// Ctrl+Left/Right jumps by word; Ctrl+Home/End jumps to document boundaries.
 fn apply_arrow_motion(key: &KeyEvent, state: &mut AppState, extend: bool) -> Control<AppEvent> {
-    let method: Option<fn(&mut TextBuffer, bool)> = match key.code {
-        KeyCode::Left => Some(TextBuffer::move_left),
-        KeyCode::Right => Some(TextBuffer::move_right),
-        KeyCode::Up => Some(TextBuffer::move_up),
-        KeyCode::Down => Some(TextBuffer::move_down),
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let method: Option<fn(&mut TextBuffer, bool)> = match (key.code, ctrl) {
+        (KeyCode::Left, false) => Some(TextBuffer::move_left),
+        (KeyCode::Left, true) => Some(TextBuffer::move_word_left),
+        (KeyCode::Right, false) => Some(TextBuffer::move_right),
+        (KeyCode::Right, true) => Some(TextBuffer::move_word_right),
+        (KeyCode::Up, _) => Some(TextBuffer::move_up),
+        (KeyCode::Down, _) => Some(TextBuffer::move_down),
         _ => None,
     };
     method.map_or(Control::Continue, |m| {
@@ -2442,7 +2503,7 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             }
         }
     }
-    // Editor content area — set cursor.
+    // Editor content area — set cursor or select word on double-click.
     if let Some(content_area) = state.last_editor_content_area {
         let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
         let has_git = state
@@ -2457,10 +2518,26 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             has_git,
         ) {
             state.focus.set_active(PanelId::Editor);
+
+            let now = Instant::now();
+            let is_double = state.last_click.is_some_and(|(t, c, r)| {
+                c == col && r == row && now.duration_since(t).as_millis() < 400
+            });
+
             if let Some(buf) = state.active_buf_mut() {
                 let clamped_line = pos.line.min(buf.line_count().saturating_sub(1));
-                let clamped_col = pos.col.min(buf.line_len(clamped_line).saturating_sub(1));
-                buf.cursor = CursorState::at(Position::new(clamped_line, clamped_col));
+                let clamped_col = pos.col.min(buf.line_len_no_newline(clamped_line));
+                let clamped = Position::new(clamped_line, clamped_col);
+
+                buf.cursor = CursorState::at(clamped);
+                if is_double {
+                    // Double-click: select the word under cursor.
+                    buf.move_word_left(false);
+                    buf.move_word_right(true);
+                    state.last_click = None;
+                } else {
+                    state.last_click = Some((now, col, row));
+                }
             }
             state.viewport_follow_cursor = true;
             return Control::Changed;
@@ -2509,11 +2586,44 @@ fn close_tab_by_id(state: &mut AppState, bid: BufferId) {
     }
 }
 
-/// Handle mouse drag for panel resizing.
+/// Handle mouse drag inside the editor content area — extend text selection.
+fn handle_editor_selection_drag(mouse: MouseEvent, state: &mut AppState) -> Control<AppEvent> {
+    let Some(content_area) = state.last_editor_content_area else {
+        return Control::Continue;
+    };
+    let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
+    let has_git = state
+        .active_buffer
+        .is_some_and(|id| state.gutter_marks.contains_key(&id));
+    let Some(pos) = editor_pane::click_to_position(
+        mouse.column,
+        mouse.row,
+        content_area,
+        &state.viewport,
+        total_lines,
+        has_git,
+    ) else {
+        return Control::Continue;
+    };
+    if let Some(buf) = state.active_buf_mut() {
+        let clamped_line = pos.line.min(buf.line_count().saturating_sub(1));
+        let clamped = Position::new(
+            clamped_line,
+            pos.col.min(buf.line_len_no_newline(clamped_line)),
+        );
+        // Extend selection: anchor stays where click placed it, head follows drag.
+        let anchor = buf.cursor.primary.anchor;
+        buf.cursor.primary = Selection { anchor, head: clamped };
+    }
+    state.viewport_follow_cursor = true;
+    Control::Changed
+}
+
+/// Handle mouse drag for panel resizing or text selection.
 #[allow(clippy::cast_possible_truncation)]
 fn handle_mouse_drag(mouse: MouseEvent, state: &mut AppState) -> Control<AppEvent> {
     let Some(border) = state.dragging_border else {
-        return Control::Continue;
+        return handle_editor_selection_drag(mouse, state);
     };
 
     if matches!(border, DragBorder::Scrollbar) {
@@ -2679,7 +2789,265 @@ fn apply_vim_action_visual(action: &VimAction, state: &mut AppState) -> Control<
     }
 }
 
-/// Helper: apply a closure to the active buffer and return `Changed`.
+// ── VS Code-style editing helpers ─────────────────────────────────────
+
+/// Select all text in the active buffer.
+fn handle_select_all(state: &mut AppState) -> Control<AppEvent> {
+    apply_motion(state, |buf| {
+        buf.move_buffer_start(false);
+        buf.move_buffer_end(true);
+    })
+}
+
+/// Copy the current selection to the system clipboard.
+fn handle_copy(state: &mut AppState) -> Control<AppEvent> {
+    let text = state.active_buf().and_then(|buf| {
+        let sel = &buf.cursor.primary;
+        if sel.is_cursor() {
+            return None;
+        }
+        let (s, e) = sel.ordered();
+        Some(buf.text_range(s, e))
+    });
+    let Some(t) = text else {
+        return Control::Continue;
+    };
+    if let Err(e) = Clipboard::new().and_then(|mut cb| cb.set_text(t)) {
+        state
+            .overlay
+            .notify(format!("Clipboard error: {e}"), NotificationLevel::Error);
+    }
+    Control::Changed
+}
+
+/// Cut the current selection to the system clipboard.
+fn handle_cut(state: &mut AppState) -> Control<AppEvent> {
+    let text = state.active_buf().and_then(|buf| {
+        let sel = &buf.cursor.primary;
+        if sel.is_cursor() {
+            return None;
+        }
+        let (s, e) = sel.ordered();
+        Some(buf.text_range(s, e))
+    });
+    let Some(t) = text else {
+        return Control::Continue;
+    };
+    if let Err(e) = Clipboard::new().and_then(|mut cb| cb.set_text(t)) {
+        state
+            .overlay
+            .notify(format!("Clipboard error: {e}"), NotificationLevel::Error);
+        return Control::Changed;
+    }
+    if let Some(buf) = state.active_buf_mut() {
+        let (s, e) = buf.cursor.primary.ordered();
+        buf.delete(s, e);
+    }
+    state.update_active_highlighter();
+    state.viewport_follow_cursor = true;
+    Control::Changed
+}
+
+/// Paste from the system clipboard at the cursor position.
+fn handle_paste(state: &mut AppState) -> Control<AppEvent> {
+    let text = match Clipboard::new().and_then(|mut cb| cb.get_text()) {
+        Ok(t) => t,
+        Err(e) => {
+            state
+                .overlay
+                .notify(format!("Clipboard error: {e}"), NotificationLevel::Error);
+            return Control::Changed;
+        }
+    };
+    if let Some(buf) = state.active_buf_mut() {
+        // Delete selection first if any.
+        let sel = buf.cursor.primary.clone();
+        if !sel.is_cursor() {
+            let (s, e) = sel.ordered();
+            buf.delete(s, e);
+        }
+        let pos = buf.cursor.primary.head;
+        buf.insert(pos, &text);
+    }
+    state.update_active_highlighter();
+    state.viewport_follow_cursor = true;
+    Control::Changed
+}
+
+/// Delete the word to the left of the cursor (Ctrl+Backspace).
+///
+/// If a selection exists, deletes the selection instead (VS Code behavior).
+fn handle_delete_word_left(state: &mut AppState) -> Control<AppEvent> {
+    if let Some(buf) = state.active_buf_mut() {
+        let sel = buf.cursor.primary.clone();
+        if sel.is_cursor() {
+            let head = buf.cursor.primary.head;
+            buf.move_word_left(false);
+            let new_head = buf.cursor.primary.head;
+            if new_head != head {
+                buf.delete(new_head, head);
+            }
+        } else {
+            let (s, e) = sel.ordered();
+            buf.delete(s, e);
+        }
+    }
+    state.update_active_highlighter();
+    state.viewport_follow_cursor = true;
+    Control::Changed
+}
+
+/// Delete the word to the right of the cursor (Ctrl+Delete).
+///
+/// If a selection exists, deletes the selection instead (VS Code behavior).
+fn handle_delete_word_right(state: &mut AppState) -> Control<AppEvent> {
+    if let Some(buf) = state.active_buf_mut() {
+        let sel = buf.cursor.primary.clone();
+        if sel.is_cursor() {
+            let head = buf.cursor.primary.head;
+            buf.move_word_right(false);
+            let new_head = buf.cursor.primary.head;
+            if new_head != head {
+                buf.delete(head, new_head);
+            }
+        } else {
+            let (s, e) = sel.ordered();
+            buf.delete(s, e);
+        }
+    }
+    state.update_active_highlighter();
+    state.viewport_follow_cursor = true;
+    Control::Changed
+}
+
+/// Tab key: indent selected lines or insert 4 spaces at cursor.
+fn handle_tab_or_indent(state: &mut AppState) -> Control<AppEvent> {
+    if let Some(buf) = state.active_buf_mut() {
+        let sel = buf.cursor.primary.clone();
+        if sel.is_cursor() {
+            let pos = buf.cursor.primary.head;
+            buf.insert(pos, "    ");
+        } else {
+            let (start, end) = sel.ordered();
+            buf.begin_transaction();
+            for line in start.line..=end.line {
+                buf.insert(Position::new(line, 0), "    ");
+            }
+            buf.commit_transaction();
+        }
+    }
+    state.update_active_highlighter();
+    state.viewport_follow_cursor = true;
+    Control::Changed
+}
+
+/// Shift+Tab: unindent selected lines (remove up to 4 leading spaces).
+fn handle_shift_tab(state: &mut AppState) -> Control<AppEvent> {
+    if let Some(buf) = state.active_buf_mut() {
+        let sel = buf.cursor.primary.clone();
+        let (start_line, end_line) = if sel.is_cursor() {
+            (sel.head.line, sel.head.line)
+        } else {
+            let (s, e) = sel.ordered();
+            (s.line, e.line)
+        };
+        buf.begin_transaction();
+        for line in start_line..=end_line {
+            if let Some(line_text) = buf.line(line) {
+                let spaces = line_text.chars().take(4).take_while(|&c| c == ' ').count();
+                if spaces > 0 {
+                    buf.delete(Position::new(line, 0), Position::new(line, spaces));
+                }
+            }
+        }
+        buf.commit_transaction();
+    }
+    state.update_active_highlighter();
+    state.viewport_follow_cursor = true;
+    Control::Changed
+}
+
+/// Duplicate the current line (Ctrl+D).
+fn handle_duplicate_line(state: &mut AppState) -> Control<AppEvent> {
+    if let Some(buf) = state.active_buf_mut() {
+        let line_idx = buf.cursor.primary.head.line;
+        if let Some(line_text) = buf.line(line_idx) {
+            let content = line_text
+                .strip_suffix('\n')
+                .map_or(line_text.as_str(), |s| {
+                    s.strip_suffix('\r').unwrap_or(s)
+                });
+            buf.insert(
+                Position::new(line_idx, content.chars().count()),
+                &format!("\n{content}"),
+            );
+        }
+    }
+    state.update_active_highlighter();
+    state.viewport_follow_cursor = true;
+    Control::Changed
+}
+
+/// Move the current line up (Alt+Up).
+fn handle_move_line_up(state: &mut AppState) -> Control<AppEvent> {
+    if let Some(buf) = state.active_buf_mut() {
+        let line = buf.cursor.primary.head.line;
+        if line == 0 {
+            return Control::Changed;
+        }
+        let col = buf.cursor.primary.head.col;
+        let curr = buf.line(line).unwrap_or_default();
+        let prev = buf.line(line - 1).unwrap_or_default();
+        // Range: start of prev line through end of curr line.
+        let start = Position::new(line - 1, 0);
+        let end = if line + 1 < buf.line_count() {
+            Position::new(line + 1, 0)
+        } else {
+            // Last line — use char count of that line.
+            Position::new(line, buf.line_len(line))
+        };
+        buf.begin_transaction();
+        buf.delete(start, end);
+        buf.insert(start, &format!("{curr}{prev}"));
+        let new_col = col.min(buf.line_len_no_newline(line - 1));
+        buf.cursor.primary = Selection::cursor(Position::new(line - 1, new_col));
+        buf.commit_transaction();
+    }
+    state.update_active_highlighter();
+    state.viewport_follow_cursor = true;
+    Control::Changed
+}
+
+/// Move the current line down (Alt+Down).
+fn handle_move_line_down(state: &mut AppState) -> Control<AppEvent> {
+    if let Some(buf) = state.active_buf_mut() {
+        let line = buf.cursor.primary.head.line;
+        let last_line = buf.line_count().saturating_sub(1);
+        if line >= last_line {
+            return Control::Changed;
+        }
+        let col = buf.cursor.primary.head.col;
+        let curr = buf.line(line).unwrap_or_default();
+        let next = buf.line(line + 1).unwrap_or_default();
+        // Range: start of curr line through end of next line.
+        let start = Position::new(line, 0);
+        let end = if line + 2 < buf.line_count() {
+            Position::new(line + 2, 0)
+        } else {
+            Position::new(line + 1, buf.line_len(line + 1))
+        };
+        buf.begin_transaction();
+        buf.delete(start, end);
+        buf.insert(start, &format!("{next}{curr}"));
+        let new_col = col.min(buf.line_len_no_newline(line + 1));
+        buf.cursor.primary = Selection::cursor(Position::new(line + 1, new_col));
+        buf.commit_transaction();
+    }
+    state.update_active_highlighter();
+    state.viewport_follow_cursor = true;
+    Control::Changed
+}
+
 fn apply_motion(state: &mut AppState, f: impl FnOnce(&mut TextBuffer)) -> Control<AppEvent> {
     if let Some(buf) = state.active_buf_mut() {
         f(buf);

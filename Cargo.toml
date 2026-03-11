@@ -64,6 +64,9 @@ bincode = { version = "2", features = ["serde"] }
 # Embedded database (reactive state persistence)
 sled = "0.34"
 
+# Clipboard
+arboard = "3"
+
 # Error handling
 anyhow = "1"
 thiserror = "2"

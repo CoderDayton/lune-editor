@@ -172,6 +172,20 @@ impl TextBuffer {
         self.rope.to_string()
     }
 
+    /// Extract text between two positions as an owned `String`.
+    ///
+    /// Positions are ordered internally — callers may pass them in any order.
+    #[must_use]
+    pub fn text_range(&self, start: Position, end: Position) -> String {
+        let s = self.pos_to_char(start);
+        let e = self.pos_to_char(end);
+        if s <= e {
+            self.rope.slice(s..e).to_string()
+        } else {
+            self.rope.slice(e..s).to_string()
+        }
+    }
+
     /// Get a reference to the underlying rope.
     #[must_use]
     pub const fn rope(&self) -> &Rope {
@@ -617,9 +631,11 @@ impl TextBuffer {
     /// Line length excluding trailing newline characters.
     ///
     /// Avoids allocating a `String` by counting trailing `\n`/`\r` chars
-    /// directly from the rope slice.
+    /// directly from the rope slice.  Used for cursor column clamping
+    /// (the newline is not a valid cursor position).
     #[inline]
-    fn line_len_no_newline(&self, line_idx: usize) -> usize {
+    #[must_use]
+    pub fn line_len_no_newline(&self, line_idx: usize) -> usize {
         if line_idx >= self.rope.len_lines() {
             return 0;
         }

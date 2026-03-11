@@ -24,6 +24,7 @@ rat-focus.workspace = true
 tachyonfx.workspace = true
 serde.workspace = true
 toml.workspace = true
+arboard.workspace = true
 anyhow.workspace = true
 log.workspace = true
 vt100.workspace = true
