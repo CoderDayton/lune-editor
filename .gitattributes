@@ -1,0 +1,14 @@
+# Normalize line endings to LF on commit
+* text=auto eol=lf
+
+# Rust source
+*.rs text eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+
+# Generated / vendor
+Cargo.lock text eol=lf

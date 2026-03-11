@@ -44,14 +44,18 @@ It runs entirely in your terminal, starts instantly, and stays out of your way �
 
 ## Features
 
-- ⚡ **Zero-compromise performance** — LTO + codegen-units=1 release build; rope-based buffers handle multi-MB files without stutter
-- 🌲 **Tree-sitter syntax highlighting** — incremental, O(1) amortized per keystroke; language registry is extensible
-- 🤖 **Built-in AI** — Claude-backed assistant with PTY session and full editor context for contextual prompting and refactors
-- 🗂 **Native Git panel** — stage, unstage, diff, and inspect status without leaving the editor (libgit2)
-- 💻 **Embedded terminal** — full PTY inside a split pane; run build commands, tests, and scripts inline
-- 🎨 **TOML themes** — ship-ready dark theme, easy to extend; hot-reload from `~/.config/lune-editor/themes/`
-- ⌨️ **Optional Vim mode** — full Normal/Insert state machine, per-workspace toggle, remappable
-- 💾 **Crash recovery + workspace restore** — sled-backed persistence saves open files, scroll offsets, and layout across sessions
+- Multi-buffer editing with rope-based text engine (ropey)
+- Optional Vim mode (Normal/Insert/Visual/V-Line)
+- Tree-sitter syntax highlighting for 20+ languages
+- Native Git panel — stage/unstage files and hunks, per-hunk diff view
+- Find & replace with live search highlighting
+- File operation dialogs — create, rename, delete with inline prompts
+- Language selector overlay (Ctrl+L) with fuzzy filter
+- Notification toasts with fade-out animations
+- Visual effects via tachyonfx (diff fade-in, panel transitions, focus glow)
+- Embedded AI session manager — Claude Code, Aider, Gemini, shell, etc.
+- Crash recovery + workspace persistence (sled)
+- TOML themes with live switching
 
 ---
 
@@ -133,7 +137,7 @@ Options:
 **Web / Python developer**
 ```bash
 lune ~/my-project --vim
-# File tree left · AI panel right · git panel on demand (F5)
+# File tree left · AI panel right · git panel on demand (Ctrl+G)
 ```
 
 **Open-source contributor**
@@ -203,15 +207,27 @@ Default bindings. All rebindable in `~/.config/lune-editor/keybindings.toml`.
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+P` | Command palette |
-| `Ctrl+S` | Save file |
+| `Ctrl+Q` | Quit |
+| `Ctrl+S` | Save |
 | `Ctrl+Shift+S` | Save all |
+| `Ctrl+O` | Open file picker |
 | `Ctrl+W` | Close tab |
 | `Ctrl+Tab` | Next tab |
-| `F5` | Toggle git panel |
-| `F12` | Toggle AI panel |
-| `Ctrl+`` ` | Toggle embedded terminal |
-| `Ctrl+T` | Cycle themes |
+| `Ctrl+B` | Toggle file tree |
+| `Ctrl+G` | Toggle git panel |
+| `Ctrl+P` | Command palette |
+| `Ctrl+L` | Language selector |
+| `Ctrl+F` | Find |
+| `Ctrl+H` | Find & replace |
+| `Ctrl+Z` | Undo |
+| `Ctrl+Y` | Redo |
+| `Ctrl+T` | Next theme |
+| `Ctrl+Shift+T` | Previous theme |
+| `Ctrl+1` | Show Editor tab |
+| `Ctrl+2` | Show Agents tab |
+| `Ctrl+Shift+A` | AI: ask about selection |
+| `Ctrl+Shift+R` | AI: refactor file |
+| `Ctrl+Shift+I` | AI: summarize git changes |
 
 <details>
 <summary><strong>Vim mode bindings</strong></summary>
@@ -241,9 +257,9 @@ Standard Vim motions apply in Normal mode (`h j k l`, `w b e`, `gg G`, `0 $`, et
 "ctrl+s"       = "save"
 "ctrl+shift+s" = "save_all"
 "ctrl+p"       = "command_palette"
-"f5"           = "toggle_git_panel"
-"f12"          = "toggle_ai_panel"
-"alt+1"        = "next_theme"
+"ctrl+g"       = "toggle_git_panel"
+"ctrl+b"       = "toggle_file_tree"
+"ctrl+t"       = "next_theme"
 ```
 
 Chord bindings (`ctrl+k ctrl+0`) are supported.
@@ -272,14 +288,15 @@ To add a custom AI client, implement the `AiClient` trait in `crates/lune-ai/src
 
 ## Git Panel
 
-Press `F5` to open the Git panel (powered by libgit2 — no `git` binary required).
+Press `Ctrl+G` to open the Git panel (powered by libgit2 — no `git` binary required).
 
 | Key | Action |
 |-----|--------|
-| `s` | Stage file/hunk |
-| `u` | Unstage file/hunk |
+| `s` | Stage file |
+| `u` | Unstage file |
 | `d` | Open diff view |
-| `Enter` | View file |
+
+In the diff view, `GitStageHunk`, `GitUnstageHunk`, and `GitDiscardHunk` actions are available via the `Ctrl+P` command palette.
 
 The diff view (`widgets/diff_view.rs`) renders inline unified diffs with syntax-highlighted context.
 
@@ -342,10 +359,8 @@ lune-editor/
 
 ## Documentation
 
-- Docs index: `docs/README.md`
-- Architecture/product spec: `docs/specs/sdd.md`
-- Testing guide: `docs/guides/testing.md`
-- Implementation plans: `docs/plans/sdd/00-index.md`
+- `docs/README.md` — Docs index
+- `docs/guides/testing.md` — Testing guide
 
 ---
 
