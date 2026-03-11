@@ -2,4 +2,4 @@
 source: crates/lune-ui/tests/snapshot_widgets.rs
 expression: buffer_to_text(&buf)
 ---
- NORMAL  src/main.rs       Ln 42, Col 15 | main             | UTF-8   | Rust
+ NORMAL  src...            Ln 42, Col 15 | main             | UTF-8   | Rust

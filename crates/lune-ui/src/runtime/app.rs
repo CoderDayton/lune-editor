@@ -775,7 +775,7 @@ impl AppState {
 
     /// Build the status line state from current app state.
     fn build_status_line(&self) -> StatusLineState {
-        let (file_path, dirty, cursor_line, cursor_col) = self
+        let (file_path, dirty, cursor_line, cursor_col, selection_chars, line_ending) = self
             .active_buf()
             .map(|b| {
                 let fp = b
@@ -783,7 +783,21 @@ impl AppState {
                     .as_ref()
                     .map_or_else(String::new, |p| self.status_path_display(p));
                 let pos = &b.cursor.primary.head;
-                (fp, b.is_dirty(), pos.line + 1, pos.col + 1)
+                let sel_chars = if b.cursor.primary.is_cursor() {
+                    0
+                } else {
+                    let (s, e) = b.cursor.primary.ordered();
+                    let start_idx = b.pos_to_char(s);
+                    let end_idx = b.pos_to_char(e);
+                    end_idx.saturating_sub(start_idx)
+                };
+                // Check first line for CRLF to avoid full-buffer allocation.
+                let le = if b.line(0).is_some_and(|l| l.contains("\r\n")) {
+                    "CRLF"
+                } else {
+                    "LF"
+                };
+                (fp, b.is_dirty(), pos.line + 1, pos.col + 1, sel_chars, le)
             })
             .unwrap_or_default();
 
@@ -798,6 +812,8 @@ impl AppState {
             ai_status: self.build_ai_status(),
             file_type: self.detect_file_type(),
             message: self.status_message.clone(),
+            selection_chars,
+            line_ending,
         }
     }
 
@@ -1684,6 +1700,9 @@ fn handle_input_dialog_key(key: &KeyEvent, state: &mut AppState) -> Control<AppE
                         |p| p.join(&input),
                     );
                     AppCommand::RenameConfirmed { from, to }
+                }
+                InputDialogAction::CommitMessage => {
+                    AppCommand::GitCommitConfirmed(input)
                 }
             };
             Control::Event(AppEvent::Command(cmd))
@@ -2660,7 +2679,7 @@ fn handle_mouse_drag(mouse: MouseEvent, state: &mut AppState) -> Control<AppEven
                 state.layout.set_bottom_panel_height_pct(bottom_pct);
             }
         }
-        DragBorder::Scrollbar => unreachable!(),
+        DragBorder::Scrollbar => return Control::Continue,
     }
 
     Control::Changed
@@ -3172,6 +3191,7 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             Control::Changed
         }
         AppCommand::GitDiscardConfirmed(path) => handle_git_discard_confirmed(path, state),
+        AppCommand::GitCommitConfirmed(msg) => handle_git_commit_confirmed(msg, state),
         AppCommand::GitStageHunk => handle_git_hunk_op(state, "stage"),
         AppCommand::GitUnstageHunk => handle_git_hunk_op(state, "unstage"),
         AppCommand::GitDiscardHunk => handle_git_hunk_op(state, "discard"),
@@ -3716,12 +3736,47 @@ fn handle_git_commit(state: &mut AppState) -> Control<AppEvent> {
         return Control::Changed;
     }
 
-    // TODO: open an input overlay for the commit message.
-    // For now, show a notification that the feature needs an input dialog.
-    state.overlay.notify(
-        "Commit message input not yet implemented. Use terminal for now.",
-        NotificationLevel::Info,
+    let staged_count = state
+        .git_panel
+        .status
+        .as_ref()
+        .map_or(0, |s| s.files.iter().filter(|f| f.staged).count());
+
+    let dialog = overlay::InputDialogState::new(
+        format!("Commit ({staged_count} staged)"),
+        "Enter commit message…",
+        overlay::InputDialogAction::CommitMessage,
     );
+    state.overlay.open_input_dialog(dialog);
+    state.focus.focus(PanelId::CommandPalette);
+    Control::Changed
+}
+
+/// Execute the confirmed git commit with the given message.
+fn handle_git_commit_confirmed(message: &str, state: &mut AppState) -> Control<AppEvent> {
+    let Some(git) = state.git_service.as_ref() else {
+        state
+            .overlay
+            .notify("No git repository", NotificationLevel::Error);
+        return Control::Changed;
+    };
+    match git.commit(message) {
+        Ok(oid) => {
+            let hex = oid.to_string();
+            let short = hex.get(..7).unwrap_or(&hex);
+            state.status_message = format!("Committed {short}");
+            state
+                .overlay
+                .notify(format!("[{short}] {message}"), NotificationLevel::Info);
+            state.refresh_git();
+        }
+        Err(e) => {
+            state.status_message = format!("Commit failed: {e}");
+            state
+                .overlay
+                .notify(format!("Commit failed: {e}"), NotificationLevel::Error);
+        }
+    }
     Control::Changed
 }
 

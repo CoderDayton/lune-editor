@@ -168,6 +168,8 @@ pub enum AppCommand {
     GitDiscard,
     /// Confirmed discard of a specific file's changes.
     GitDiscardConfirmed(PathBuf),
+    /// Confirmed commit with the given message.
+    GitCommitConfirmed(String),
     /// Refresh git status (manual trigger).
     GitRefresh,
     /// Stage the current hunk in the diff view.

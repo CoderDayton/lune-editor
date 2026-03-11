@@ -14,8 +14,10 @@ use crate::vim::VimMode;
 ///
 /// This prevents extremely long absolute paths from dominating the full line.
 const MAX_STATUS_PATH_CHARS: usize = 120;
-/// Fixed width for the cursor segment (`Ln X, Col Y`).
-const CURSOR_SEGMENT_WIDTH: usize = 16;
+/// Fixed width for the cursor segment (`Ln X, Col Y` + optional selection).
+const CURSOR_SEGMENT_WIDTH: usize = 24;
+/// Fixed width for the line ending segment.
+const LINE_ENDING_SEGMENT_WIDTH: usize = 4;
 /// Fixed width for the git branch segment.
 const BRANCH_SEGMENT_WIDTH: usize = 16;
 /// Fixed width for the encoding segment.
@@ -53,6 +55,10 @@ pub struct StatusLineState {
     pub file_type: String,
     /// Transient status message (takes priority over file path).
     pub message: String,
+    /// Number of characters in the active selection (0 = no selection).
+    pub selection_chars: usize,
+    /// Line ending style (e.g., "LF", "CRLF").
+    pub line_ending: &'static str,
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────
@@ -89,11 +95,18 @@ pub fn render_status_bar(area: Rect, buf: &mut Buffer, status: &StatusLineState,
     // Build right-side segments using fixed widths so core components keep
     // stable positions regardless of left-path length.
     let cursor_text = if status.cursor_line > 0 {
-        format!("Ln {}, Col {}", status.cursor_line, status.cursor_col)
+        if status.selection_chars > 0 {
+            format!(
+                "Ln {}, Col {} ({} sel)",
+                status.cursor_line, status.cursor_col, status.selection_chars
+            )
+        } else {
+            format!("Ln {}, Col {}", status.cursor_line, status.cursor_col)
+        }
     } else {
         String::new()
     };
-    let mut right_segments = Vec::with_capacity(5);
+    let mut right_segments = Vec::with_capacity(6);
     if !cursor_text.is_empty() {
         right_segments.push(fixed_segment(&cursor_text, CURSOR_SEGMENT_WIDTH, true));
     }
@@ -108,6 +121,13 @@ pub fn render_status_bar(area: Rect, buf: &mut Buffer, status: &StatusLineState,
         right_segments.push(fixed_segment(
             status.encoding,
             ENCODING_SEGMENT_WIDTH,
+            false,
+        ));
+    }
+    if !status.line_ending.is_empty() {
+        right_segments.push(fixed_segment(
+            status.line_ending,
+            LINE_ENDING_SEGMENT_WIDTH,
             false,
         ));
     }

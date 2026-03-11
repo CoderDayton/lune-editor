@@ -600,6 +600,8 @@ pub enum InputDialogAction {
     CreateDir { parent: PathBuf },
     /// Rename an entry (from is the current path).
     Rename { from: PathBuf },
+    /// Commit staged changes with the entered message.
+    CommitMessage,
 }
 
 /// State for the inline input dialog overlay.
@@ -701,9 +703,12 @@ impl InputDialogState {
     pub fn validate(&self) -> Option<&'static str> {
         let trimmed = self.input.trim();
         if trimmed.is_empty() {
-            return Some("Name cannot be empty");
+            return Some("Input cannot be empty");
         }
-        if trimmed.contains('/') || trimmed.contains('\\') {
+        // Path separator check only applies to file/dir operations.
+        if !matches!(self.action, InputDialogAction::CommitMessage)
+            && (trimmed.contains('/') || trimmed.contains('\\'))
+        {
             return Some("Name cannot contain path separators");
         }
         None

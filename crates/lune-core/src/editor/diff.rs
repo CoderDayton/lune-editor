@@ -343,7 +343,7 @@ fn group_changes(changes: &[(usize, usize, ChangeTag)]) -> Vec<RawGroup> {
                     has_ins = true;
                     new_end = changes[i].1 + 1;
                 }
-                ChangeTag::Equal => unreachable!(),
+                ChangeTag::Equal => continue,
             }
             i += 1;
         }

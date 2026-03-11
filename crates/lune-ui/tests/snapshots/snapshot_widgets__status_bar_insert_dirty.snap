@@ -2,4 +2,4 @@
 source: crates/lune-ui/tests/snapshot_widgets.rs
 expression: buffer_to_text(&buf)
 ---
- INSERT     Ln 100, Col 1 | feature/tests    | UTF-8   | Rust     | AI: Conne...
+ INSERT             Ln 100, Col 1 | feature/tests    | UTF-8   | Rust     | AI:

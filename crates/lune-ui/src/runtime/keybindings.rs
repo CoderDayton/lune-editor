@@ -105,6 +105,7 @@ impl Keymap {
             // Command palette
             (Char('p'), CTRL, AppCommand::OpenCommandPalette),
             // Language picker
+            (Char('n'), CTRL, AppCommand::NewFile),
             (Char('l'), CTRL, AppCommand::OpenLanguagePicker),
             // Theme switching
             (Char('t'), CTRL, AppCommand::NextTheme),
