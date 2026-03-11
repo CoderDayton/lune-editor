@@ -329,6 +329,14 @@ impl AppState {
             self.vim.enter_insert();
         }
 
+        // File tree — apply show_hidden from settings.
+        if let Some(ref mut ws) = self.workspace {
+            ws.set_show_hidden(settings.file_tree.show_hidden);
+            if let Err(e) = self.file_tree.refresh(ws) {
+                log::error!("Failed to refresh file tree after settings: {e}");
+            }
+        }
+
         // Theme — try to switch by name from the settings.
         if self.theme_registry.switch_by_name(&settings.theme) {
             self.apply_active_theme();
