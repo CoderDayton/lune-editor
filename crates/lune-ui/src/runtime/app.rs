@@ -2837,8 +2837,8 @@ fn handle_cut(state: &mut AppState) -> Control<AppEvent> {
         state
             .overlay
             .notify(format!("Clipboard error: {e}"), NotificationLevel::Error);
-        return Control::Changed;
     }
+    // Always delete the selection, even if clipboard failed.
     if let Some(buf) = state.active_buf_mut() {
         let (s, e) = buf.cursor.primary.ordered();
         buf.delete(s, e);
