@@ -59,6 +59,8 @@ pub struct StatusLineState {
     pub selection_chars: usize,
     /// Line ending style (e.g., "LF", "CRLF").
     pub line_ending: &'static str,
+    /// Vim command-line buffer (`Some(text)` when in Command mode).
+    pub vim_cmdline: Option<String>,
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────
@@ -141,6 +143,12 @@ pub fn render_status_bar(area: Rect, buf: &mut Buffer, status: &StatusLineState,
     if !status.ai_status.trim().is_empty() {
         right_segments.push(fixed_segment(&status.ai_status, AI_SEGMENT_WIDTH, false));
     }
+    // In command-line mode, replace left content with the cmdline and hide right segments.
+    if let Some(cmdline) = &status.vim_cmdline {
+        left_text = format!(":{cmdline}");
+        right_segments.clear();
+    }
+
     let right_text = right_segments.join(" | ");
 
     // Calculate spacing and clamp left text to available width.

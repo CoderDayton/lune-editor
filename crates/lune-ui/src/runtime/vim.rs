@@ -76,6 +76,8 @@ pub struct VimState {
     pub last_command: Option<VimCommand>,
     /// Active register (default `"`).
     pub register: char,
+    /// Command-line buffer (text typed after `:`).
+    pub cmdline: String,
 }
 
 impl VimState {
@@ -88,6 +90,7 @@ impl VimState {
             pending_op: None,
             last_command: None,
             register: '"',
+            cmdline: String::new(),
         }
     }
 
@@ -143,12 +146,40 @@ impl VimState {
         self.reset_pending();
     }
 
+    /// Enter command-line mode, clearing the command buffer.
+    pub fn enter_command(&mut self) {
+        self.mode = VimMode::Command;
+        self.cmdline.clear();
+        self.reset_pending();
+    }
+
+    /// Append a character to the command-line buffer.
+    pub fn cmdline_push(&mut self, ch: char) {
+        self.cmdline.push(ch);
+    }
+
+    /// Remove the last character from the command-line buffer.
+    pub fn cmdline_pop(&mut self) {
+        self.cmdline.pop();
+    }
+
+    /// Clear the command-line buffer and return to normal mode.
+    pub fn cmdline_clear(&mut self) {
+        self.cmdline.clear();
+    }
+
     /// Process a normal-mode key press. Returns `VimAction` describing
     /// what the editor should do.
     pub fn handle_normal(&mut self, ch: char, buf: &TextBuffer) -> VimAction {
         // Check if it's a digit for the count prefix.
         if self.feed_digit(ch) {
             return VimAction::None;
+        }
+
+        // `:` enters command-line mode.
+        if ch == ':' {
+            self.enter_command();
+            return VimAction::ModeChanged(VimMode::Command);
         }
 
         let count = self.effective_count();

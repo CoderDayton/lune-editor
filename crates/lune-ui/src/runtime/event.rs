@@ -144,6 +144,8 @@ pub enum AppCommand {
     Replace,
     /// Open the language selector picker overlay.
     OpenLanguagePicker,
+    /// Open the theme picker overlay.
+    OpenThemePicker,
 
     // ── Vim mode transitions ──────────────────────────────────────
     /// Enter vim normal mode.
@@ -152,6 +154,8 @@ pub enum AppCommand {
     EnterInsertMode,
     /// Enter vim visual mode.
     EnterVisualMode,
+    /// Toggle vim keybinding mode on/off.
+    ToggleVimMode,
 
     // ── Language ────────────────────────────────────────────────────
     /// Override the active buffer's language (changes highlighter).

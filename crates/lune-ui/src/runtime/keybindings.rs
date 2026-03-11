@@ -73,6 +73,9 @@ impl Keymap {
         const CTRL_SHIFT: KeyModifiers = KeyModifiers::from_bits_truncate(
             KeyModifiers::CONTROL.bits() | KeyModifiers::SHIFT.bits(),
         );
+        const CTRL_ALT: KeyModifiers = KeyModifiers::from_bits_truncate(
+            KeyModifiers::CONTROL.bits() | KeyModifiers::ALT.bits(),
+        );
 
         let bindings: &[(KeyCode, KeyModifiers, AppCommand)] = &[
             // Application lifecycle
@@ -107,9 +110,10 @@ impl Keymap {
             // Language picker
             (Char('n'), CTRL, AppCommand::NewFile),
             (Char('l'), CTRL, AppCommand::OpenLanguagePicker),
-            // Theme switching
-            (Char('t'), CTRL, AppCommand::NextTheme),
-            (Char('T'), CTRL_SHIFT, AppCommand::PrevTheme),
+            // Theme
+            (Char('t'), CTRL, AppCommand::OpenThemePicker),
+            // Vim mode
+            (Char('v'), CTRL_ALT, AppCommand::ToggleVimMode),
         ];
 
         let mut km = Self::new();
@@ -346,6 +350,7 @@ pub fn parse_command(s: &str) -> Option<AppCommand> {
         "enter_normal_mode" => Some(AppCommand::EnterNormalMode),
         "enter_insert_mode" => Some(AppCommand::EnterInsertMode),
         "enter_visual_mode" => Some(AppCommand::EnterVisualMode),
+        "toggle_vim_mode" => Some(AppCommand::ToggleVimMode),
         // Git
         "git_stage" => Some(AppCommand::GitStage),
         "git_unstage" => Some(AppCommand::GitUnstage),
@@ -363,6 +368,7 @@ pub fn parse_command(s: &str) -> Option<AppCommand> {
         // Theme
         "next_theme" => Some(AppCommand::NextTheme),
         "prev_theme" => Some(AppCommand::PrevTheme),
+        "open_theme_picker" => Some(AppCommand::OpenThemePicker),
         // Settings
         "open_settings" => Some(AppCommand::OpenSettings),
         "open_keybindings" => Some(AppCommand::OpenKeybindings),

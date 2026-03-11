@@ -36,7 +36,7 @@ use arboard::Clipboard;
 use crate::highlight;
 use crate::highlight::theme::SyntaxTheme;
 use crate::theme::Theme;
-use crate::theme_config::ThemeRegistry;
+use crate::theme_config::{ThemeId, ThemeRegistry};
 
 use crate::effects::LuneEffects;
 use crate::event::{AppCommand, AppEvent};
@@ -814,6 +814,8 @@ impl AppState {
             message: self.status_message.clone(),
             selection_chars,
             line_ending,
+            vim_cmdline: (self.vim.mode == VimMode::Command)
+                .then(|| self.vim.cmdline.clone()),
         }
     }
 
@@ -1432,6 +1434,7 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         }
         // Escape always enters Normal mode (blocks typing regardless of vim_enabled).
         state.vim.enter_normal();
+        state.vim.cmdline_clear();
         state.status_message.clear();
         return Control::Changed;
     }
@@ -1478,7 +1481,7 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         VimMode::Visual | VimMode::VisualLine if state.vim_enabled => {
             handle_visual_mode(key, state)
         }
-        VimMode::Command if state.vim_enabled => Control::Continue, // TODO: command-line mode
+        VimMode::Command if state.vim_enabled => handle_vim_command_key(key, state),
         // vim disabled but in Visual/Command — snap back to Insert.
         _ => {
             state.vim.enter_insert();
@@ -1510,6 +1513,7 @@ fn handle_overlay_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
         Some(overlay::OverlayKind::AiClientPicker) => handle_ai_client_picker_key(key, state),
         Some(overlay::OverlayKind::InputDialog) => handle_input_dialog_key(key, state),
         Some(overlay::OverlayKind::LanguagePicker) => handle_language_picker_key(key, state),
+        Some(overlay::OverlayKind::ThemePicker) => handle_theme_picker_key(key, state),
         None => Control::Continue,
     }
 }
@@ -1663,6 +1667,57 @@ fn handle_language_picker_key(key: &KeyEvent, state: &mut AppState) -> Control<A
             Control::Changed
         }
         _ => Control::Continue,
+    }
+}
+
+/// Handle key events for the theme picker overlay.
+///
+/// Arrow keys preview the theme live; Enter confirms; Escape reverts to the
+/// theme that was active when the picker opened.
+fn handle_theme_picker_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    match key.code {
+        KeyCode::Esc => {
+            // Revert to original theme before closing.
+            let original = state.overlay.theme_picker.original_idx;
+            state.theme_registry.switch(ThemeId(original));
+            state.apply_active_theme();
+            close_overlay(state);
+            Control::Changed
+        }
+        KeyCode::Enter => {
+            // Confirm — theme is already applied; just close.
+            close_overlay(state);
+            Control::Changed
+        }
+        KeyCode::Up => {
+            state.overlay.theme_picker.select_prev();
+            apply_theme_preview(state);
+            Control::Changed
+        }
+        KeyCode::Down => {
+            state.overlay.theme_picker.select_next();
+            apply_theme_preview(state);
+            Control::Changed
+        }
+        KeyCode::Backspace => {
+            state.overlay.theme_picker.backspace();
+            apply_theme_preview(state);
+            Control::Changed
+        }
+        KeyCode::Char(c) => {
+            state.overlay.theme_picker.type_char(c);
+            apply_theme_preview(state);
+            Control::Changed
+        }
+        _ => Control::Continue,
+    }
+}
+
+/// Switch to the currently highlighted theme in the picker (live preview).
+fn apply_theme_preview(state: &mut AppState) {
+    if let Some(idx) = state.overlay.theme_picker.selected_idx() {
+        state.theme_registry.switch(ThemeId(idx));
+        state.apply_active_theme();
     }
 }
 
@@ -2344,6 +2399,75 @@ fn handle_visual_mode(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
         apply_vim_action_visual(&action, state)
     } else {
         Control::Continue
+    }
+}
+
+/// Handle key events in vim command-line mode (`:` commands).
+fn handle_vim_command_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    match key.code {
+        KeyCode::Esc => {
+            state.vim.cmdline_clear();
+            state.vim.enter_normal();
+            Control::Changed
+        }
+        KeyCode::Enter => {
+            let cmd = state.vim.cmdline.clone();
+            state.vim.cmdline_clear();
+            state.vim.enter_normal();
+            execute_vim_command(&cmd, state)
+        }
+        KeyCode::Backspace => {
+            if state.vim.cmdline.is_empty() {
+                state.vim.enter_normal();
+            } else {
+                state.vim.cmdline_pop();
+            }
+            Control::Changed
+        }
+        KeyCode::Char(ch) => {
+            state.vim.cmdline_push(ch);
+            Control::Changed
+        }
+        _ => Control::Continue,
+    }
+}
+
+/// Execute a vim ex-command string (text after `:`).
+fn execute_vim_command(cmd: &str, state: &mut AppState) -> Control<AppEvent> {
+    let trimmed = cmd.trim();
+    match trimmed {
+        "w" | "write" => Control::Event(AppEvent::Command(AppCommand::Save)),
+        "wa" | "wall" => Control::Event(AppEvent::Command(AppCommand::SaveAll)),
+        "q" | "quit" | "q!" => Control::Event(AppEvent::Command(AppCommand::CloseTab)),
+        "qa" | "qall" | "qa!" => Control::Event(AppEvent::Command(AppCommand::Quit)),
+        "wq" | "x" => {
+            let _ = handle_save(state);
+            Control::Event(AppEvent::Command(AppCommand::CloseTab))
+        }
+        "wqa" | "xall" => {
+            let _ = handle_save_all(state);
+            Control::Event(AppEvent::Command(AppCommand::Quit))
+        }
+        _ if trimmed.starts_with("e ") || trimmed.starts_with("edit ") => {
+            let path_str = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim();
+            if path_str.is_empty() {
+                state.overlay.notify("Usage: :e <path>", NotificationLevel::Warning);
+                Control::Changed
+            } else {
+                Control::Event(AppEvent::Command(AppCommand::OpenFile(
+                    std::path::PathBuf::from(path_str),
+                )))
+            }
+        }
+        _ => {
+            if !trimmed.is_empty() {
+                state.overlay.notify(
+                    format!("Unknown command: :{trimmed}"),
+                    NotificationLevel::Warning,
+                );
+            }
+            Control::Changed
+        }
     }
 }
 
@@ -3130,7 +3254,8 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
         | AppCommand::FocusNextPane
         | AppCommand::OpenCommandPalette
         | AppCommand::OpenFilePicker
-        | AppCommand::OpenLanguagePicker => handle_panel_command(cmd, state),
+        | AppCommand::OpenLanguagePicker
+        | AppCommand::OpenThemePicker => handle_panel_command(cmd, state),
         AppCommand::Undo => {
             apply_buf_edit(state, TextBuffer::undo);
             Control::Changed
@@ -3149,6 +3274,21 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
         }
         AppCommand::EnterVisualMode => {
             state.vim.enter_visual();
+            Control::Changed
+        }
+        AppCommand::ToggleVimMode => {
+            state.vim_enabled = !state.vim_enabled;
+            // Keep cached settings in sync so a hot-reload doesn't immediately revert.
+            if let Some(s) = state.cached_settings.as_mut() {
+                s.editor.vim_mode = state.vim_enabled;
+            }
+            if state.vim_enabled {
+                state.vim.enter_normal();
+                state.overlay.notify("Vim mode enabled", NotificationLevel::Info);
+            } else {
+                state.vim.enter_insert();
+                state.overlay.notify("Vim mode disabled", NotificationLevel::Info);
+            }
             Control::Changed
         }
         // File tree & workspace commands.
@@ -3324,6 +3464,18 @@ fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEv
         AppCommand::OpenLanguagePicker => {
             let langs = LanguageRegistry::new().known_languages();
             state.overlay.open_language_picker(langs);
+            state.focus.focus(PanelId::CommandPalette);
+            Control::Changed
+        }
+        AppCommand::OpenThemePicker => {
+            let themes = state
+                .theme_registry
+                .list()
+                .into_iter()
+                .map(|(id, name)| (id.0, name.to_owned()))
+                .collect();
+            let current_idx = state.theme_registry.active_id().0;
+            state.overlay.open_theme_picker(themes, current_idx);
             state.focus.focus(PanelId::CommandPalette);
             Control::Changed
         }
