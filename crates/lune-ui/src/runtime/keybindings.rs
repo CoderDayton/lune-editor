@@ -14,7 +14,7 @@
 //! "g d" = "go_to_definition"
 //! ```
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::Path;
 
 use crate::primitives::{KeyCode, KeyEvent, KeyModifiers};
@@ -53,7 +53,7 @@ impl KeyCombo {
 /// Maps key combos to application commands.
 #[derive(Debug)]
 pub struct Keymap {
-    bindings: HashMap<KeyCombo, AppCommand>,
+    bindings: FxHashMap<KeyCombo, AppCommand>,
 }
 
 impl Keymap {
@@ -61,7 +61,7 @@ impl Keymap {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            bindings: HashMap::new(),
+            bindings: FxHashMap::default(),
         }
     }
 
@@ -139,7 +139,7 @@ impl Keymap {
     /// Merge custom overrides into this keymap.
     ///
     /// Overrides replace existing bindings for the same key combo.
-    pub fn merge(&mut self, overrides: &HashMap<KeyCombo, AppCommand>) {
+    pub fn merge(&mut self, overrides: &FxHashMap<KeyCombo, AppCommand>) {
         for (combo, cmd) in overrides {
             self.bindings.insert(*combo, cmd.clone());
         }
@@ -172,7 +172,7 @@ impl Default for Keymap {
 #[serde(default)]
 pub struct KeymapConfig {
     /// Normal mode keybindings (non-vim, or vim-agnostic).
-    pub normal: HashMap<String, String>,
+    pub normal: FxHashMap<String, String>,
     // Future: pub vim_normal, pub vim_insert, pub vim_visual, etc.
 }
 
@@ -197,8 +197,8 @@ impl KeymapConfig {
     /// Entries with unparseable key combos or unknown commands are
     /// silently skipped (logged at warn level).
     #[must_use]
-    pub fn compile_normal(&self) -> HashMap<KeyCombo, AppCommand> {
-        let mut result = HashMap::new();
+    pub fn compile_normal(&self) -> FxHashMap<KeyCombo, AppCommand> {
+        let mut result = FxHashMap::default();
         for (key_str, cmd_str) in &self.normal {
             let Some(combo) = parse_key_combo(key_str) else {
                 log::warn!("keybindings: unknown key combo: {key_str:?}");
@@ -638,7 +638,7 @@ mod tests {
         assert_eq!(km.lookup(&event), Some(&AppCommand::Save));
 
         // Override ctrl+s to quit.
-        let mut overrides = HashMap::new();
+        let mut overrides = FxHashMap::default();
         overrides.insert(
             KeyCombo::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
             AppCommand::Quit,

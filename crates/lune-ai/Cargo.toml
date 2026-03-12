@@ -13,6 +13,7 @@ vt100.workspace = true
 uuid.workspace = true
 crossbeam.workspace = true
 anyhow.workspace = true
+rustc-hash.workspace = true
 thiserror.workspace = true
 log.workspace = true
 

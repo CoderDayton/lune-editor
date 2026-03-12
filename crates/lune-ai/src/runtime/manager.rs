@@ -6,13 +6,15 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use rustc_hash::FxHashMap;
+
 use crate::pty::TermSize;
 use crate::session::{AiClientKind, AiSession, AiSessionId, SessionState};
 
 /// Manages multiple AI sessions.
 pub struct AiManager {
     /// All sessions, keyed by ID.
-    sessions: HashMap<AiSessionId, AiSession>,
+    sessions: FxHashMap<AiSessionId, AiSession>,
     /// The currently active (focused) session ID.
     active: Option<AiSessionId>,
 }
@@ -22,7 +24,7 @@ impl AiManager {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            sessions: HashMap::new(),
+            sessions: FxHashMap::default(),
             active: None,
         }
     }

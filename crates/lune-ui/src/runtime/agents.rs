@@ -4,7 +4,7 @@
 //! [`AiSessionId`]s in the AI manager. Handles pane lifecycle (split, close,
 //! focus cycling) and the leader-key state machine.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use lune_ai::AiSessionId;
 
@@ -52,7 +52,7 @@ pub struct AgentsTabState {
     /// The tiling layout tree. `None` when no panes exist yet.
     pub layout: Option<TileNode>,
     /// Pane metadata keyed by pane ID.
-    pub panes: HashMap<PaneId, AgentPane>,
+    pub panes: FxHashMap<PaneId, AgentPane>,
     /// Currently focused pane.
     pub focused: Option<PaneId>,
     /// Counter for generating unique pane IDs.
@@ -77,7 +77,7 @@ impl AgentsTabState {
     pub fn new() -> Self {
         Self {
             layout: None,
-            panes: HashMap::new(),
+            panes: FxHashMap::default(),
             focused: None,
             next_id: 0,
             leader: LeaderState::Inactive,

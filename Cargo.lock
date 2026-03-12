@@ -1338,6 +1338,7 @@ dependencies = [
  "log",
  "lune-core",
  "portable-pty",
+ "rustc-hash",
  "tempfile",
  "thiserror 2.0.18",
  "uuid",
