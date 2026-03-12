@@ -33,8 +33,8 @@ pub enum TileNode {
         direction: SplitDirection,
         /// Fraction of space given to `first` child (clamped to `0.1..=0.9`).
         ratio: f64,
-        first: Box<TileNode>,
-        second: Box<TileNode>,
+        first: Box<Self>,
+        second: Box<Self>,
     },
 }
 
@@ -50,7 +50,7 @@ impl TileNode {
 
     /// Single pane.
     #[must_use]
-    pub fn leaf(id: PaneId) -> Self {
+    pub const fn leaf(id: PaneId) -> Self {
         Self::Leaf { pane_id: id }
     }
 
@@ -168,7 +168,7 @@ impl TileNode {
                 first.split_pane(target_id, new_id, direction)
                     || second.split_pane(target_id, new_id, direction)
             }
-            _ => false,
+            Self::Leaf { .. } => false,
         }
     }
 
@@ -207,7 +207,7 @@ impl TileNode {
             Self::Split { first, second, .. } => {
                 first.remove_pane_inner(target_id) || second.remove_pane_inner(target_id)
             }
-            _ => false,
+            Self::Leaf { .. } => false,
         }
     }
 
@@ -278,7 +278,7 @@ impl TileNode {
                 1 => second.node_at_path_mut(&path[1..]),
                 _ => None,
             },
-            _ => None,
+            Self::Leaf { .. } => None,
         }
     }
 
@@ -307,7 +307,7 @@ pub struct Border {
 impl Border {
     /// Check if `(col, row)` is within `tolerance` cells of this border.
     #[must_use]
-    pub fn hit_test(&self, col: u16, row: u16, tolerance: u16) -> bool {
+    pub const fn hit_test(&self, col: u16, row: u16, tolerance: u16) -> bool {
         match self.direction {
             SplitDirection::Vertical => {
                 // Border is a vertical line: check column proximity.
@@ -336,7 +336,7 @@ fn subdivide(area: Rect, direction: SplitDirection, ratio: f64) -> (Rect, Rect) 
             // 1-cell vertical border between left and right.
             let usable = area.width.saturating_sub(1);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let left_w = ((usable as f64) * ratio).round() as u16;
+            let left_w = (f64::from(usable) * ratio).round() as u16;
             let right_w = usable.saturating_sub(left_w);
             let left = Rect::new(area.x, area.y, left_w, area.height);
             let right = Rect::new(area.x + left_w + 1, area.y, right_w, area.height);
@@ -346,7 +346,7 @@ fn subdivide(area: Rect, direction: SplitDirection, ratio: f64) -> (Rect, Rect) 
             // 1-cell horizontal border between top and bottom.
             let usable = area.height.saturating_sub(1);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let top_h = ((usable as f64) * ratio).round() as u16;
+            let top_h = (f64::from(usable) * ratio).round() as u16;
             let bottom_h = usable.saturating_sub(top_h);
             let top = Rect::new(area.x, area.y, area.width, top_h);
             let bottom = Rect::new(area.x, area.y + top_h + 1, area.width, bottom_h);
@@ -361,7 +361,7 @@ fn border_rect(area: Rect, direction: SplitDirection, ratio: f64) -> Border {
         SplitDirection::Vertical => {
             let usable = area.width.saturating_sub(1);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let left_w = ((usable as f64) * ratio).round() as u16;
+            let left_w = (f64::from(usable) * ratio).round() as u16;
             Border {
                 rect: Rect::new(area.x + left_w, area.y, 1, area.height),
                 direction,
@@ -370,7 +370,7 @@ fn border_rect(area: Rect, direction: SplitDirection, ratio: f64) -> Border {
         SplitDirection::Horizontal => {
             let usable = area.height.saturating_sub(1);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let top_h = ((usable as f64) * ratio).round() as u16;
+            let top_h = (f64::from(usable) * ratio).round() as u16;
             Border {
                 rect: Rect::new(area.x, area.y + top_h, area.width, 1),
                 direction,
@@ -390,7 +390,7 @@ pub struct Presets;
 impl Presets {
     /// One full-screen pane.
     #[must_use]
-    pub fn single(id: PaneId) -> TileNode {
+    pub const fn single(id: PaneId) -> TileNode {
         TileNode::leaf(id)
     }
 

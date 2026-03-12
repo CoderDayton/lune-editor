@@ -87,7 +87,7 @@ impl AgentsTabState {
     }
 
     /// Allocate a new unique [`PaneId`].
-    pub fn alloc_pane_id(&mut self) -> PaneId {
+    pub const fn alloc_pane_id(&mut self) -> PaneId {
         let id = PaneId(self.next_id);
         self.next_id += 1;
         id
@@ -168,9 +168,10 @@ impl AgentsTabState {
         let focused = self.focused?;
         let ids = layout.pane_ids();
         let pos = ids.iter().position(|id| *id == focused)?;
-        let len = ids.len() as isize;
-        let new_pos = ((pos as isize + delta) % len + len) % len;
-        Some(ids[new_pos as usize])
+        let len = isize::try_from(ids.len()).ok()?;
+        let pos_i = isize::try_from(pos).ok()?;
+        let new_pos = usize::try_from((pos_i + delta).rem_euclid(len)).ok()?;
+        Some(ids[new_pos])
     }
 
     /// Focus the pane at a given screen position (for mouse click).
@@ -214,7 +215,7 @@ impl AgentsTabState {
         let existing_ids: Vec<PaneId> = self
             .layout
             .as_ref()
-            .map_or_else(Vec::new, |l| l.pane_ids());
+            .map_or_else(Vec::new, super::tiling::TileNode::pane_ids);
 
         // Allocate IDs: reuse existing, allocate new ones as needed.
         let mut ids: Vec<PaneId> = Vec::with_capacity(needed);
@@ -261,7 +262,7 @@ impl AgentsTabState {
 
     /// Toggle zoom on the focused pane. When zoomed, the focused pane
     /// renders full-screen; the layout tree is preserved for unzoom.
-    pub fn toggle_zoom(&mut self) {
+    pub const fn toggle_zoom(&mut self) {
         if self.focused.is_some() {
             self.zoomed = !self.zoomed;
         }
@@ -269,7 +270,7 @@ impl AgentsTabState {
 
     /// Whether the tab has any panes at all.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.layout.is_none()
     }
 

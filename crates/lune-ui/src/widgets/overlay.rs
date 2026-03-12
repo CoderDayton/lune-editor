@@ -737,12 +737,12 @@ pub struct LayoutPickerState {
 impl LayoutPickerState {
     /// Create a new layout picker with the first preset selected.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { selected: 0 }
     }
 
     /// Move selection down (wraps).
-    pub fn select_next(&mut self) {
+    pub const fn select_next(&mut self) {
         use crate::runtime::tiling::PRESET_LIST;
         if !PRESET_LIST.is_empty() {
             self.selected = (self.selected + 1) % PRESET_LIST.len();
@@ -1517,8 +1517,6 @@ fn render_theme_picker(area: Rect, buf: &mut Buffer, state: &ThemePickerState, t
     }
 }
 
-/// Render the inline input dialog popup.
-#[allow(clippy::cast_possible_truncation)]
 /// Render the layout picker popup for agent pane tiling presets.
 #[allow(clippy::cast_possible_truncation)]
 fn render_layout_picker(area: Rect, buf: &mut Buffer, state: &LayoutPickerState, theme: &Theme) {
@@ -1603,7 +1601,7 @@ fn render_input_dialog(area: Rect, buf: &mut Buffer, state: &InputDialogState, t
 
     // Draw block cursor.
     {
-        let cursor_x = inner.x + 1 + state.input[..state.cursor_pos].chars().count() as u16;
+        let cursor_x = inner.x + 1 + u16::try_from(state.input[..state.cursor_pos].chars().count()).unwrap_or(u16::MAX);
         if cursor_x < inner.x + inner.width.saturating_sub(1) {
             let cursor_char = state.input[state.cursor_pos..]
                 .chars()

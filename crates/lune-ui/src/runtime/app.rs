@@ -1170,10 +1170,7 @@ fn render_agents_tab(area: Rect, buf: &mut Buffer, state: &mut AppState) {
         return;
     }
 
-    let layout = match state.agents_tab.layout.as_ref() {
-        Some(l) => l,
-        None => return,
-    };
+    let Some(layout) = state.agents_tab.layout.as_ref() else { return; };
 
     // If zoomed, render only the focused pane full-screen.
     if state.agents_tab.zoomed {
@@ -1801,10 +1798,7 @@ fn handle_agents_mouse_down(mouse: MouseEvent, state: &mut AppState) -> Control<
     let col = mouse.column;
     let row = mouse.row;
 
-    let layout = match state.agents_tab.layout.as_ref() {
-        Some(l) => l,
-        None => return Control::Continue,
-    };
+    let Some(layout) = state.agents_tab.layout.as_ref() else { return Control::Continue; };
 
     // Compute the content area (same as render_agents_tab).
     // We don't store it, so approximate: full terminal minus status bar (1 row) and root tabs (1 row).
@@ -1829,20 +1823,11 @@ fn handle_agents_mouse_down(mouse: MouseEvent, state: &mut AppState) -> Control<
 /// Handle mouse drag in the Agents tab — resize a split border.
 #[allow(clippy::cast_possible_truncation)]
 fn handle_agents_mouse_drag(mouse: MouseEvent, state: &mut AppState) -> Control<AppEvent> {
-    let drag = match state.agents_tab.drag.as_ref() {
-        Some(d) => d.clone(),
-        None => return Control::Continue,
-    };
+    let Some(drag) = state.agents_tab.drag.clone() else { return Control::Continue; };
 
-    let layout = match state.agents_tab.layout.as_mut() {
-        Some(l) => l,
-        None => return Control::Continue,
-    };
+    let Some(layout) = state.agents_tab.layout.as_mut() else { return Control::Continue; };
 
-    let node = match layout.node_at_path_mut(&drag.split_path) {
-        Some(n) => n,
-        None => return Control::Continue,
-    };
+    let Some(node) = layout.node_at_path_mut(&drag.split_path) else { return Control::Continue; };
 
     if let super::tiling::TileNode::Split {
         ratio, direction, ..
@@ -1854,10 +1839,10 @@ fn handle_agents_mouse_drag(mouse: MouseEvent, state: &mut AppState) -> Control<
 
         let new_ratio = match direction {
             super::tiling::SplitDirection::Vertical => {
-                (mouse.column as f64) / (content_w as f64)
+                f64::from(mouse.column) / f64::from(content_w)
             }
             super::tiling::SplitDirection::Horizontal => {
-                (mouse.row.saturating_sub(1) as f64) / (term_height as f64)
+                f64::from(mouse.row.saturating_sub(1)) / f64::from(term_height)
             }
         };
         *ratio = new_ratio.clamp(0.1, 0.9);
@@ -2821,7 +2806,7 @@ fn execute_vim_command(cmd: &str, state: &mut AppState) -> Control<AppEvent> {
             Control::Event(AppEvent::Command(AppCommand::Quit))
         }
         _ if trimmed.starts_with("e ") || trimmed.starts_with("edit ") => {
-            let path_str = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim();
+            let path_str = trimmed.split_once(' ').map_or("", |x| x.1).trim();
             if path_str.is_empty() {
                 state.overlay.notify("Usage: :e <path>", NotificationLevel::Warning);
                 Control::Changed
@@ -4523,7 +4508,7 @@ pub struct PollAiSessions {
 impl PollAiSessions {
     /// Create a new AI session poller.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             has_changes: false,
             receivers: Vec::new(),
