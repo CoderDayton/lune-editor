@@ -201,6 +201,22 @@ pub enum AppCommand {
     /// Switch to the previous AI session tab.
     AiPrevSession,
 
+    // ── Agents tab commands ────────────────────────────────────────
+    /// Open the layout picker in the Agents tab.
+    AgentApplyLayout,
+    /// Split the focused agent pane vertically.
+    AgentSplitVertical,
+    /// Split the focused agent pane horizontally.
+    AgentSplitHorizontal,
+    /// Close the focused agent pane.
+    AgentClosePane,
+    /// Focus the next agent pane.
+    AgentFocusNext,
+    /// Focus the previous agent pane.
+    AgentFocusPrev,
+    /// Toggle zoom on the focused agent pane.
+    AgentToggleZoom,
+
     // ── Theme commands ──────────────────────────────────────────────
     /// Switch to the next theme in the registry.
     NextTheme,

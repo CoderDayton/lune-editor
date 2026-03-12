@@ -8,9 +8,9 @@ expression: buffer_to_text(&buf)
                 ┌ Command Palette ─────────────────────────────┐
                 │>                                             │
                 │──────────────────────────────────────────────│
-                │  Change Language: C                          │
-                │  Change Language: C++                        │
-                │  Change Language: CSS                        │
-                │  Change Language: Go                         │
-                │  Change Language: HTML                       │
+                │  Agent: Close Pane                           │
+                │  Agent: Focus Next                           │
+                │  Agent: Focus Previous                       │
+                │  Agent: Select Layout                        │
+                │  Agent: Split Horizontal                     │
                 └──────────────────────────────────────────────┘

@@ -369,6 +369,14 @@ pub fn parse_command(s: &str) -> Option<AppCommand> {
         "next_theme" => Some(AppCommand::NextTheme),
         "prev_theme" => Some(AppCommand::PrevTheme),
         "open_theme_picker" => Some(AppCommand::OpenThemePicker),
+        // Agent pane
+        "agent_split_vertical" => Some(AppCommand::AgentSplitVertical),
+        "agent_split_horizontal" => Some(AppCommand::AgentSplitHorizontal),
+        "agent_close_pane" => Some(AppCommand::AgentClosePane),
+        "agent_focus_next" => Some(AppCommand::AgentFocusNext),
+        "agent_focus_prev" => Some(AppCommand::AgentFocusPrev),
+        "agent_toggle_zoom" => Some(AppCommand::AgentToggleZoom),
+        "agent_apply_layout" => Some(AppCommand::AgentApplyLayout),
         // Settings
         "open_settings" => Some(AppCommand::OpenSettings),
         "open_keybindings" => Some(AppCommand::OpenKeybindings),

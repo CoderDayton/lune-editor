@@ -44,6 +44,8 @@ pub enum OverlayKind {
     LanguagePicker,
     /// Theme picker with live preview.
     ThemePicker,
+    /// Layout picker for agent pane tiling presets.
+    LayoutPicker,
 }
 
 // ── Overlay state ─────────────────────────────────────────────────────
@@ -69,6 +71,8 @@ pub struct OverlayState {
     pub language_picker: LanguagePickerState,
     /// Theme picker state.
     pub theme_picker: ThemePickerState,
+    /// Layout picker state.
+    pub layout_picker: LayoutPickerState,
 }
 
 impl OverlayState {
@@ -141,6 +145,12 @@ impl OverlayState {
     pub fn open_theme_picker(&mut self, themes: Vec<(usize, String)>, current_idx: usize) {
         self.theme_picker = ThemePickerState::new(themes, current_idx);
         self.active = Some(OverlayKind::ThemePicker);
+    }
+
+    /// Open the layout picker for agent pane tiling presets.
+    pub fn open_layout_picker(&mut self) {
+        self.layout_picker = LayoutPickerState::new();
+        self.active = Some(OverlayKind::LayoutPicker);
     }
 
     /// Open a confirmation dialog.
@@ -339,6 +349,14 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
         palette_cmd("Select Language", AppCommand::OpenLanguagePicker),
         palette_cmd("Toggle Vim Mode", AppCommand::ToggleVimMode),
         palette_cmd("Select Theme", AppCommand::OpenThemePicker),
+        // Agent pane commands
+        palette_cmd("Agent: Split Vertical", AppCommand::AgentSplitVertical),
+        palette_cmd("Agent: Split Horizontal", AppCommand::AgentSplitHorizontal),
+        palette_cmd("Agent: Close Pane", AppCommand::AgentClosePane),
+        palette_cmd("Agent: Focus Next", AppCommand::AgentFocusNext),
+        palette_cmd("Agent: Focus Previous", AppCommand::AgentFocusPrev),
+        palette_cmd("Agent: Toggle Zoom", AppCommand::AgentToggleZoom),
+        palette_cmd("Agent: Select Layout", AppCommand::AgentApplyLayout),
     ];
 
     // Language change commands.
@@ -704,6 +722,42 @@ impl ThemePickerState {
     pub fn backspace(&mut self) {
         self.input.pop();
         self.update_filter();
+    }
+}
+
+// ── Layout picker ─────────────────────────────────────────────────────
+
+/// State for the agent pane layout picker.
+#[derive(Clone, Debug, Default)]
+pub struct LayoutPickerState {
+    /// Selected index into [`PRESET_LIST`].
+    pub selected: usize,
+}
+
+impl LayoutPickerState {
+    /// Create a new layout picker with the first preset selected.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { selected: 0 }
+    }
+
+    /// Move selection down (wraps).
+    pub fn select_next(&mut self) {
+        use crate::runtime::tiling::PRESET_LIST;
+        if !PRESET_LIST.is_empty() {
+            self.selected = (self.selected + 1) % PRESET_LIST.len();
+        }
+    }
+
+    /// Move selection up (wraps).
+    pub fn select_prev(&mut self) {
+        use crate::runtime::tiling::PRESET_LIST;
+        if !PRESET_LIST.is_empty() {
+            self.selected = self
+                .selected
+                .checked_sub(1)
+                .unwrap_or(PRESET_LIST.len() - 1);
+        }
     }
 }
 
@@ -1193,6 +1247,9 @@ pub fn render_overlay(area: Rect, buf: &mut Buffer, overlay: &mut OverlayState, 
         Some(OverlayKind::ThemePicker) => {
             render_theme_picker(area, buf, &overlay.theme_picker, theme);
         }
+        Some(OverlayKind::LayoutPicker) => {
+            render_layout_picker(area, buf, &overlay.layout_picker, theme);
+        }
         None => {}
     }
 }
@@ -1462,6 +1519,56 @@ fn render_theme_picker(area: Rect, buf: &mut Buffer, state: &ThemePickerState, t
 
 /// Render the inline input dialog popup.
 #[allow(clippy::cast_possible_truncation)]
+/// Render the layout picker popup for agent pane tiling presets.
+#[allow(clippy::cast_possible_truncation)]
+fn render_layout_picker(area: Rect, buf: &mut Buffer, state: &LayoutPickerState, theme: &Theme) {
+    use crate::runtime::tiling::PRESET_LIST;
+
+    let popup_w = (area.width * 35 / 100).max(30).min(area.width);
+    let list_rows = PRESET_LIST.len() as u16;
+    let popup_h = (2 + 1 + list_rows + 1 + 2).min(area.height);
+    let popup_x = area.x + (area.width - popup_w) / 2;
+    let popup_y = area.y + (area.height - popup_h) / 3;
+
+    let popup_rect = Rect::new(popup_x, popup_y, popup_w, popup_h);
+    Clear.render(popup_rect, buf);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .title(" Select Layout ")
+        .style(Style::new().fg(theme.overlay_border));
+    let inner = block.inner(popup_rect);
+    block.render(popup_rect, buf);
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let list_y = inner.y;
+    let footer_y = inner.y + inner.height.saturating_sub(1);
+
+    for (i, preset) in PRESET_LIST.iter().enumerate() {
+        let y = list_y + i as u16;
+        if y >= footer_y {
+            break;
+        }
+        let label = format!("  {} ({} panes)", preset.name, preset.pane_count);
+        if i == state.selected {
+            Line::from(Span::styled(label, theme.overlay_selected))
+                .render(Rect::new(inner.x, y, inner.width, 1), buf);
+        } else {
+            Line::from(Span::from(label))
+                .render(Rect::new(inner.x, y, inner.width, 1), buf);
+        }
+    }
+
+    if footer_y > list_y {
+        Line::from(Span::from(" ↑↓ select · Enter apply · Esc cancel").dim())
+            .render(Rect::new(inner.x, footer_y, inner.width, 1), buf);
+    }
+}
+
 fn render_input_dialog(area: Rect, buf: &mut Buffer, state: &InputDialogState, theme: &Theme) {
     let popup_w = (area.width * 50 / 100).max(30).min(area.width);
     let popup_h: u16 = 5;

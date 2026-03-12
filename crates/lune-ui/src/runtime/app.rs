@@ -50,6 +50,7 @@ use crate::widgets::git_panel::{self, GitPanelState};
 use crate::widgets::overlay::{self, NotificationLevel, OverlayState};
 use crate::widgets::status_bar::{self, StatusLineState};
 use crate::widgets::tab_bar::{self, TabManager};
+use crate::widgets::terminal;
 
 /// Global context — embeds the rat-salsa context and shared config.
 #[derive(Default)]
@@ -179,6 +180,10 @@ pub struct AppState {
     last_render: Instant,
     /// AI session manager.
     pub ai_manager: AiManager,
+    /// Agents tab tiling layout state.
+    pub agents_tab: super::agents::AgentsTabState,
+    /// Pane ID waiting for an AI client selection (from the picker).
+    pub agents_tab_pending_pane: Option<super::tiling::PaneId>,
     /// Last known AI terminal size (to avoid redundant resizes).
     #[allow(dead_code)]
     last_ai_term_size: Option<AiTermSize>,
@@ -262,6 +267,8 @@ impl AppState {
             effects: LuneEffects::new(),
             last_render: Instant::now(),
             ai_manager: AiManager::new(),
+            agents_tab: super::agents::AgentsTabState::new(),
+            agents_tab_pending_pane: None,
             last_ai_term_size: None,
             ai_thinking_active: false,
             last_notification_count: 0,
@@ -1141,48 +1148,100 @@ fn render_agents_tab(area: Rect, buf: &mut Buffer, state: &mut AppState) {
     let content = chunks[0];
     let status = chunks[1];
 
-    let block = Block::default()
-        .title(" Agents ")
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(state.theme.overlay_border));
-    let inner = block.inner(content);
-    block.render(content, buf);
+    // Empty state — no panes yet.
+    if state.agents_tab.is_empty() {
+        let block = Block::default()
+            .title(" Agents ")
+            .borders(Borders::ALL)
+            .border_style(Style::new().fg(state.theme.overlay_border));
+        let inner = block.inner(content);
+        block.render(content, buf);
 
-    if inner.width > 0 && inner.height > 0 {
-        let sessions = state.ai_manager.session_list();
-        if sessions.is_empty() {
+        if inner.width > 0 && inner.height > 0 {
             Line::from("No agent sessions yet.")
                 .style(Style::new().fg(state.theme.fg))
                 .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
             if inner.height > 1 {
-                Line::from("Start one from the command palette or AI actions.")
+                Line::from("Press Ctrl+A then V to open a terminal pane.")
                     .style(Style::new().fg(state.theme.fg_muted))
                     .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
             }
-        } else {
-            for (i, (id, name, session_state)) in
-                sessions.iter().take(inner.height as usize).enumerate()
-            {
-                let marker = if Some(*id) == state.ai_manager.active_id() {
-                    ">"
-                } else {
-                    " "
-                };
-                let status_text = match session_state {
-                    lune_ai::SessionState::Starting => "starting",
-                    lune_ai::SessionState::Running => "running",
-                    lune_ai::SessionState::Exited(_) => "exited",
-                    lune_ai::SessionState::Error => "error",
-                };
-                let row = format!("{marker} {name} [{status_text}]");
-                let row_style = if Some(*id) == state.ai_manager.active_id() {
-                    state.theme.tab_active_focused
-                } else {
-                    state.theme.tab_inactive
-                };
-                Line::from(row)
-                    .style(row_style)
-                    .render(Rect::new(inner.x, inner.y + i as u16, inner.width, 1), buf);
+        }
+        return;
+    }
+
+    let layout = match state.agents_tab.layout.as_ref() {
+        Some(l) => l,
+        None => return,
+    };
+
+    // If zoomed, render only the focused pane full-screen.
+    if state.agents_tab.zoomed {
+        if let Some(session_id) = state.agents_tab.focused_session() {
+            if let Some(session) = state.ai_manager.session_mut(session_id) {
+                let scroll = session.scroll_offset();
+                let show_cursor = session.is_alive();
+                terminal::render_terminal_screen(
+                    content,
+                    buf,
+                    session.screen(),
+                    scroll,
+                    show_cursor,
+                    &state.theme,
+                );
+            }
+        }
+        return;
+    }
+
+    // Compute pane rects and render each terminal.
+    let pane_rects = layout.compute_rects(content);
+    // Collect (pane_id, session_id, area) to avoid borrowing conflicts.
+    let render_list: Vec<_> = pane_rects
+        .iter()
+        .filter_map(|(pid, area)| {
+            let sid = state.agents_tab.panes.get(pid)?.session_id;
+            Some((*pid, sid, *area))
+        })
+        .collect();
+    let focused = state.agents_tab.focused;
+    for (pane_id, session_id, pane_area) in &render_list {
+        if let Some(session) = state.ai_manager.session_mut(*session_id) {
+            let show_cursor = session.is_alive() && focused == Some(*pane_id);
+            let scroll = session.scroll_offset();
+            terminal::render_terminal_screen(
+                *pane_area,
+                buf,
+                session.screen(),
+                scroll,
+                show_cursor,
+                &state.theme,
+            );
+        }
+    }
+
+    // Draw split borders.
+    let borders = layout.compute_borders(content);
+    let border_style = Style::new().fg(state.theme.border_unfocused);
+    for border in &borders {
+        use super::tiling::SplitDirection;
+        let r = border.rect;
+        match border.direction {
+            SplitDirection::Vertical => {
+                for row in r.y..r.y + r.height {
+                    if let Some(cell) = buf.cell_mut((r.x, row)) {
+                        cell.set_char('│');
+                        cell.set_style(border_style);
+                    }
+                }
+            }
+            SplitDirection::Horizontal => {
+                for col in r.x..r.x + r.width {
+                    if let Some(cell) = buf.cell_mut((col, r.y)) {
+                        cell.set_char('─');
+                        cell.set_style(border_style);
+                    }
+                }
             }
         }
     }
@@ -1449,7 +1508,7 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
 
     // Non-global keystrokes are editor-only while the Agents tab is active.
     if state.root_tab == RootTab::Agents {
-        return Control::Continue;
+        return handle_agents_tab_key(key, state);
     }
 
     // 4. Route to file tree if focused.
@@ -1522,6 +1581,7 @@ fn handle_overlay_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent>
         Some(overlay::OverlayKind::InputDialog) => handle_input_dialog_key(key, state),
         Some(overlay::OverlayKind::LanguagePicker) => handle_language_picker_key(key, state),
         Some(overlay::OverlayKind::ThemePicker) => handle_theme_picker_key(key, state),
+        Some(overlay::OverlayKind::LayoutPicker) => handle_layout_picker_key(key, state),
         None => Control::Continue,
     }
 }
@@ -1616,6 +1676,245 @@ fn handle_file_picker_enter(state: &mut AppState) -> Control<AppEvent> {
 }
 
 /// Handle key events for the AI client picker overlay.
+/// Handle key events in the Agents tab.
+///
+/// Implements a leader-key state machine: `Ctrl+A` activates leader mode,
+/// the next keystroke is interpreted as a pane command. Non-leader keystrokes
+/// are forwarded as raw bytes to the focused pane's PTY.
+fn handle_agents_tab_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    use super::agents::LeaderState;
+    use super::tiling::SplitDirection;
+
+    // Leader key: Ctrl+A
+    if key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        state.agents_tab.leader = LeaderState::Active;
+        return Control::Changed;
+    }
+
+    // If leader is active, interpret the next key as a pane command.
+    if state.agents_tab.leader == LeaderState::Active {
+        state.agents_tab.leader = LeaderState::Inactive;
+        return match key.code {
+            // Split
+            KeyCode::Char('v') => {
+                if let Some(new_id) = state.agents_tab.split_focused(SplitDirection::Vertical) {
+                    // Open client picker; store pending pane_id to associate on selection.
+                    state.overlay.open_ai_client_picker();
+                    state.agents_tab_pending_pane = Some(new_id);
+                    Control::Changed
+                } else if state.agents_tab.is_empty() {
+                    let new_id = state.agents_tab.add_first_pane();
+                    state.overlay.open_ai_client_picker();
+                    state.agents_tab_pending_pane = Some(new_id);
+                    Control::Changed
+                } else {
+                    Control::Continue
+                }
+            }
+            KeyCode::Char('s') => {
+                if let Some(new_id) = state.agents_tab.split_focused(SplitDirection::Horizontal) {
+                    state.overlay.open_ai_client_picker();
+                    state.agents_tab_pending_pane = Some(new_id);
+                    Control::Changed
+                } else if state.agents_tab.is_empty() {
+                    let new_id = state.agents_tab.add_first_pane();
+                    state.overlay.open_ai_client_picker();
+                    state.agents_tab_pending_pane = Some(new_id);
+                    Control::Changed
+                } else {
+                    Control::Continue
+                }
+            }
+            // Close
+            KeyCode::Char('x') => {
+                if let Some(session_id) = state.agents_tab.close_focused() {
+                    state.ai_manager.close_session(session_id);
+                }
+                Control::Changed
+            }
+            // Navigate
+            KeyCode::Char('n') => {
+                state.agents_tab.focus_next();
+                Control::Changed
+            }
+            KeyCode::Char('p') => {
+                state.agents_tab.focus_prev();
+                Control::Changed
+            }
+            // Resize
+            KeyCode::Left => {
+                if let Some(layout) = state.agents_tab.layout.as_mut() {
+                    // Resize: shrink the nearest ancestor split.
+                    layout.adjust_ratio(-super::tiling::RESIZE_STEP);
+                }
+                Control::Changed
+            }
+            KeyCode::Right => {
+                if let Some(layout) = state.agents_tab.layout.as_mut() {
+                    layout.adjust_ratio(super::tiling::RESIZE_STEP);
+                }
+                Control::Changed
+            }
+            // Zoom
+            KeyCode::Char('z') => {
+                state.agents_tab.toggle_zoom();
+                Control::Changed
+            }
+            // Switch to editor
+            KeyCode::Char('e') => {
+                state.set_root_tab(RootTab::Editor);
+                Control::Changed
+            }
+            // Layout picker
+            KeyCode::Char('l') => {
+                Control::Event(AppEvent::Command(AppCommand::AgentApplyLayout))
+            }
+            _ => Control::Continue,
+        };
+    }
+
+    // No panes → nothing to forward to.
+    if state.agents_tab.is_empty() {
+        return Control::Continue;
+    }
+
+    // Forward keystroke as raw bytes to focused pane's PTY.
+    if let Some(session_id) = state.agents_tab.focused_session() {
+        if let Some(session) = state.ai_manager.session_mut(session_id) {
+            let bytes = key_event_to_bytes(key);
+            if !bytes.is_empty() {
+                let _ = session.send_input(&bytes);
+                return Control::Changed;
+            }
+        }
+    }
+
+    Control::Continue
+}
+
+/// Convert a crossterm `KeyEvent` into the byte sequence a terminal would
+/// send. This handles printable chars, Enter, Backspace, Tab, arrow keys,
+/// and common Ctrl+key combos.
+/// Handle mouse click in the Agents tab — focus pane or start border drag.
+#[allow(clippy::cast_possible_truncation)]
+fn handle_agents_mouse_down(mouse: MouseEvent, state: &mut AppState) -> Control<AppEvent> {
+    let col = mouse.column;
+    let row = mouse.row;
+
+    let layout = match state.agents_tab.layout.as_ref() {
+        Some(l) => l,
+        None => return Control::Continue,
+    };
+
+    // Compute the content area (same as render_agents_tab).
+    // We don't store it, so approximate: full terminal minus status bar (1 row) and root tabs (1 row).
+    let term_height = state.last_editor_content_area.map_or(38, |a| a.height);
+    let content_area = Rect::new(0, 1, state.last_editor_content_area.map_or(120, |a| a.width + a.x), term_height);
+
+    // Check for border hit first (drag-to-resize).
+    if let Some((path, direction)) = layout.hit_test_border(content_area, col, row, 1) {
+        state.agents_tab.drag = Some(super::agents::DragState {
+            split_path: path,
+            direction,
+        });
+        return Control::Changed;
+    }
+
+    // Click inside a pane — focus it.
+    let rects = layout.compute_rects(content_area);
+    state.agents_tab.focus_at(col, row, &rects);
+    Control::Changed
+}
+
+/// Handle mouse drag in the Agents tab — resize a split border.
+#[allow(clippy::cast_possible_truncation)]
+fn handle_agents_mouse_drag(mouse: MouseEvent, state: &mut AppState) -> Control<AppEvent> {
+    let drag = match state.agents_tab.drag.as_ref() {
+        Some(d) => d.clone(),
+        None => return Control::Continue,
+    };
+
+    let layout = match state.agents_tab.layout.as_mut() {
+        Some(l) => l,
+        None => return Control::Continue,
+    };
+
+    let node = match layout.node_at_path_mut(&drag.split_path) {
+        Some(n) => n,
+        None => return Control::Continue,
+    };
+
+    if let super::tiling::TileNode::Split {
+        ratio, direction, ..
+    } = node
+    {
+        // Compute content area (same approximation as mouse_down).
+        let term_height = state.last_editor_content_area.map_or(38, |a| a.height);
+        let content_w = state.last_editor_content_area.map_or(120, |a| a.width + a.x);
+
+        let new_ratio = match direction {
+            super::tiling::SplitDirection::Vertical => {
+                (mouse.column as f64) / (content_w as f64)
+            }
+            super::tiling::SplitDirection::Horizontal => {
+                (mouse.row.saturating_sub(1) as f64) / (term_height as f64)
+            }
+        };
+        *ratio = new_ratio.clamp(0.1, 0.9);
+    }
+
+    Control::Changed
+}
+
+fn key_event_to_bytes(key: &KeyEvent) -> Vec<u8> {
+    // Ctrl modifier turns letters into control codes (Ctrl+A = 0x01, etc.)
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        if let KeyCode::Char(ch) = key.code {
+            let ctrl = (ch.to_ascii_lowercase() as u8).wrapping_sub(b'a').wrapping_add(1);
+            return vec![ctrl];
+        }
+    }
+
+    match key.code {
+        KeyCode::Char(ch) => {
+            let mut buf = [0u8; 4];
+            let s = ch.encode_utf8(&mut buf);
+            s.as_bytes().to_vec()
+        }
+        KeyCode::Enter => vec![b'\r'],
+        KeyCode::Backspace => vec![0x7f],
+        KeyCode::Tab => vec![b'\t'],
+        KeyCode::BackTab => b"\x1b[Z".to_vec(),
+        KeyCode::Esc => vec![0x1b],
+        KeyCode::Up => b"\x1b[A".to_vec(),
+        KeyCode::Down => b"\x1b[B".to_vec(),
+        KeyCode::Right => b"\x1b[C".to_vec(),
+        KeyCode::Left => b"\x1b[D".to_vec(),
+        KeyCode::Home => b"\x1b[H".to_vec(),
+        KeyCode::End => b"\x1b[F".to_vec(),
+        KeyCode::PageUp => b"\x1b[5~".to_vec(),
+        KeyCode::PageDown => b"\x1b[6~".to_vec(),
+        KeyCode::Delete => b"\x1b[3~".to_vec(),
+        KeyCode::Insert => b"\x1b[2~".to_vec(),
+        KeyCode::F(n) => match n {
+            1 => b"\x1bOP".to_vec(),
+            2 => b"\x1bOQ".to_vec(),
+            3 => b"\x1bOR".to_vec(),
+            4 => b"\x1bOS".to_vec(),
+            5 => b"\x1b[15~".to_vec(),
+            6 => b"\x1b[17~".to_vec(),
+            7 => b"\x1b[18~".to_vec(),
+            8 => b"\x1b[19~".to_vec(),
+            9 => b"\x1b[20~".to_vec(),
+            10 => b"\x1b[21~".to_vec(),
+            11 => b"\x1b[23~".to_vec(),
+            12 => b"\x1b[24~".to_vec(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
 fn handle_ai_client_picker_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
     match key.code {
         KeyCode::Esc => {
@@ -1726,6 +2025,61 @@ fn apply_theme_preview(state: &mut AppState) {
     if let Some(idx) = state.overlay.theme_picker.selected_idx() {
         state.theme_registry.switch(ThemeId(idx));
         state.apply_active_theme();
+    }
+}
+
+/// Handle key events for the layout picker overlay.
+fn handle_layout_picker_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    match key.code {
+        KeyCode::Esc => {
+            close_overlay(state);
+            Control::Changed
+        }
+        KeyCode::Enter => {
+            let selected = state.overlay.layout_picker.selected;
+            close_overlay(state);
+            // Apply the preset layout.
+            let (new_pane_ids, closed_sessions) = state.agents_tab.apply_preset(selected);
+            // Close excess sessions.
+            for sid in closed_sessions {
+                state.ai_manager.close_session(sid);
+            }
+            // Spawn Shell sessions for new panes.
+            for pane_id in new_pane_ids {
+                let cwd = state.workspace.as_ref().map(|ws| ws.root().to_path_buf());
+                let size = AiTermSize::new(24, 80);
+                let env = std::collections::HashMap::new();
+                match state.ai_manager.new_session(
+                    AiClientKind::Shell,
+                    cwd.as_deref(),
+                    &env,
+                    size,
+                ) {
+                    Ok(session_id) => {
+                        state.agents_tab.register_pane(
+                            pane_id,
+                            session_id,
+                            "Shell".to_string(),
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to spawn Shell for layout pane: {e}");
+                    }
+                }
+            }
+            // Switch to agents tab.
+            state.set_root_tab(RootTab::Agents);
+            Control::Changed
+        }
+        KeyCode::Up => {
+            state.overlay.layout_picker.select_prev();
+            Control::Changed
+        }
+        KeyCode::Down => {
+            state.overlay.layout_picker.select_next();
+            Control::Changed
+        }
+        _ => Control::Continue,
     }
 }
 
@@ -2142,12 +2496,22 @@ fn handle_ai_new_session(kind: AiClientKind, state: &mut AppState) -> Control<Ap
         .ai_manager
         .new_session(kind, cwd.as_deref(), &env, size)
     {
-        Ok(_id) => {
+        Ok(session_id) => {
             log::info!("Started AI session: {client_name}");
+            // If there's a pending agent pane, associate the session.
+            if let Some(pane_id) = state.agents_tab_pending_pane.take() {
+                state.agents_tab.register_pane(pane_id, session_id, client_name);
+            }
         }
         Err(e) => {
             // Spawn failed (binary not found or PTY error).
             log::warn!("AI session launch failed ({client_name}): {e}");
+            // Clean up the pending pane if spawn failed.
+            if let Some(pane_id) = state.agents_tab_pending_pane.take() {
+                if let Some(layout) = state.agents_tab.layout.as_mut() {
+                    layout.remove_pane(pane_id);
+                }
+            }
         }
     }
     Control::Changed
@@ -2504,8 +2868,16 @@ fn apply_arrow_motion(key: &KeyEvent, state: &mut AppState, extend: bool) -> Con
 #[allow(clippy::cast_possible_truncation)]
 fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEvent> {
     match mouse.kind {
-        MouseEventKind::Down(MouseButton::Left) => handle_mouse_click(mouse, state),
+        MouseEventKind::Down(MouseButton::Left) => {
+            if state.root_tab == RootTab::Agents {
+                return handle_agents_mouse_down(mouse, state);
+            }
+            handle_mouse_click(mouse, state)
+        }
         MouseEventKind::Drag(MouseButton::Left) => {
+            if state.root_tab == RootTab::Agents {
+                return handle_agents_mouse_drag(mouse, state);
+            }
             if state.root_tab == RootTab::Editor {
                 handle_mouse_drag(mouse, state)
             } else {
@@ -2514,6 +2886,7 @@ fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
         }
         MouseEventKind::Up(MouseButton::Left) => {
             state.dragging_border = None;
+            state.agents_tab.drag = None;
             Control::Continue
         }
         MouseEventKind::ScrollUp => {
@@ -3408,6 +3781,54 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
                 .notify(format!("Theme: {name}"), NotificationLevel::Info);
             Control::Changed
         }
+        // Agent pane commands.
+        AppCommand::AgentSplitVertical => {
+            state.set_root_tab(RootTab::Agents);
+            if let Some(new_id) = state.agents_tab.split_focused(super::tiling::SplitDirection::Vertical) {
+                state.overlay.open_ai_client_picker();
+                state.agents_tab_pending_pane = Some(new_id);
+            } else if state.agents_tab.is_empty() {
+                let new_id = state.agents_tab.add_first_pane();
+                state.overlay.open_ai_client_picker();
+                state.agents_tab_pending_pane = Some(new_id);
+            }
+            Control::Changed
+        }
+        AppCommand::AgentSplitHorizontal => {
+            state.set_root_tab(RootTab::Agents);
+            if let Some(new_id) = state.agents_tab.split_focused(super::tiling::SplitDirection::Horizontal) {
+                state.overlay.open_ai_client_picker();
+                state.agents_tab_pending_pane = Some(new_id);
+            } else if state.agents_tab.is_empty() {
+                let new_id = state.agents_tab.add_first_pane();
+                state.overlay.open_ai_client_picker();
+                state.agents_tab_pending_pane = Some(new_id);
+            }
+            Control::Changed
+        }
+        AppCommand::AgentClosePane => {
+            if let Some(session_id) = state.agents_tab.close_focused() {
+                state.ai_manager.close_session(session_id);
+            }
+            Control::Changed
+        }
+        AppCommand::AgentFocusNext => {
+            state.agents_tab.focus_next();
+            Control::Changed
+        }
+        AppCommand::AgentFocusPrev => {
+            state.agents_tab.focus_prev();
+            Control::Changed
+        }
+        AppCommand::AgentToggleZoom => {
+            state.agents_tab.toggle_zoom();
+            Control::Changed
+        }
+        AppCommand::AgentApplyLayout => {
+            state.overlay.open_layout_picker();
+            state.focus.focus(PanelId::CommandPalette);
+            Control::Changed
+        }
         AppCommand::OpenSettings | AppCommand::OpenKeybindings => {
             handle_open_config_file(cmd, state)
         }
@@ -4095,13 +4516,26 @@ impl rat_salsa::poll::PollEvents<AppEvent, Error> for PollFileWatcher {
 pub struct PollAiSessions {
     /// Whether the last poll found changes.
     has_changes: bool,
+    /// Crossbeam receivers for checking session output availability.
+    receivers: Vec<crossbeam::channel::Receiver<lune_ai::SessionEvent>>,
 }
 
 impl PollAiSessions {
     /// Create a new AI session poller.
     #[must_use]
-    pub const fn new() -> Self {
-        Self { has_changes: false }
+    pub fn new() -> Self {
+        Self {
+            has_changes: false,
+            receivers: Vec::new(),
+        }
+    }
+
+    /// Update the set of session event receivers.
+    pub fn set_receivers(
+        &mut self,
+        receivers: Vec<crossbeam::channel::Receiver<lune_ai::SessionEvent>>,
+    ) {
+        self.receivers = receivers;
     }
 }
 
@@ -4117,15 +4551,18 @@ impl rat_salsa::poll::PollEvents<AppEvent, Error> for PollAiSessions {
     }
 
     fn poll(&mut self) -> Result<bool, Error> {
-        // We can't access AppState here, so we always claim we have
-        // an event to read. The `read()` method will emit an AI event
-        // that triggers `event()`, which calls `poll_all()` on the
-        // actual manager. This is a lightweight approach: every poll
-        // cycle we signal to drain the AI channels.
-        //
-        // This works because rat-salsa calls poll() frequently (every
-        // cycle), and the event handler will be a no-op if there's
-        // actually nothing to drain.
+        // No sessions → skip entirely.
+        if self.receivers.is_empty() {
+            return Ok(false);
+        }
+        // Check if any receiver has pending data (non-blocking).
+        for rx in &self.receivers {
+            if !rx.is_empty() {
+                self.has_changes = true;
+                return Ok(true);
+            }
+        }
+        // Even without new output, signal periodically for exit detection.
         self.has_changes = true;
         Ok(true)
     }
