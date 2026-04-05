@@ -148,8 +148,8 @@ impl OverlayState {
     }
 
     /// Open the layout picker for agent pane tiling presets.
-    pub fn open_layout_picker(&mut self) {
-        self.layout_picker = LayoutPickerState::new();
+    pub fn open_layout_picker(&mut self, entries: Vec<LayoutPickerEntry>) {
+        self.layout_picker = LayoutPickerState::new(entries);
         self.active = Some(OverlayKind::LayoutPicker);
     }
 
@@ -352,11 +352,13 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
         // Agent pane commands
         palette_cmd("Agent: Split Vertical", AppCommand::AgentSplitVertical),
         palette_cmd("Agent: Split Horizontal", AppCommand::AgentSplitHorizontal),
+        palette_cmd("Agent: Split Smart", AppCommand::AgentSplitAuto),
         palette_cmd("Agent: Close Pane", AppCommand::AgentClosePane),
         palette_cmd("Agent: Focus Next", AppCommand::AgentFocusNext),
         palette_cmd("Agent: Focus Previous", AppCommand::AgentFocusPrev),
         palette_cmd("Agent: Toggle Zoom", AppCommand::AgentToggleZoom),
         palette_cmd("Agent: Select Layout", AppCommand::AgentApplyLayout),
+        palette_cmd("Agent: Save Current Layout", AppCommand::AgentSaveLayout),
     ];
 
     // Language change commands.
@@ -728,36 +730,80 @@ impl ThemePickerState {
 // ── Layout picker ─────────────────────────────────────────────────────
 
 /// State for the agent pane layout picker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LayoutPickerEntryKind {
+    Preset(usize),
+    Saved(usize),
+}
+
+/// One selectable layout picker row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayoutPickerEntry {
+    pub label: String,
+    pub pane_count: usize,
+    pub kind: LayoutPickerEntryKind,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct LayoutPickerState {
+    /// Available layout entries.
+    pub entries: Vec<LayoutPickerEntry>,
     /// Selected index into [`PRESET_LIST`].
     pub selected: usize,
+    /// First visible row when the list needs to scroll.
+    pub scroll_offset: usize,
 }
 
 impl LayoutPickerState {
     /// Create a new layout picker with the first preset selected.
     #[must_use]
-    pub const fn new() -> Self {
-        Self { selected: 0 }
+    pub fn new(entries: Vec<LayoutPickerEntry>) -> Self {
+        Self {
+            entries,
+            selected: 0,
+            scroll_offset: 0,
+        }
     }
 
     /// Move selection down (wraps).
-    pub const fn select_next(&mut self) {
-        use crate::runtime::tiling::PRESET_LIST;
-        if !PRESET_LIST.is_empty() {
-            self.selected = (self.selected + 1) % PRESET_LIST.len();
+    pub fn select_next(&mut self) {
+        if !self.entries.is_empty() {
+            self.selected = (self.selected + 1) % self.entries.len();
         }
     }
 
     /// Move selection up (wraps).
     pub fn select_prev(&mut self) {
-        use crate::runtime::tiling::PRESET_LIST;
-        if !PRESET_LIST.is_empty() {
+        if !self.entries.is_empty() {
             self.selected = self
                 .selected
                 .checked_sub(1)
-                .unwrap_or(PRESET_LIST.len() - 1);
+                .unwrap_or(self.entries.len() - 1);
         }
+    }
+
+    /// Borrow the selected entry, if any.
+    #[must_use]
+    pub fn selected_entry(&self) -> Option<&LayoutPickerEntry> {
+        self.entries.get(self.selected)
+    }
+
+    /// Compute the visible entry window for a given number of rows.
+    #[must_use]
+    pub fn visible_range(&self, visible_rows: usize) -> (usize, usize) {
+        if self.entries.is_empty() || visible_rows == 0 {
+            return (0, 0);
+        }
+
+        let max_start = self.entries.len().saturating_sub(visible_rows);
+        let mut start = self.scroll_offset.min(max_start);
+        if self.selected < start {
+            start = self.selected;
+        } else if self.selected >= start + visible_rows {
+            start = self.selected + 1 - visible_rows;
+        }
+        let end = (start + visible_rows).min(self.entries.len());
+        (start, end)
     }
 }
 
@@ -774,6 +820,10 @@ pub enum InputDialogAction {
     Rename { from: PathBuf },
     /// Commit staged changes with the entered message.
     CommitMessage,
+    /// Save the current agent layout under a name.
+    SaveAgentLayout,
+    /// Rename the selected saved agent layout.
+    RenameAgentLayout { index: usize },
 }
 
 /// State for the inline input dialog overlay.
@@ -793,7 +843,11 @@ pub struct InputDialogState {
 
 impl InputDialogState {
     /// Create a new input dialog state.
-    pub fn new(title: impl Into<String>, hint: impl Into<String>, action: InputDialogAction) -> Self {
+    pub fn new(
+        title: impl Into<String>,
+        hint: impl Into<String>,
+        action: InputDialogAction,
+    ) -> Self {
         Self {
             title: title.into(),
             input: String::new(),
@@ -878,8 +932,12 @@ impl InputDialogState {
             return Some("Input cannot be empty");
         }
         // Path separator check only applies to file/dir operations.
-        if !matches!(self.action, InputDialogAction::CommitMessage)
-            && (trimmed.contains('/') || trimmed.contains('\\'))
+        if !matches!(
+            self.action,
+            InputDialogAction::CommitMessage
+                | InputDialogAction::SaveAgentLayout
+                | InputDialogAction::RenameAgentLayout { .. }
+        ) && (trimmed.contains('/') || trimmed.contains('\\'))
         {
             return Some("Name cannot contain path separators");
         }
@@ -926,8 +984,12 @@ impl FindReplaceState {
     /// Delete the last character from the active field.
     pub fn backspace(&mut self) {
         match self.active_field {
-            FindReplaceField::Find => { self.find_input.pop(); }
-            FindReplaceField::Replace => { self.replace_input.pop(); }
+            FindReplaceField::Find => {
+                self.find_input.pop();
+            }
+            FindReplaceField::Replace => {
+                self.replace_input.pop();
+            }
         }
     }
 
@@ -935,7 +997,11 @@ impl FindReplaceState {
     pub const fn toggle_field(&mut self) {
         self.active_field = match self.active_field {
             FindReplaceField::Find => {
-                if self.show_replace { FindReplaceField::Replace } else { FindReplaceField::Find }
+                if self.show_replace {
+                    FindReplaceField::Replace
+                } else {
+                    FindReplaceField::Find
+                }
             }
             FindReplaceField::Replace => FindReplaceField::Find,
         };
@@ -1370,8 +1436,7 @@ fn render_language_picker(
     // Input row.
     let cursor = if state.input.is_empty() { "█" } else { "" };
     let input_str = format!(" > {}{}", state.input, cursor);
-    Line::from(Span::from(input_str))
-        .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
+    Line::from(Span::from(input_str)).render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
 
     if inner.height <= 1 {
         return;
@@ -1379,8 +1444,7 @@ fn render_language_picker(
 
     // Separator.
     let sep = "─".repeat(inner.width as usize);
-    Line::from(Span::from(sep).dim())
-        .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
+    Line::from(Span::from(sep).dim()).render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
 
     if inner.height <= 2 {
         return;
@@ -1418,8 +1482,7 @@ fn render_language_picker(
                 Line::from(Span::styled(label, theme.overlay_selected))
                     .render(Rect::new(inner.x, y, inner.width, 1), buf);
             } else {
-                Line::from(Span::from(label))
-                    .render(Rect::new(inner.x, y, inner.width, 1), buf);
+                Line::from(Span::from(label)).render(Rect::new(inner.x, y, inner.width, 1), buf);
             }
         }
     }
@@ -1504,8 +1567,7 @@ fn render_theme_picker(area: Rect, buf: &mut Buffer, state: &ThemePickerState, t
                 Line::from(Span::styled(label, theme.overlay_selected))
                     .render(Rect::new(inner.x, y, inner.width, 1), buf);
             } else {
-                Line::from(Span::from(label))
-                    .render(Rect::new(inner.x, y, inner.width, 1), buf);
+                Line::from(Span::from(label)).render(Rect::new(inner.x, y, inner.width, 1), buf);
             }
         }
     }
@@ -1517,14 +1579,13 @@ fn render_theme_picker(area: Rect, buf: &mut Buffer, state: &ThemePickerState, t
     }
 }
 
-/// Render the layout picker popup for agent pane tiling presets.
+/// Render the layout picker popup for built-in and saved agent layouts.
 #[allow(clippy::cast_possible_truncation)]
 fn render_layout_picker(area: Rect, buf: &mut Buffer, state: &LayoutPickerState, theme: &Theme) {
-    use crate::runtime::tiling::PRESET_LIST;
-
     let popup_w = (area.width * 35 / 100).max(30).min(area.width);
-    let list_rows = PRESET_LIST.len() as u16;
-    let popup_h = (2 + 1 + list_rows + 1 + 2).min(area.height);
+    let max_list_rows = area.height.saturating_sub(4);
+    let list_rows = state.entries.len().min(usize::from(max_list_rows)) as u16;
+    let popup_h = (2 + list_rows + 1).max(4).min(area.height);
     let popup_x = area.x + (area.width - popup_w) / 2;
     let popup_y = area.y + (area.height - popup_h) / 3;
 
@@ -1545,26 +1606,48 @@ fn render_layout_picker(area: Rect, buf: &mut Buffer, state: &LayoutPickerState,
 
     let list_y = inner.y;
     let footer_y = inner.y + inner.height.saturating_sub(1);
+    let visible_rows = usize::from(footer_y.saturating_sub(list_y));
+    let (start, end) = state.visible_range(visible_rows);
 
-    for (i, preset) in PRESET_LIST.iter().enumerate() {
-        let y = list_y + i as u16;
-        if y >= footer_y {
-            break;
-        }
-        let label = format!("  {} ({} panes)", preset.name, preset.pane_count);
+    for (row, entry) in state.entries[start..end].iter().enumerate() {
+        let i = start + row;
+        let y = list_y + row as u16;
+        let label = match entry.kind {
+            LayoutPickerEntryKind::Preset(_) => {
+                format!("  {} ({} panes)", entry.label, entry.pane_count)
+            }
+            LayoutPickerEntryKind::Saved(_) => {
+                format!("  {} [Saved] ({} panes)", entry.label, entry.pane_count)
+            }
+        };
         if i == state.selected {
             Line::from(Span::styled(label, theme.overlay_selected))
                 .render(Rect::new(inner.x, y, inner.width, 1), buf);
         } else {
-            Line::from(Span::from(label))
-                .render(Rect::new(inner.x, y, inner.width, 1), buf);
+            Line::from(Span::from(label)).render(Rect::new(inner.x, y, inner.width, 1), buf);
         }
     }
 
     if footer_y > list_y {
-        Line::from(Span::from(" ↑↓ select · Enter apply · Esc cancel").dim())
+        let footer = layout_picker_footer(state, start > 0 || state.entries.len() > end);
+        Line::from(Span::from(footer).dim())
             .render(Rect::new(inner.x, footer_y, inner.width, 1), buf);
     }
+}
+
+fn layout_picker_footer(state: &LayoutPickerState, show_position: bool) -> String {
+    let mut footer = match state.selected_entry().map(|entry| &entry.kind) {
+        Some(LayoutPickerEntryKind::Saved(_)) => {
+            " ↑↓ select · Enter apply · R rename · D delete · S save · Esc cancel".to_string()
+        }
+        _ => " ↑↓ select · Enter apply · S save · Esc cancel".to_string(),
+    };
+
+    if show_position && !state.entries.is_empty() {
+        footer.push_str(&format!("  {}/{} ", state.selected + 1, state.entries.len()));
+    }
+
+    footer
 }
 
 fn render_input_dialog(area: Rect, buf: &mut Buffer, state: &InputDialogState, theme: &Theme) {
@@ -1601,7 +1684,9 @@ fn render_input_dialog(area: Rect, buf: &mut Buffer, state: &InputDialogState, t
 
     // Draw block cursor.
     {
-        let cursor_x = inner.x + 1 + u16::try_from(state.input[..state.cursor_pos].chars().count()).unwrap_or(u16::MAX);
+        let cursor_x = inner.x
+            + 1
+            + u16::try_from(state.input[..state.cursor_pos].chars().count()).unwrap_or(u16::MAX);
         if cursor_x < inner.x + inner.width.saturating_sub(1) {
             let cursor_char = state.input[state.cursor_pos..]
                 .chars()
@@ -1619,8 +1704,10 @@ fn render_input_dialog(area: Rect, buf: &mut Buffer, state: &InputDialogState, t
     if inner.height > 1 {
         if let Some(err) = state.validate() {
             if !state.input.is_empty() {
-                Line::from(Span::from(err).fg(theme.notif_error))
-                    .render(Rect::new(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), 1), buf);
+                Line::from(Span::from(err).fg(theme.notif_error)).render(
+                    Rect::new(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), 1),
+                    buf,
+                );
             }
         }
     }
@@ -1812,12 +1899,7 @@ fn truncate_path_display(path: &Path, max_len: usize) -> String {
 
 /// Render the find/replace bar at the top-right of the editor area.
 #[allow(clippy::cast_possible_truncation)]
-fn render_find_replace(
-    area: Rect,
-    buf: &mut Buffer,
-    state: &FindReplaceState,
-    theme: &Theme,
-) {
+fn render_find_replace(area: Rect, buf: &mut Buffer, state: &FindReplaceState, theme: &Theme) {
     let bar_w = (area.width * 40 / 100).max(30).min(area.width);
     let rows: u16 = if state.show_replace { 3 } else { 2 };
     let bar_x = area.x + area.width - bar_w;
@@ -1885,10 +1967,12 @@ fn render_find_replace(
 
         let replace_line = vec![
             Span::from(replace_label),
-            Span::styled(format!("{visible_replace:<replace_input_w$}"), replace_style),
+            Span::styled(
+                format!("{visible_replace:<replace_input_w$}"),
+                replace_style,
+            ),
         ];
-        Line::from(replace_line)
-            .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
+        Line::from(replace_line).render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
     }
 }
 
@@ -1931,7 +2015,9 @@ fn render_centered_popup(
 }
 
 /// Block characters for progress indicator (8 levels of fill).
-const PROGRESS_BLOCKS: &[char] = &['\u{258F}', '\u{258E}', '\u{258D}', '\u{258C}', '\u{258B}', '\u{258A}', '\u{2589}', '\u{2588}'];
+const PROGRESS_BLOCKS: &[char] = &[
+    '\u{258F}', '\u{258E}', '\u{258D}', '\u{258C}', '\u{258B}', '\u{258A}', '\u{2589}', '\u{2588}',
+];
 
 /// Render toast notifications in the bottom-right corner with fade-out.
 #[allow(clippy::cast_possible_truncation)]
@@ -1997,13 +2083,15 @@ fn render_notifications(
         for _ in 0..full_blocks.min(msg_width as usize) {
             bar.push('\u{2588}');
         }
-        if full_blocks < msg_width as usize && partial_idx > 0 && partial_idx < PROGRESS_BLOCKS.len() {
+        if full_blocks < msg_width as usize
+            && partial_idx > 0
+            && partial_idx < PROGRESS_BLOCKS.len()
+        {
             bar.push(PROGRESS_BLOCKS[partial_idx]);
         }
 
         let bar_fg = blend_toward(base_fg, 0, 0, 0, 0.5);
-        Line::from(Span::from(bar).style(Style::new().fg(bar_fg)))
-            .render(bar_rect, buf);
+        Line::from(Span::from(bar).style(Style::new().fg(bar_fg))).render(bar_rect, buf);
     }
 }
 
@@ -2036,11 +2124,10 @@ mod tests {
         cp.type_char('v');
         // Should match "Save" and "Save All".
         assert!(cp.filtered_commands.len() >= 2);
-        assert!(
-            cp.filtered_commands
-                .iter()
-                .all(|c| c.label.to_lowercase().contains("sav"))
-        );
+        assert!(cp
+            .filtered_commands
+            .iter()
+            .all(|c| c.label.to_lowercase().contains("sav")));
     }
 
     #[test]
@@ -2680,7 +2767,13 @@ mod tests {
 
     #[test]
     fn input_dialog_type_and_backspace() {
-        let mut d = InputDialogState::new("Test", "hint", InputDialogAction::CreateFile { parent: PathBuf::from("/tmp") });
+        let mut d = InputDialogState::new(
+            "Test",
+            "hint",
+            InputDialogAction::CreateFile {
+                parent: PathBuf::from("/tmp"),
+            },
+        );
         d.type_char('h');
         d.type_char('e');
         d.type_char('l');
@@ -2693,7 +2786,13 @@ mod tests {
 
     #[test]
     fn input_dialog_cursor_movement() {
-        let mut d = InputDialogState::new("Test", "hint", InputDialogAction::CreateFile { parent: PathBuf::from("/tmp") });
+        let mut d = InputDialogState::new(
+            "Test",
+            "hint",
+            InputDialogAction::CreateFile {
+                parent: PathBuf::from("/tmp"),
+            },
+        );
         d.type_char('a');
         d.type_char('b');
         d.type_char('c');
@@ -2709,7 +2808,13 @@ mod tests {
 
     #[test]
     fn input_dialog_delete() {
-        let mut d = InputDialogState::new("Test", "hint", InputDialogAction::CreateFile { parent: PathBuf::from("/tmp") });
+        let mut d = InputDialogState::new(
+            "Test",
+            "hint",
+            InputDialogAction::CreateFile {
+                parent: PathBuf::from("/tmp"),
+            },
+        );
         d.type_char('a');
         d.type_char('b');
         d.type_char('c');
@@ -2721,13 +2826,25 @@ mod tests {
 
     #[test]
     fn input_dialog_validate_empty() {
-        let d = InputDialogState::new("Test", "hint", InputDialogAction::CreateFile { parent: PathBuf::from("/tmp") });
+        let d = InputDialogState::new(
+            "Test",
+            "hint",
+            InputDialogAction::CreateFile {
+                parent: PathBuf::from("/tmp"),
+            },
+        );
         assert!(d.validate().is_some());
     }
 
     #[test]
     fn input_dialog_validate_path_separator() {
-        let mut d = InputDialogState::new("Test", "hint", InputDialogAction::CreateFile { parent: PathBuf::from("/tmp") });
+        let mut d = InputDialogState::new(
+            "Test",
+            "hint",
+            InputDialogAction::CreateFile {
+                parent: PathBuf::from("/tmp"),
+            },
+        );
         d.type_char('a');
         d.type_char('/');
         d.type_char('b');
@@ -2736,7 +2853,13 @@ mod tests {
 
     #[test]
     fn input_dialog_validate_ok() {
-        let mut d = InputDialogState::new("Test", "hint", InputDialogAction::CreateFile { parent: PathBuf::from("/tmp") });
+        let mut d = InputDialogState::new(
+            "Test",
+            "hint",
+            InputDialogAction::CreateFile {
+                parent: PathBuf::from("/tmp"),
+            },
+        );
         d.type_char('f');
         d.type_char('o');
         d.type_char('o');
@@ -2745,10 +2868,59 @@ mod tests {
 
     #[test]
     fn input_dialog_with_input_prefill() {
-        let d = InputDialogState::new("Rename", "new name", InputDialogAction::Rename { from: PathBuf::from("/old") })
-            .with_input("old_name.txt");
+        let d = InputDialogState::new(
+            "Rename",
+            "new name",
+            InputDialogAction::Rename {
+                from: PathBuf::from("/old"),
+            },
+        )
+        .with_input("old_name.txt");
         assert_eq!(d.input, "old_name.txt");
         assert_eq!(d.cursor_pos, 12);
+    }
+
+    #[test]
+    fn layout_picker_visible_range_keeps_selected_row_in_view() {
+        let mut state = LayoutPickerState::new(
+            (0..8)
+                .map(|i| LayoutPickerEntry {
+                    label: format!("Layout {i}"),
+                    pane_count: i + 1,
+                    kind: LayoutPickerEntryKind::Preset(i),
+                })
+                .collect(),
+        );
+        state.selected = 6;
+
+        assert_eq!(state.visible_range(3), (4, 7));
+    }
+
+    #[test]
+    fn layout_picker_footer_omits_rename_delete_for_presets() {
+        let state = LayoutPickerState::new(vec![LayoutPickerEntry {
+            label: "Single".to_string(),
+            pane_count: 1,
+            kind: LayoutPickerEntryKind::Preset(0),
+        }]);
+
+        let footer = layout_picker_footer(&state, false);
+        assert!(footer.contains("Enter apply"));
+        assert!(!footer.contains("R rename"));
+        assert!(!footer.contains("D delete"));
+    }
+
+    #[test]
+    fn layout_picker_footer_includes_saved_actions_for_saved_layouts() {
+        let state = LayoutPickerState::new(vec![LayoutPickerEntry {
+            label: "Saved".to_string(),
+            pane_count: 2,
+            kind: LayoutPickerEntryKind::Saved(0),
+        }]);
+
+        let footer = layout_picker_footer(&state, false);
+        assert!(footer.contains("R rename"));
+        assert!(footer.contains("D delete"));
     }
 
     #[test]
@@ -2779,13 +2951,22 @@ mod tests {
             created: Instant::now() - std::time::Duration::from_millis(3500),
         };
         let v = notif.vitality();
-        assert!(v > 0.0 && v < 1.0, "vitality during fade should be 0 < {v} < 1");
+        assert!(
+            v > 0.0 && v < 1.0,
+            "vitality during fade should be 0 < {v} < 1"
+        );
     }
 
     #[test]
     fn overlay_open_input_dialog() {
         let mut overlay = OverlayState::default();
-        let state = InputDialogState::new("New File", "filename", InputDialogAction::CreateFile { parent: PathBuf::from("/tmp") });
+        let state = InputDialogState::new(
+            "New File",
+            "filename",
+            InputDialogAction::CreateFile {
+                parent: PathBuf::from("/tmp"),
+            },
+        );
         overlay.open_input_dialog(state);
         assert!(overlay.is_active());
         assert!(matches!(overlay.active, Some(OverlayKind::InputDialog)));

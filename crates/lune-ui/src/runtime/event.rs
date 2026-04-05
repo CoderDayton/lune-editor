@@ -204,6 +204,8 @@ pub enum AppCommand {
     // ── Agents tab commands ────────────────────────────────────────
     /// Open the layout picker in the Agents tab.
     AgentApplyLayout,
+    /// Split a pane using mouse-aware smart direction.
+    AgentSplitAuto,
     /// Split the focused agent pane vertically.
     AgentSplitVertical,
     /// Split the focused agent pane horizontally.
@@ -216,6 +218,14 @@ pub enum AppCommand {
     AgentFocusPrev,
     /// Toggle zoom on the focused agent pane.
     AgentToggleZoom,
+    /// Prompt for a name and save the current agent layout.
+    AgentSaveLayout,
+    /// Persist the current agent layout under the given name.
+    AgentSaveLayoutConfirmed(String),
+    /// Delete the saved agent layout at the given index.
+    AgentDeleteSavedLayout(usize),
+    /// Rename the saved agent layout at the given index.
+    AgentRenameSavedLayoutConfirmed { index: usize, name: String },
 
     // ── Theme commands ──────────────────────────────────────────────
     /// Switch to the next theme in the registry.

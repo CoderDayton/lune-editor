@@ -11,6 +11,10 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use crossbeam::channel::{self, Receiver, Sender, TryRecvError};
 use uuid::Uuid;
@@ -135,6 +139,21 @@ impl AiSession {
         env: &HashMap<String, String>,
         size: TermSize,
     ) -> anyhow::Result<Self> {
+        Self::start_with_wake(kind, cwd, env, size, None)
+    }
+
+    /// Start a new AI session and optionally emit wake notifications whenever
+    /// the reader thread forwards PTY events.
+    ///
+    /// # Errors
+    /// Returns an error if the PTY cannot be spawned.
+    pub fn start_with_wake(
+        kind: AiClientKind,
+        cwd: Option<&Path>,
+        env: &HashMap<String, String>,
+        size: TermSize,
+        wake_flag: Option<Arc<AtomicBool>>,
+    ) -> anyhow::Result<Self> {
         let command = kind.resolved_command();
         // Args are currently empty for all kinds; future kinds may add arguments.
         let args: Vec<&str> = Vec::new();
@@ -146,7 +165,7 @@ impl AiSession {
         let (event_tx, event_rx) = channel::unbounded();
 
         // Start the reader thread.
-        start_reader_thread(reader, event_tx);
+        start_reader_thread(reader, event_tx, wake_flag);
 
         Ok(Self {
             id: Uuid::new_v4(),
@@ -301,7 +320,25 @@ impl AiSession {
 
 /// Spawn a background thread that reads from the PTY reader and sends
 /// events to the main thread via a crossbeam channel.
-fn start_reader_thread(mut reader: Box<dyn Read + Send>, tx: Sender<SessionEvent>) {
+fn send_session_event(
+    tx: &Sender<SessionEvent>,
+    wake_flag: Option<&Arc<AtomicBool>>,
+    event: SessionEvent,
+) -> bool {
+    if tx.send(event).is_err() {
+        return false;
+    }
+    if let Some(wake_flag) = wake_flag {
+        wake_flag.store(true, Ordering::Release);
+    }
+    true
+}
+
+fn start_reader_thread(
+    mut reader: Box<dyn Read + Send>,
+    tx: Sender<SessionEvent>,
+    wake_flag: Option<Arc<AtomicBool>>,
+) {
     std::thread::Builder::new()
         .name("lune-ai-pty-reader".into())
         .spawn(move || {
@@ -310,17 +347,25 @@ fn start_reader_thread(mut reader: Box<dyn Read + Send>, tx: Sender<SessionEvent
                 match reader.read(&mut buf) {
                     Ok(0) => {
                         // EOF — process exited.
-                        let _ = tx.send(SessionEvent::Ended);
+                        let _ = send_session_event(&tx, wake_flag.as_ref(), SessionEvent::Ended);
                         break;
                     }
                     Ok(n) => {
-                        if tx.send(SessionEvent::Output(buf[..n].to_vec())).is_err() {
+                        if !send_session_event(
+                            &tx,
+                            wake_flag.as_ref(),
+                            SessionEvent::Output(buf[..n].to_vec()),
+                        ) {
                             // Receiver dropped — session was closed.
                             break;
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(SessionEvent::ReadError(e.to_string()));
+                        let _ = send_session_event(
+                            &tx,
+                            wake_flag.as_ref(),
+                            SessionEvent::ReadError(e.to_string()),
+                        );
                         break;
                     }
                 }

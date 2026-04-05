@@ -5,6 +5,7 @@
 //! [`TileNode::compute_rects`] to produce a `(PaneId, Rect)` for every leaf.
 
 use crate::primitives::Rect;
+use serde::{Deserialize, Serialize};
 
 // ── Identifiers ────────────────────────────────────────────────────────
 
@@ -13,12 +14,21 @@ use crate::primitives::Rect;
 pub struct PaneId(pub u32);
 
 /// Direction of a binary split.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SplitDirection {
     /// Left | Right
     Vertical,
     /// Top / Bottom
     Horizontal,
+}
+
+/// Which side of a split should receive the new pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitSide {
+    /// New pane becomes the first child (left or top).
+    First,
+    /// New pane becomes the second child (right or bottom).
+    Second,
 }
 
 // ── Tree node ──────────────────────────────────────────────────────────
@@ -36,6 +46,27 @@ pub enum TileNode {
         first: Box<Self>,
         second: Box<Self>,
     },
+}
+
+/// Serializable pane-id-free layout tree used for saved layouts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum SavedTileNode {
+    /// A single pane slot.
+    Leaf,
+    /// Two children separated by a split.
+    Split {
+        direction: SplitDirection,
+        ratio: f64,
+        first: Box<Self>,
+        second: Box<Self>,
+    },
+}
+
+/// A user-saved agent layout template.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedAgentLayout {
+    pub name: String,
+    pub root: SavedTileNode,
 }
 
 /// Minimum ratio for any split (10%).
@@ -156,17 +187,21 @@ impl TileNode {
         target_id: PaneId,
         new_id: PaneId,
         direction: SplitDirection,
+        side: SplitSide,
     ) -> bool {
         match self {
             Self::Leaf { pane_id } if *pane_id == target_id => {
                 let original = Self::leaf(*pane_id);
                 let new_leaf = Self::leaf(new_id);
-                *self = Self::split(direction, 0.5, original, new_leaf);
+                *self = match side {
+                    SplitSide::First => Self::split(direction, 0.5, new_leaf, original),
+                    SplitSide::Second => Self::split(direction, 0.5, original, new_leaf),
+                };
                 true
             }
             Self::Split { first, second, .. } => {
-                first.split_pane(target_id, new_id, direction)
-                    || second.split_pane(target_id, new_id, direction)
+                first.split_pane(target_id, new_id, direction, side)
+                    || second.split_pane(target_id, new_id, direction, side)
             }
             Self::Leaf { .. } => false,
         }
@@ -248,15 +283,12 @@ impl TileNode {
                 }
                 let (first_area, second_area) = subdivide(area, *direction, *ratio);
                 path.push(0);
-                if let Some(result) =
-                    first.hit_test_inner(first_area, col, row, tolerance, path)
-                {
+                if let Some(result) = first.hit_test_inner(first_area, col, row, tolerance, path) {
                     return Some(result);
                 }
                 path.pop();
                 path.push(1);
-                if let Some(result) =
-                    second.hit_test_inner(second_area, col, row, tolerance, path)
+                if let Some(result) = second.hit_test_inner(second_area, col, row, tolerance, path)
                 {
                     return Some(result);
                 }
@@ -282,6 +314,31 @@ impl TileNode {
         }
     }
 
+    /// Compute the screen rect for the node at `path`.
+    ///
+    /// The empty path refers to the current node.
+    pub fn rect_at_path(&self, area: Rect, path: &[usize]) -> Option<Rect> {
+        if path.is_empty() {
+            return Some(area);
+        }
+        match self {
+            Self::Split {
+                direction,
+                ratio,
+                first,
+                second,
+            } => {
+                let (first_area, second_area) = subdivide(area, *direction, *ratio);
+                match path[0] {
+                    0 => first.rect_at_path(first_area, &path[1..]),
+                    1 => second.rect_at_path(second_area, &path[1..]),
+                    _ => None,
+                }
+            }
+            Self::Leaf { .. } => None,
+        }
+    }
+
     /// Adjust the ratio of this node (must be a Split). Returns the new ratio.
     pub fn adjust_ratio(&mut self, delta: f64) -> Option<f64> {
         if let Self::Split { ratio, .. } = self {
@@ -290,6 +347,79 @@ impl TileNode {
         } else {
             None
         }
+    }
+
+    /// Convert the live layout tree into a pane-id-free saved template.
+    #[must_use]
+    pub fn to_saved(&self) -> SavedTileNode {
+        match self {
+            Self::Leaf { .. } => SavedTileNode::Leaf,
+            Self::Split {
+                direction,
+                ratio,
+                first,
+                second,
+            } => SavedTileNode::Split {
+                direction: *direction,
+                ratio: *ratio,
+                first: Box::new(first.to_saved()),
+                second: Box::new(second.to_saved()),
+            },
+        }
+    }
+}
+
+impl SavedTileNode {
+    /// Count the number of panes required by this template.
+    #[must_use]
+    pub fn pane_count(&self) -> usize {
+        match self {
+            Self::Leaf => 1,
+            Self::Split { first, second, .. } => first.pane_count() + second.pane_count(),
+        }
+    }
+
+    /// Rebuild a live layout tree using pane IDs in encounter order.
+    #[must_use]
+    pub fn instantiate(&self, ids: &[PaneId]) -> Option<TileNode> {
+        let mut next = 0usize;
+        let tree = self.instantiate_inner(ids, &mut next)?;
+        (next == ids.len()).then_some(tree)
+    }
+
+    fn instantiate_inner(&self, ids: &[PaneId], next: &mut usize) -> Option<TileNode> {
+        match self {
+            Self::Leaf => {
+                let id = *ids.get(*next)?;
+                *next += 1;
+                Some(TileNode::leaf(id))
+            }
+            Self::Split {
+                direction,
+                ratio,
+                first,
+                second,
+            } => Some(TileNode::split(
+                *direction,
+                *ratio,
+                first.instantiate_inner(ids, next)?,
+                second.instantiate_inner(ids, next)?,
+            )),
+        }
+    }
+}
+
+impl SavedAgentLayout {
+    /// Number of panes required by this saved layout.
+    #[must_use]
+    pub fn pane_count(&self) -> usize {
+        self.root.pane_count()
+    }
+
+    /// Rebuild the saved layout using the given pane IDs.
+    #[must_use]
+    pub fn instantiate(&self, ids: &[PaneId]) -> Option<TileNode> {
+        self.root.instantiate(ids)
     }
 }
 
@@ -470,12 +600,53 @@ pub struct PresetInfo {
 
 /// All available preset layouts.
 pub const PRESET_LIST: &[PresetInfo] = &[
-    PresetInfo { name: "Single", pane_count: 1 },
-    PresetInfo { name: "Side by Side", pane_count: 2 },
-    PresetInfo { name: "Three Columns", pane_count: 3 },
-    PresetInfo { name: "Grid (2×2)", pane_count: 4 },
-    PresetInfo { name: "Main + Stack", pane_count: 3 },
+    PresetInfo {
+        name: "Single",
+        pane_count: 1,
+    },
+    PresetInfo {
+        name: "Side by Side",
+        pane_count: 2,
+    },
+    PresetInfo {
+        name: "Three Columns",
+        pane_count: 3,
+    },
+    PresetInfo {
+        name: "Grid (2×2)",
+        pane_count: 4,
+    },
+    PresetInfo {
+        name: "Main + Stack",
+        pane_count: 3,
+    },
 ];
+
+/// Build one of the built-in preset layouts.
+#[must_use]
+pub fn build_preset_layout(preset_index: usize, ids: &[PaneId]) -> Option<TileNode> {
+    match preset_index {
+        0 => Some(Presets::single(*ids.first()?)),
+        1 => Some(Presets::side_by_side([*ids.first()?, *ids.get(1)?])),
+        2 => Some(Presets::three_columns([
+            *ids.first()?,
+            *ids.get(1)?,
+            *ids.get(2)?,
+        ])),
+        3 => Some(Presets::grid([
+            *ids.first()?,
+            *ids.get(1)?,
+            *ids.get(2)?,
+            *ids.get(3)?,
+        ])),
+        4 => Some(Presets::main_stack([
+            *ids.first()?,
+            *ids.get(1)?,
+            *ids.get(2)?,
+        ])),
+        _ => None,
+    }
+}
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
@@ -537,7 +708,11 @@ mod tests {
         assert_eq!(rects.len(), 3);
         // First pane (main) should be ~60% width.
         let main = rects[0].1;
-        assert!(main.width > 60, "main pane should be >60 cols, got {}", main.width);
+        assert!(
+            main.width > 60,
+            "main pane should be >60 cols, got {}",
+            main.width
+        );
     }
 
     #[test]
@@ -556,9 +731,16 @@ mod tests {
     #[test]
     fn split_pane_inserts_new_leaf() {
         let mut tree = Presets::single(p(0));
-        assert!(tree.split_pane(p(0), p(1), SplitDirection::Vertical));
+        assert!(tree.split_pane(p(0), p(1), SplitDirection::Vertical, SplitSide::Second,));
         assert_eq!(tree.pane_count(), 2);
         assert_eq!(tree.pane_ids(), vec![p(0), p(1)]);
+    }
+
+    #[test]
+    fn split_pane_can_insert_on_first_side() {
+        let mut tree = Presets::single(p(0));
+        assert!(tree.split_pane(p(0), p(1), SplitDirection::Vertical, SplitSide::First,));
+        assert_eq!(tree.pane_ids(), vec![p(1), p(0)]);
     }
 
     #[test]
@@ -597,7 +779,12 @@ mod tests {
 
     #[test]
     fn ratio_clamped() {
-        let tree = TileNode::split(SplitDirection::Vertical, 0.0, TileNode::leaf(p(0)), TileNode::leaf(p(1)));
+        let tree = TileNode::split(
+            SplitDirection::Vertical,
+            0.0,
+            TileNode::leaf(p(0)),
+            TileNode::leaf(p(1)),
+        );
         if let TileNode::Split { ratio, .. } = &tree {
             assert!(*ratio >= MIN_RATIO);
         }
@@ -616,6 +803,49 @@ mod tests {
     }
 
     #[test]
+    fn rect_at_path_returns_nested_area() {
+        let tree = Presets::main_stack([p(0), p(1), p(2)]);
+        let rect = tree.rect_at_path(area(), &[1]).unwrap();
+        assert!(rect.x > 0);
+        assert!(rect.width < area().width);
+        assert_eq!(rect.height, area().height);
+    }
+
+    #[test]
+    fn saved_layout_round_trip_preserves_shape() {
+        let tree = Presets::main_stack([p(10), p(11), p(12)]);
+        let saved = SavedAgentLayout {
+            name: "Main Stack".to_string(),
+            root: tree.to_saved(),
+        };
+        let rebuilt = saved.instantiate(&[p(0), p(1), p(2)]).unwrap();
+
+        assert_eq!(rebuilt.pane_count(), 3);
+        assert_eq!(rebuilt.pane_ids(), vec![p(0), p(1), p(2)]);
+        assert_eq!(rebuilt.to_saved(), saved.root);
+    }
+
+    #[test]
+    fn saved_layout_instantiate_requires_exact_pane_count() {
+        let saved = SavedAgentLayout {
+            name: "Two Up".to_string(),
+            root: Presets::side_by_side([p(10), p(11)]).to_saved(),
+        };
+
+        assert!(saved.instantiate(&[p(0)]).is_none());
+        assert!(saved.instantiate(&[p(0), p(1), p(2)]).is_none());
+    }
+
+    #[test]
+    fn build_preset_layout_matches_preset_metadata() {
+        for (idx, info) in PRESET_LIST.iter().enumerate() {
+            let ids: Vec<_> = (0..info.pane_count as u32).map(p).collect();
+            let tree = build_preset_layout(idx, &ids).unwrap();
+            assert_eq!(tree.pane_count(), info.pane_count);
+        }
+    }
+
+    #[test]
     fn no_overlap_no_gap() {
         // Verify that pane rects + borders perfectly tile the area.
         let a = area();
@@ -623,8 +853,14 @@ mod tests {
         let rects = tree.compute_rects(a);
         let borders = tree.compute_borders(a);
 
-        let total_cells: u32 = rects.iter().map(|(_, r)| u32::from(r.width) * u32::from(r.height)).sum::<u32>()
-            + borders.iter().map(|b| u32::from(b.rect.width) * u32::from(b.rect.height)).sum::<u32>();
+        let total_cells: u32 = rects
+            .iter()
+            .map(|(_, r)| u32::from(r.width) * u32::from(r.height))
+            .sum::<u32>()
+            + borders
+                .iter()
+                .map(|b| u32::from(b.rect.width) * u32::from(b.rect.height))
+                .sum::<u32>();
         assert_eq!(total_cells, u32::from(a.width) * u32::from(a.height));
     }
 }

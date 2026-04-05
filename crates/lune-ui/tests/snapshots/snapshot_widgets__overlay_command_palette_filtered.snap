@@ -8,9 +8,9 @@ expression: buffer_to_text(&buf)
                 ┌ Command Palette ─────────────────────────────┐
                 │> sav                                         │
                 │──────────────────────────────────────────────│
+                │  Agent: Save Current Layout                  │
                 │  Save                                        │
                 │  Save All                                    │
-                │                                              │
                 │                                              │
                 │                                              │
                 └──────────────────────────────────────────────┘

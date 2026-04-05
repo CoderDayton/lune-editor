@@ -5,6 +5,10 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{
+    atomic::AtomicBool,
+    Arc,
+};
 
 use rustc_hash::FxHashMap;
 
@@ -17,6 +21,8 @@ pub struct AiManager {
     sessions: FxHashMap<AiSessionId, AiSession>,
     /// The currently active (focused) session ID.
     active: Option<AiSessionId>,
+    /// Shared pending-activity flag flipped by session reader threads.
+    pending_wake: Arc<AtomicBool>,
 }
 
 impl AiManager {
@@ -26,6 +32,7 @@ impl AiManager {
         Self {
             sessions: FxHashMap::default(),
             active: None,
+            pending_wake: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -40,11 +47,23 @@ impl AiManager {
         env: &HashMap<String, String>,
         size: TermSize,
     ) -> anyhow::Result<AiSessionId> {
-        let session = AiSession::start(kind, cwd, env, size)?;
+        let session = AiSession::start_with_wake(
+            kind,
+            cwd,
+            env,
+            size,
+            Some(Arc::clone(&self.pending_wake)),
+        )?;
         let id = session.id();
         self.sessions.insert(id, session);
         self.active = Some(id);
         Ok(id)
+    }
+
+    /// Get a clone of the shared pending-activity flag used by the UI poller.
+    #[must_use]
+    pub fn wake_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.pending_wake)
     }
 
     /// Get a reference to the active session.
@@ -296,6 +315,24 @@ mod tests {
 
         let changed = mgr.poll_all();
         assert!(changed);
+
+        mgr.close_all();
+    }
+
+    #[test]
+    fn pending_wake_only_flips_when_reader_thread_emits_activity() {
+        let mut mgr = make_manager_with_shell();
+
+        assert!(!mgr.pending_wake.swap(false, std::sync::atomic::Ordering::AcqRel));
+
+        if let Some(session) = mgr.active_session_mut() {
+            session.send_input(b"echo wake_test\n").unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        assert!(mgr.pending_wake.swap(false, std::sync::atomic::Ordering::AcqRel));
+        assert!(!mgr.pending_wake.swap(false, std::sync::atomic::Ordering::AcqRel));
+        assert!(mgr.poll_all());
 
         mgr.close_all();
     }

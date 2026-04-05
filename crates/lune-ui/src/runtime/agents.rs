@@ -8,7 +8,9 @@ use rustc_hash::FxHashMap;
 
 use lune_ai::AiSessionId;
 
-use super::tiling::{PaneId, Presets, SplitDirection, TileNode, PRESET_LIST};
+use super::tiling::{
+    build_preset_layout, PaneId, SavedAgentLayout, SplitDirection, SplitSide, TileNode, PRESET_LIST,
+};
 
 // ── Pane ───────────────────────────────────────────────────────────────
 
@@ -95,10 +97,7 @@ impl AgentsTabState {
 
     /// Register a pane with an AI session.
     pub fn register_pane(&mut self, pane_id: PaneId, session_id: AiSessionId, title: String) {
-        self.panes.insert(
-            pane_id,
-            AgentPane { session_id, title },
-        );
+        self.panes.insert(pane_id, AgentPane { session_id, title });
     }
 
     /// Add the first pane (when layout is `None`).
@@ -116,10 +115,19 @@ impl AgentsTabState {
     /// Returns the new [`PaneId`] so the caller can spawn a session for it.
     /// Returns `None` if there are no panes.
     pub fn split_focused(&mut self, direction: SplitDirection) -> Option<PaneId> {
+        self.split_focused_with_side(direction, SplitSide::Second)
+    }
+
+    /// Split the focused pane and choose which side receives the new pane.
+    pub fn split_focused_with_side(
+        &mut self,
+        direction: SplitDirection,
+        side: SplitSide,
+    ) -> Option<PaneId> {
         let focused = self.focused?;
         let new_id = self.alloc_pane_id();
         let layout = self.layout.as_mut()?;
-        if layout.split_pane(focused, new_id, direction) {
+        if layout.split_pane(focused, new_id, direction, side) {
             self.focused = Some(new_id);
             Some(new_id)
         } else {
@@ -151,6 +159,50 @@ impl AgentsTabState {
             self.focused = Some(focused);
             None
         }
+    }
+
+    /// Discard a pane without preserving the "must keep one pane" rule.
+    ///
+    /// This is used to roll back a pane that was created optimistically
+    /// before its PTY session successfully spawned, so the tab may become
+    /// empty again.
+    pub fn discard_pane(&mut self, pane_id: PaneId) -> bool {
+        let is_last = matches!(
+            self.layout.as_ref(),
+            Some(TileNode::Leaf { pane_id: id }) if *id == pane_id
+        );
+
+        if is_last {
+            self.layout = None;
+            self.focused = None;
+            self.drag = None;
+            self.zoomed = false;
+            self.panes.remove(&pane_id);
+            return true;
+        }
+
+        let removed = self
+            .layout
+            .as_mut()
+            .is_some_and(|layout| layout.remove_pane(pane_id));
+
+        if !removed {
+            return false;
+        }
+
+        self.panes.remove(&pane_id);
+        self.drag = None;
+
+        let next_focus = self.layout.as_ref().and_then(|layout| {
+            layout
+                .pane_ids()
+                .into_iter()
+                .find(|id| self.panes.contains_key(id))
+        });
+        self.focused = next_focus;
+        self.zoomed = self.zoomed && self.focused.is_some();
+
+        true
     }
 
     /// Cycle focus to the next pane (tree order).
@@ -211,7 +263,38 @@ impl AgentsTabState {
             None => return (Vec::new(), Vec::new()),
         };
 
-        let needed = info.pane_count;
+        self.apply_layout_template(info.pane_count, |ids| {
+            build_preset_layout(preset_index, ids)
+        })
+    }
+
+    /// Apply a saved layout template.
+    pub fn apply_saved_layout(
+        &mut self,
+        saved: &SavedAgentLayout,
+    ) -> (Vec<PaneId>, Vec<AiSessionId>) {
+        self.apply_layout_template(saved.pane_count(), |ids| saved.instantiate(ids))
+    }
+
+    /// Capture the current layout tree as a named saved layout.
+    #[must_use]
+    pub fn save_layout(&self, name: String) -> Option<SavedAgentLayout> {
+        let root = self.layout.as_ref()?.to_saved();
+        Some(SavedAgentLayout { name, root })
+    }
+
+    fn apply_layout_template<F>(
+        &mut self,
+        needed: usize,
+        build: F,
+    ) -> (Vec<PaneId>, Vec<AiSessionId>)
+    where
+        F: FnOnce(&[PaneId]) -> Option<TileNode>,
+    {
+        if needed == 0 {
+            return (Vec::new(), Vec::new());
+        }
+
         let existing_ids: Vec<PaneId> = self
             .layout
             .as_ref()
@@ -231,23 +314,18 @@ impl AgentsTabState {
             }
         }
 
-        // Close excess panes.
+        let Some(tree) = build(&ids) else {
+            return (Vec::new(), Vec::new());
+        };
+
+        // Close excess panes only after the target layout is confirmed
+        // buildable, so a bad template cannot partially corrupt state.
         let mut closed_sessions = Vec::new();
         for &excess_id in existing_ids.iter().skip(needed) {
             if let Some(pane) = self.panes.remove(&excess_id) {
                 closed_sessions.push(pane.session_id);
             }
         }
-
-        // Build the new layout tree.
-        let tree = match preset_index {
-            0 => Presets::single(ids[0]),
-            1 => Presets::side_by_side([ids[0], ids[1]]),
-            2 => Presets::three_columns([ids[0], ids[1], ids[2]]),
-            3 => Presets::grid([ids[0], ids[1], ids[2], ids[3]]),
-            4 => Presets::main_stack([ids[0], ids[1], ids[2]]),
-            _ => return (Vec::new(), Vec::new()),
-        };
 
         self.layout = Some(tree);
 
@@ -324,6 +402,21 @@ mod tests {
         assert_eq!(state.pane_count(), 2);
         // Focus moves to the new pane.
         assert_eq!(state.focused, Some(second));
+    }
+
+    #[test]
+    fn split_focused_with_first_side_places_new_pane_first() {
+        let mut state = AgentsTabState::new();
+        let first = state.add_first_pane();
+        state.register_pane(first, dummy_session_id(), "Shell".into());
+
+        let second = state
+            .split_focused_with_side(SplitDirection::Vertical, SplitSide::First)
+            .unwrap();
+        state.register_pane(second, dummy_session_id(), "Shell 2".into());
+
+        let ids = state.layout.as_ref().unwrap().pane_ids();
+        assert_eq!(ids, vec![second, first]);
     }
 
     #[test]
@@ -405,6 +498,82 @@ mod tests {
     }
 
     #[test]
+    fn save_and_reapply_layout_round_trip() {
+        let mut state = AgentsTabState::new();
+        let first = state.add_first_pane();
+        state.register_pane(first, dummy_session_id(), "A".into());
+        let second = state.split_focused(SplitDirection::Vertical).unwrap();
+        state.register_pane(second, dummy_session_id(), "B".into());
+
+        let saved = state.save_layout("Two Up".to_string()).unwrap();
+        let (new_ids, closed) = state.apply_saved_layout(&saved);
+
+        assert!(new_ids.is_empty());
+        assert!(closed.is_empty());
+        assert_eq!(state.pane_count(), 2);
+    }
+
+    #[test]
+    fn apply_saved_layout_closes_excess_sessions() {
+        let mut state = AgentsTabState::new();
+        let first = state.add_first_pane();
+        let first_session = dummy_session_id();
+        state.register_pane(first, first_session, "A".into());
+        let second = state.split_focused(SplitDirection::Vertical).unwrap();
+        let second_session = dummy_session_id();
+        state.register_pane(second, second_session, "B".into());
+
+        let saved = SavedAgentLayout {
+            name: "Single".to_string(),
+            root: crate::runtime::tiling::SavedTileNode::Leaf,
+        };
+        let (new_ids, closed) = state.apply_saved_layout(&saved);
+
+        assert!(new_ids.is_empty());
+        assert_eq!(closed, vec![second_session]);
+        assert_eq!(state.pane_count(), 1);
+        assert_eq!(state.focused, Some(first));
+        assert!(!state.panes.contains_key(&second));
+        assert_eq!(
+            state.panes.get(&first).map(|pane| pane.session_id),
+            Some(first_session)
+        );
+    }
+
+    #[test]
+    fn apply_layout_template_failure_preserves_existing_state() {
+        let mut state = AgentsTabState::new();
+        let first = state.add_first_pane();
+        let first_session = dummy_session_id();
+        state.register_pane(first, first_session, "A".into());
+        let second = state.split_focused(SplitDirection::Vertical).unwrap();
+        let second_session = dummy_session_id();
+        state.register_pane(second, second_session, "B".into());
+        state.focused = Some(first);
+
+        let pane_ids_before = state.layout.as_ref().unwrap().pane_ids();
+        let pane_count_before = state.pane_count();
+        let pane_map_len_before = state.panes.len();
+
+        let (new_ids, closed) = state.apply_layout_template(1, |_| None);
+
+        assert!(new_ids.is_empty());
+        assert!(closed.is_empty());
+        assert_eq!(state.pane_count(), pane_count_before);
+        assert_eq!(state.layout.as_ref().unwrap().pane_ids(), pane_ids_before);
+        assert_eq!(state.focused, Some(first));
+        assert_eq!(state.panes.len(), pane_map_len_before);
+        assert_eq!(
+            state.panes.get(&first).map(|pane| pane.session_id),
+            Some(first_session)
+        );
+        assert_eq!(
+            state.panes.get(&second).map(|pane| pane.session_id),
+            Some(second_session)
+        );
+    }
+
+    #[test]
     fn toggle_zoom() {
         let mut state = AgentsTabState::new();
         let first = state.add_first_pane();
@@ -415,5 +584,30 @@ mod tests {
         assert!(state.zoomed);
         state.toggle_zoom();
         assert!(!state.zoomed);
+    }
+
+    #[test]
+    fn discard_only_pane_resets_to_empty() {
+        let mut state = AgentsTabState::new();
+        let first = state.add_first_pane();
+        state.register_pane(first, dummy_session_id(), "Shell".into());
+
+        assert!(state.discard_pane(first));
+        assert!(state.is_empty());
+        assert!(state.focused.is_none());
+        assert!(!state.zoomed);
+    }
+
+    #[test]
+    fn discard_pane_from_split_keeps_remaining_focus_valid() {
+        let mut state = AgentsTabState::new();
+        let first = state.add_first_pane();
+        state.register_pane(first, dummy_session_id(), "A".into());
+        let second = state.split_focused(SplitDirection::Vertical).unwrap();
+        state.register_pane(second, dummy_session_id(), "B".into());
+
+        assert!(state.discard_pane(second));
+        assert_eq!(state.pane_count(), 1);
+        assert_eq!(state.focused, Some(first));
     }
 }
