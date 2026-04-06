@@ -5,6 +5,6 @@ pub mod event;
 pub mod focus;
 pub mod keybindings;
 pub mod layout;
-pub mod tiling;
 pub mod terminal_layouts;
+pub mod tiling;
 pub mod vim;
