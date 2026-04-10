@@ -175,23 +175,66 @@ pub(super) fn handle_cut(state: &mut AppState) -> Control<AppEvent> {
 }
 
 pub(super) fn handle_paste(state: &mut AppState) -> Control<AppEvent> {
-    let text = match Clipboard::new().and_then(|mut cb| cb.get_text()) {
-        Ok(t) => t,
-        Err(e) => {
-            state
-                .overlay
-                .notify(format!("Clipboard error: {e}"), NotificationLevel::Error);
-            return Control::Changed;
-        }
+    let Some(text) = read_clipboard_text(state) else {
+        return Control::Changed;
     };
     if let Some(buf) = state.active_buf_mut() {
-        let sel = buf.cursor.primary.clone();
+        let _ = buf.insert_at_cursor_set(&text);
+    }
+    state.update_active_highlighter();
+    state.viewport_follow_cursor = true;
+    Control::Changed
+}
+
+pub(super) fn handle_paste_at_position(
+    state: &mut AppState,
+    pos: Position,
+) -> Control<AppEvent> {
+    let Some(text) = read_clipboard_text(state) else {
+        return Control::Changed;
+    };
+    if let Some(buf) = state.active_buf_mut() {
+        let clamped_line = pos.line.min(buf.line_count().saturating_sub(1));
+        let clamped_col = pos.col.min(buf.line_len_no_newline(clamped_line));
+        let clamped = Position::new(clamped_line, clamped_col);
+        buf.cursor = CursorState::at(clamped);
+        buf.insert(clamped, &text);
+    }
+    state.update_active_highlighter();
+    state.viewport_follow_cursor = true;
+    Control::Changed
+}
+
+pub(super) fn handle_cut_line(state: &mut AppState) -> Control<AppEvent> {
+    let text = state.active_buf().map(|buf| {
+        let sel = &buf.cursor.primary;
         if !sel.is_cursor() {
+            let (s, e) = sel.ordered();
+            return buf.text_range(s, e);
+        }
+        let (start, end) = current_line_range(buf);
+        buf.text_range(start, end)
+    });
+    let Some(text) = text else {
+        return Control::Continue;
+    };
+
+    if let Err(e) = Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
+        state
+            .overlay
+            .notify(format!("Clipboard error: {e}"), NotificationLevel::Error);
+    }
+
+    if let Some(buf) = state.active_buf_mut() {
+        let sel = buf.cursor.primary.clone();
+        if sel.is_cursor() {
+            let (start, end) = current_line_range(buf);
+            buf.delete(start, end);
+            buf.cursor = CursorState::at(start);
+        } else {
             let (s, e) = sel.ordered();
             buf.delete(s, e);
         }
-        let pos = buf.cursor.primary.head;
-        buf.insert(pos, &text);
     }
     state.update_active_highlighter();
     state.viewport_follow_cursor = true;
@@ -200,6 +243,7 @@ pub(super) fn handle_paste(state: &mut AppState) -> Control<AppEvent> {
 
 pub(super) fn handle_delete_word_left(state: &mut AppState) -> Control<AppEvent> {
     if let Some(buf) = state.active_buf_mut() {
+        buf.clear_secondary_cursors();
         let sel = buf.cursor.primary.clone();
         if sel.is_cursor() {
             let head = buf.cursor.primary.head;
@@ -220,6 +264,7 @@ pub(super) fn handle_delete_word_left(state: &mut AppState) -> Control<AppEvent>
 
 pub(super) fn handle_delete_word_right(state: &mut AppState) -> Control<AppEvent> {
     if let Some(buf) = state.active_buf_mut() {
+        buf.clear_secondary_cursors();
         let sel = buf.cursor.primary.clone();
         if sel.is_cursor() {
             let head = buf.cursor.primary.head;
@@ -240,6 +285,7 @@ pub(super) fn handle_delete_word_right(state: &mut AppState) -> Control<AppEvent
 
 pub(super) fn handle_tab_or_indent(state: &mut AppState) -> Control<AppEvent> {
     if let Some(buf) = state.active_buf_mut() {
+        buf.clear_secondary_cursors();
         let sel = buf.cursor.primary.clone();
         if sel.is_cursor() {
             let pos = buf.cursor.primary.head;
@@ -260,6 +306,7 @@ pub(super) fn handle_tab_or_indent(state: &mut AppState) -> Control<AppEvent> {
 
 pub(super) fn handle_shift_tab(state: &mut AppState) -> Control<AppEvent> {
     if let Some(buf) = state.active_buf_mut() {
+        buf.clear_secondary_cursors();
         let sel = buf.cursor.primary.clone();
         let (start_line, end_line) = if sel.is_cursor() {
             (sel.head.line, sel.head.line)
@@ -285,6 +332,7 @@ pub(super) fn handle_shift_tab(state: &mut AppState) -> Control<AppEvent> {
 
 pub(super) fn handle_duplicate_line(state: &mut AppState) -> Control<AppEvent> {
     if let Some(buf) = state.active_buf_mut() {
+        buf.clear_secondary_cursors();
         let line_idx = buf.cursor.primary.head.line;
         if let Some(line_text) = buf.line(line_idx) {
             let content = line_text
@@ -303,6 +351,7 @@ pub(super) fn handle_duplicate_line(state: &mut AppState) -> Control<AppEvent> {
 
 pub(super) fn handle_move_line_up(state: &mut AppState) -> Control<AppEvent> {
     if let Some(buf) = state.active_buf_mut() {
+        buf.clear_secondary_cursors();
         let line = buf.cursor.primary.head.line;
         if line == 0 {
             return Control::Changed;
@@ -330,6 +379,7 @@ pub(super) fn handle_move_line_up(state: &mut AppState) -> Control<AppEvent> {
 
 pub(super) fn handle_move_line_down(state: &mut AppState) -> Control<AppEvent> {
     if let Some(buf) = state.active_buf_mut() {
+        buf.clear_secondary_cursors();
         let line = buf.cursor.primary.head.line;
         let last_line = buf.line_count().saturating_sub(1);
         if line >= last_line {
@@ -361,6 +411,7 @@ pub(super) fn apply_motion(
     f: impl FnOnce(&mut TextBuffer),
 ) -> Control<AppEvent> {
     if let Some(buf) = state.active_buf_mut() {
+        buf.clear_secondary_cursors();
         f(buf);
     }
     state.viewport_follow_cursor = true;
@@ -378,5 +429,79 @@ pub(super) fn apply_buf_edit(state: &mut AppState, f: fn(&mut TextBuffer) -> boo
 fn move_n(buf: &mut TextBuffer, n: usize, extend: bool, method: fn(&mut TextBuffer, bool)) {
     for _ in 0..n {
         method(buf, extend);
+    }
+}
+
+fn read_clipboard_text(state: &mut AppState) -> Option<String> {
+    match Clipboard::new().and_then(|mut cb| cb.get_text()) {
+        Ok(text) => Some(text),
+        Err(e) => {
+            state
+                .overlay
+                .notify(format!("Clipboard error: {e}"), NotificationLevel::Error);
+            None
+        }
+    }
+}
+
+fn current_line_range(buf: &TextBuffer) -> (Position, Position) {
+    let line = buf.cursor.primary.head.line;
+    let start = Position::new(line, 0);
+    let end = if line + 1 < buf.line_count() {
+        Position::new(line + 1, 0)
+    } else {
+        Position::new(line, buf.line_len(line))
+    };
+    (start, end)
+}
+
+pub(super) fn handle_add_cursor_above(state: &mut AppState) -> Control<AppEvent> {
+    if let Some(buf) = state.active_buf_mut() {
+        let _ = buf.add_cursor_above();
+    }
+    state.viewport_follow_cursor = true;
+    Control::Changed
+}
+
+pub(super) fn handle_add_cursor_below(state: &mut AppState) -> Control<AppEvent> {
+    if let Some(buf) = state.active_buf_mut() {
+        let _ = buf.add_cursor_below();
+    }
+    state.viewport_follow_cursor = true;
+    Control::Changed
+}
+
+pub(super) fn handle_clear_secondary_cursors(state: &mut AppState) -> Control<AppEvent> {
+    if let Some(buf) = state.active_buf_mut() {
+        buf.clear_secondary_cursors();
+    }
+    state.viewport_follow_cursor = true;
+    Control::Changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_line_range_includes_newline_when_available() {
+        let mut buf = TextBuffer::from_text("one\ntwo\n");
+        buf.cursor = CursorState::at(Position::new(0, 1));
+
+        assert_eq!(
+            current_line_range(&buf),
+            (Position::new(0, 0), Position::new(1, 0))
+        );
+    }
+
+    #[test]
+    fn current_line_range_clamps_last_line() {
+        let mut buf = TextBuffer::from_text("one\ntwo");
+        buf.cursor = CursorState::at(Position::new(1, 1));
+
+        assert_eq!(
+            current_line_range(&buf),
+            (Position::new(1, 0), Position::new(1, 3))
+        );
     }
 }

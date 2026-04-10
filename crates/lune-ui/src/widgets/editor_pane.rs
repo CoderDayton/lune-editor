@@ -167,7 +167,11 @@ const SCROLLBAR_THUMB: &str = "█";
 /// When `gutter_marks` is `Some`, a 1-character-wide git gutter column
 /// is rendered to the left of the line numbers with colored markers.
 ///
-#[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::too_many_arguments,
+    clippy::too_many_lines
+)]
 pub fn render_editor_pane(
     area: Rect,
     buf: &mut Buffer,
@@ -224,6 +228,19 @@ pub fn render_editor_pane(
             Some((start, end))
         }
     };
+    let secondary_cursors: Vec<Position> = text_buf
+        .cursor
+        .secondary
+        .iter()
+        .map(|sel| sel.head)
+        .collect();
+    let secondary_selections: Vec<(Position, Position)> = text_buf
+        .cursor
+        .secondary
+        .iter()
+        .filter(|sel| !sel.is_cursor())
+        .map(Selection::ordered)
+        .collect();
 
     // Reusable format buffer for line numbers — avoids a `format!()` heap
     // allocation per visible line.
@@ -276,6 +293,8 @@ pub fn render_editor_pane(
                 line_idx,
                 viewport.left_col,
                 cursor,
+                &secondary_cursors,
+                &secondary_selections,
                 vim_mode,
                 selection.as_ref(),
                 search_matches,
@@ -443,6 +462,8 @@ fn render_line_content(
     line_idx: usize,
     left_col: usize,
     cursor: &Position,
+    secondary_cursors: &[Position],
+    secondary_selections: &[(Position, Position)],
     vim_mode: VimMode,
     selection: Option<&(Position, Position)>,
     search_matches: Option<&lune_core::search::SearchState>,
@@ -471,9 +492,7 @@ fn render_line_content(
 
     // Apply search match highlighting.
     if let Some(search) = search_matches {
-        apply_search_highlight(
-            x, y, width, line_idx, left_col, search, buf, ui_theme,
-        );
+        apply_search_highlight(x, y, width, line_idx, left_col, search, buf, ui_theme);
     }
 
     // Apply selection highlighting.
@@ -482,10 +501,21 @@ fn render_line_content(
             x, y, width, line_idx, left_col, sel_start, sel_end, line_text, buf, ui_theme,
         );
     }
+    for (sel_start, sel_end) in secondary_selections {
+        apply_selection_highlight(
+            x, y, width, line_idx, left_col, sel_start, sel_end, line_text, buf, ui_theme,
+        );
+    }
 
     // Render cursor.
     if cursor.line == line_idx {
         render_cursor(x, y, width, cursor, left_col, vim_mode, buf, ui_theme);
+    }
+
+    for secondary in secondary_cursors {
+        if secondary.line == line_idx {
+            render_secondary_cursor(x, y, width, secondary, left_col, vim_mode, buf, ui_theme);
+        }
     }
 }
 
@@ -604,6 +634,37 @@ fn render_cursor(
             }
         }
     }
+}
+
+/// Render a secondary cursor on a line cell.
+#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::too_many_arguments)]
+fn render_secondary_cursor(
+    x: u16,
+    y: u16,
+    width: usize,
+    cursor: &Position,
+    left_col: usize,
+    vim_mode: VimMode,
+    buf: &mut Buffer,
+    theme: &Theme,
+) {
+    let cursor_screen_col = cursor.col.saturating_sub(left_col);
+    if cursor_screen_col >= width {
+        return;
+    }
+
+    let cx = x + cursor_screen_col as u16;
+    let cell = &mut buf[(cx, y)];
+    let style = match vim_mode {
+        VimMode::Normal | VimMode::Visual | VimMode::VisualLine | VimMode::Command => {
+            Style::new().fg(theme.bg).bg(theme.accent).add_modifier(Modifier::BOLD)
+        }
+        VimMode::Insert => Style::new()
+            .fg(theme.accent)
+            .add_modifier(Modifier::UNDERLINED | Modifier::BOLD),
+    };
+    cell.set_style(style);
 }
 
 /// Apply selection highlighting to a line.
@@ -930,5 +991,34 @@ mod tests {
         // max_top = 100 - 20 = 80
         assert_eq!(scrollbar_row_to_top_line(0, area, 100), Some(0));
         assert_eq!(scrollbar_row_to_top_line(19, area, 100), Some(80));
+    }
+
+    #[test]
+    fn render_editor_pane_draws_secondary_cursor_with_accent_style() {
+        let area = Rect::new(0, 0, 20, 3);
+        let mut render_buf = Buffer::empty(area);
+        let mut viewport = ViewportState::default();
+        let mut text_buf = TextBuffer::from_text("alpha");
+        text_buf.cursor = CursorState::at(Position::new(0, 0));
+        assert!(text_buf.toggle_secondary_cursor(Position::new(0, 2)));
+
+        let theme = Theme::dark();
+        render_editor_pane(
+            area,
+            &mut render_buf,
+            Some(&text_buf),
+            &mut viewport,
+            false,
+            VimMode::Normal,
+            None,
+            &SyntaxTheme::dark(),
+            None,
+            None,
+            &theme,
+        );
+
+        let cell = &render_buf[(4, 0)];
+        assert_eq!(cell.style().bg, Some(theme.accent));
+        assert_eq!(cell.style().fg, Some(theme.bg));
     }
 }

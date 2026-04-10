@@ -12,7 +12,9 @@ use ropey::Rope;
 use uuid::Uuid;
 
 use crate::position::{CursorState, Position, Selection};
-use crate::undo::{EditOp, RevisionId, Transaction, UndoStack, UndoState, end_position_after_insert};
+use crate::undo::{
+    EditOp, RevisionId, Transaction, UndoStack, UndoState, end_position_after_insert,
+};
 
 use std::sync::Arc;
 
@@ -309,6 +311,213 @@ impl TextBuffer {
         }
     }
 
+    /// Insert the same text at every cursor in the current cursor set.
+    ///
+    /// When the primary selection is active and there are no secondary
+    /// cursors, this behaves like a normal replace-selection edit.
+    ///
+    /// Returns `false` when the cursor set cannot be edited safely as a
+    /// multi-cursor operation.
+    pub fn insert_at_cursor_set(&mut self, text: &str) -> bool {
+        self.cursor.normalize_secondary();
+        let mut targets = self.selection_targets();
+        if targets.is_empty() {
+            return true;
+        }
+
+        let was_in_transaction = self.pending_ops.is_some();
+        if !was_in_transaction {
+            self.begin_transaction();
+        }
+
+        targets.sort_by_key(|&(_, start, end)| (start, end));
+        targets.reverse();
+        let mut resulting_positions = vec![Position::default(); targets.len()];
+
+        for (idx, start, end) in targets {
+            if start != end {
+                self.delete(start, end);
+            }
+            self.insert(start, text);
+            resulting_positions[idx] = end_position_after_insert(start, text);
+        }
+
+        self.set_cursor_positions(&resulting_positions);
+
+        if !was_in_transaction {
+            self.commit_transaction();
+        }
+        true
+    }
+
+    /// Delete one character backward at every cursor in the current cursor
+    /// set, or delete the active primary selection when there is only one.
+    ///
+    /// Returns `false` when the cursor set cannot be edited safely as a
+    /// multi-cursor operation.
+    pub fn backspace_cursor_set(&mut self) -> bool {
+        self.cursor.normalize_secondary();
+        let mut deletions: Vec<(usize, Position, Position)> = self
+            .selection_targets()
+            .into_iter()
+            .filter_map(|(idx, start, end)| {
+                if start == end {
+                    self.backward_delete_range(start)
+                        .map(|(del_start, del_end)| (idx, del_start, del_end))
+                } else {
+                    Some((idx, start, end))
+                }
+            })
+            .collect();
+        if deletions.is_empty() {
+            return true;
+        }
+
+        let was_in_transaction = self.pending_ops.is_some();
+        if !was_in_transaction {
+            self.begin_transaction();
+        }
+
+        deletions.sort_by_key(|&(_, start, end)| (start, end));
+        deletions.reverse();
+        let mut resulting_positions = self.selection_positions();
+
+        for (idx, start, end) in deletions {
+            self.delete(start, end);
+            resulting_positions[idx] = start;
+        }
+
+        self.set_cursor_positions(&resulting_positions);
+
+        if !was_in_transaction {
+            self.commit_transaction();
+        }
+        true
+    }
+
+    /// Delete one character forward at every cursor in the current cursor
+    /// set, or delete the active primary selection when there is only one.
+    ///
+    /// Returns `false` when the cursor set cannot be edited safely as a
+    /// multi-cursor operation.
+    pub fn delete_cursor_set(&mut self) -> bool {
+        self.cursor.normalize_secondary();
+        let mut deletions: Vec<(usize, Position, Position)> = self
+            .selection_targets()
+            .into_iter()
+            .filter_map(|(idx, start, end)| {
+                if start == end {
+                    self.forward_delete_range(start)
+                        .map(|(del_start, del_end)| (idx, del_start, del_end))
+                } else {
+                    Some((idx, start, end))
+                }
+            })
+            .collect();
+        if deletions.is_empty() {
+            return true;
+        }
+
+        let was_in_transaction = self.pending_ops.is_some();
+        if !was_in_transaction {
+            self.begin_transaction();
+        }
+
+        deletions.sort_by_key(|&(_, start, end)| (start, end));
+        deletions.reverse();
+        let mut resulting_positions = self.selection_positions();
+
+        for (idx, start, end) in deletions {
+            self.delete(start, end);
+            resulting_positions[idx] = start;
+        }
+
+        self.set_cursor_positions(&resulting_positions);
+
+        if !was_in_transaction {
+            self.commit_transaction();
+        }
+        true
+    }
+
+    /// Add or remove a secondary cursor at `pos`.
+    ///
+    /// The position is clamped to the nearest valid cursor location.
+    pub fn toggle_secondary_cursor(&mut self, pos: Position) -> bool {
+        self.cursor.normalize_secondary_cursors();
+        let clamped = self.clamp_position(pos);
+        self.cursor.toggle_secondary_cursor(clamped)
+    }
+
+    /// Clear all secondary cursors.
+    pub fn clear_secondary_cursors(&mut self) {
+        self.cursor.clear_secondary();
+    }
+
+    /// Replace the current cursor state with a rectangular block selection.
+    pub fn set_block_selection(&mut self, anchor: Position, head: Position) {
+        let start_line = anchor.line.min(head.line);
+        let end_line = anchor.line.max(head.line);
+        let start_col = anchor.col.min(head.col);
+        let end_col = anchor.col.max(head.col);
+
+        let mut selections = Vec::with_capacity(end_line.saturating_sub(start_line) + 1);
+        for line in start_line..=end_line {
+            let line_len = self.line_len_no_newline(line);
+            let a = Position::new(line, start_col.min(line_len));
+            let b = Position::new(line, end_col.min(line_len));
+            selections.push(Selection::new(a, b));
+        }
+
+        let Some(primary) = selections.first().cloned() else {
+            return;
+        };
+        self.cursor = CursorState {
+            primary,
+            secondary: selections.into_iter().skip(1).collect(),
+        };
+        self.cursor.normalize_secondary();
+    }
+
+    /// Add a secondary cursor above the current top-most cursor.
+    pub fn add_cursor_above(&mut self) -> bool {
+        self.cursor.normalize_secondary_cursors();
+        let Some(positions) = self.cursor.cursor_positions() else {
+            return false;
+        };
+        let Some(&topmost) = positions.iter().min() else {
+            return false;
+        };
+        if topmost.line == 0 {
+            return false;
+        }
+
+        let target_line = topmost.line - 1;
+        let target = Position::new(target_line, topmost.col.min(self.line_len_no_newline(target_line)));
+        self.cursor.add_secondary_cursor(target)
+    }
+
+    /// Add a secondary cursor below the current bottom-most cursor.
+    pub fn add_cursor_below(&mut self) -> bool {
+        self.cursor.normalize_secondary_cursors();
+        let Some(positions) = self.cursor.cursor_positions() else {
+            return false;
+        };
+        let Some(&bottommost) = positions.iter().max() else {
+            return false;
+        };
+        if bottommost.line + 1 >= self.line_count() {
+            return false;
+        }
+
+        let target_line = bottommost.line + 1;
+        let target = Position::new(
+            target_line,
+            bottommost.col.min(self.line_len_no_newline(target_line)),
+        );
+        self.cursor.add_secondary_cursor(target)
+    }
+
     // ── Undo / Redo ───────────────────────────────────────────────────
 
     /// Begin a transaction. All subsequent edit ops will be grouped into a
@@ -543,6 +752,17 @@ impl TextBuffer {
         self.set_primary_head(Position::new(head.line, 0), extend);
     }
 
+    /// Move cursor to the smart "home" position on the current line.
+    ///
+    /// The first press moves to the first non-whitespace character.
+    /// If the cursor is already there, it moves to column 0.
+    pub fn move_line_home(&mut self, extend: bool) {
+        let head = self.cursor.primary.head;
+        let text_col = self.first_non_whitespace_col(head.line);
+        let target_col = if head.col == text_col { 0 } else { text_col };
+        self.set_primary_head(Position::new(head.line, target_col), extend);
+    }
+
     /// Move cursor to end of current line.
     pub fn move_line_end(&mut self, extend: bool) {
         let head = self.cursor.primary.head;
@@ -652,6 +872,27 @@ impl TextBuffer {
         len - trailing
     }
 
+    /// Column of the first non-whitespace character on the line.
+    ///
+    /// Returns the line length when the line is blank or contains only
+    /// whitespace before the newline.
+    #[must_use]
+    pub fn first_non_whitespace_col(&self, line_idx: usize) -> usize {
+        if line_idx >= self.rope.len_lines() {
+            return 0;
+        }
+
+        for (col, ch) in self.rope.line(line_idx).chars().enumerate() {
+            if matches!(ch, '\n' | '\r') {
+                break;
+            }
+            if !ch.is_whitespace() {
+                return col;
+            }
+        }
+        0
+    }
+
     /// Update the primary cursor head. If `extend` is false, anchor follows.
     const fn set_primary_head(&mut self, head: Position, extend: bool) {
         if extend {
@@ -666,14 +907,17 @@ impl TextBuffer {
         if char_idx == 0 {
             return 0;
         }
-        let mut idx = char_idx - 1;
+        let mut idx = char_idx;
 
-        // Skip whitespace.
-        while idx > 0 && self.char_at_idx(idx).is_whitespace() {
+        while idx > 0 && matches!(Self::char_kind(self.char_at_idx(idx - 1)), CharKind::Whitespace) {
             idx -= 1;
         }
-        // Skip word characters.
-        while idx > 0 && !self.char_at_idx(idx - 1).is_whitespace() {
+        if idx == 0 {
+            return 0;
+        }
+
+        let kind = Self::char_kind(self.char_at_idx(idx - 1));
+        while idx > 0 && Self::char_kind(self.char_at_idx(idx - 1)) == kind {
             idx -= 1;
         }
         idx
@@ -687,12 +931,8 @@ impl TextBuffer {
         }
         let mut idx = char_idx;
 
-        // Skip current word characters.
-        while idx < max && !self.char_at_idx(idx).is_whitespace() {
-            idx += 1;
-        }
-        // Skip whitespace.
-        while idx < max && self.char_at_idx(idx).is_whitespace() {
+        let kind = Self::char_kind(self.char_at_idx(idx));
+        while idx < max && Self::char_kind(self.char_at_idx(idx)) == kind {
             idx += 1;
         }
         idx
@@ -702,12 +942,92 @@ impl TextBuffer {
     fn char_at_idx(&self, idx: usize) -> char {
         self.rope.char(idx)
     }
+
+    fn selection_targets(&self) -> Vec<(usize, Position, Position)> {
+        std::iter::once(&self.cursor.primary)
+            .chain(self.cursor.secondary.iter())
+            .enumerate()
+            .map(|(idx, sel)| {
+                let (start, end) = if sel.is_cursor() {
+                    (sel.head, sel.head)
+                } else {
+                    sel.ordered()
+                };
+                (idx, start, end)
+            })
+            .collect()
+    }
+
+    fn selection_positions(&self) -> Vec<Position> {
+        std::iter::once(&self.cursor.primary)
+            .chain(self.cursor.secondary.iter())
+            .map(|sel| if sel.is_cursor() { sel.head } else { sel.ordered().0 })
+            .collect()
+    }
+
+    fn char_kind(ch: char) -> CharKind {
+        if ch.is_whitespace() {
+            CharKind::Whitespace
+        } else if ch.is_alphanumeric() || ch == '_' {
+            CharKind::Word
+        } else {
+            CharKind::Punctuation
+        }
+    }
+
+    fn backward_delete_range(&self, pos: Position) -> Option<(Position, Position)> {
+        if pos.col > 0 {
+            Some((Position::new(pos.line, pos.col - 1), pos))
+        } else if pos.line > 0 {
+            let prev_line = pos.line - 1;
+            let prev_len = self.line_len_no_newline(prev_line);
+            Some((Position::new(prev_line, prev_len), pos))
+        } else {
+            None
+        }
+    }
+
+    fn forward_delete_range(&self, pos: Position) -> Option<(Position, Position)> {
+        let line_len = self.line_len_no_newline(pos.line);
+        if pos.col < line_len {
+            Some((pos, Position::new(pos.line, pos.col + 1)))
+        } else if pos.line + 1 < self.line_count() {
+            Some((pos, Position::new(pos.line + 1, 0)))
+        } else {
+            None
+        }
+    }
+
+    fn clamp_position(&self, pos: Position) -> Position {
+        let line = pos.line.min(self.line_count().saturating_sub(1));
+        Position::new(line, pos.col.min(self.line_len_no_newline(line)))
+    }
+
+    fn set_cursor_positions(&mut self, positions: &[Position]) {
+        let Some((&primary, secondary)) = positions.split_first() else {
+            self.cursor = CursorState::default();
+            return;
+        };
+
+        self.cursor = CursorState {
+            primary: Selection::cursor(primary),
+            secondary: secondary.iter().copied().map(Selection::cursor).collect(),
+        };
+        self.cursor.normalize_secondary_cursors();
+    }
 }
 
 impl Default for TextBuffer {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CharKind {
+    Whitespace,
+    Word,
+    Punctuation,
 }
 
 #[cfg(test)]
@@ -832,6 +1152,68 @@ mod tests {
         let mut buf = TextBuffer::from_text("hi world");
         buf.replace(Position::new(0, 0), Position::new(0, 2), "hello");
         assert_eq!(buf.text(), "hello world");
+    }
+
+    #[test]
+    fn insert_at_cursor_set_applies_to_all_cursors() {
+        let mut buf = TextBuffer::from_text("abc\ndef");
+        buf.cursor = CursorState::at(Position::new(0, 1));
+        assert!(buf.toggle_secondary_cursor(Position::new(1, 1)));
+
+        assert!(buf.insert_at_cursor_set("!"));
+        assert_eq!(buf.text(), "a!bc\nd!ef");
+        assert_eq!(buf.cursor.primary.head, Position::new(0, 2));
+        assert_eq!(
+            buf.cursor.secondary,
+            vec![Selection::cursor(Position::new(1, 2))]
+        );
+    }
+
+    #[test]
+    fn backspace_cursor_set_deletes_at_all_cursors() {
+        let mut buf = TextBuffer::from_text("abc\ndef");
+        buf.cursor = CursorState::at(Position::new(0, 2));
+        assert!(buf.toggle_secondary_cursor(Position::new(1, 2)));
+
+        assert!(buf.backspace_cursor_set());
+        assert_eq!(buf.text(), "ac\ndf");
+        assert_eq!(buf.cursor.primary.head, Position::new(0, 1));
+        assert_eq!(
+            buf.cursor.secondary,
+            vec![Selection::cursor(Position::new(1, 1))]
+        );
+    }
+
+    #[test]
+    fn delete_cursor_set_deletes_forward_at_all_cursors() {
+        let mut buf = TextBuffer::from_text("abc\ndef");
+        buf.cursor = CursorState::at(Position::new(0, 1));
+        assert!(buf.toggle_secondary_cursor(Position::new(1, 1)));
+
+        assert!(buf.delete_cursor_set());
+        assert_eq!(buf.text(), "ac\ndf");
+        assert_eq!(buf.cursor.primary.head, Position::new(0, 1));
+        assert_eq!(
+            buf.cursor.secondary,
+            vec![Selection::cursor(Position::new(1, 1))]
+        );
+    }
+
+    #[test]
+    fn insert_at_cursor_set_replaces_block_selection_ranges() {
+        let mut buf = TextBuffer::from_text("alpha\nbeta\ngamma");
+        buf.set_block_selection(Position::new(0, 1), Position::new(2, 3));
+
+        assert!(buf.insert_at_cursor_set("Z"));
+        assert_eq!(buf.text(), "aZha\nbZa\ngZma");
+        assert_eq!(buf.cursor.primary.head, Position::new(0, 2));
+        assert_eq!(
+            buf.cursor.secondary,
+            vec![
+                Selection::cursor(Position::new(1, 2)),
+                Selection::cursor(Position::new(2, 2)),
+            ]
+        );
     }
 
     // ── Undo / Redo ───────────────────────────────────────────────────
@@ -972,6 +1354,72 @@ mod tests {
     }
 
     #[test]
+    fn move_line_home_toggles_between_indent_and_start() {
+        let mut buf = TextBuffer::from_text("    hello");
+        buf.cursor = CursorState::at(Position::new(0, 7));
+
+        buf.move_line_home(false);
+        assert_eq!(buf.cursor.primary.head, Position::new(0, 4));
+
+        buf.move_line_home(false);
+        assert_eq!(buf.cursor.primary.head, Position::new(0, 0));
+    }
+
+    #[test]
+    fn move_line_home_on_blank_line_stays_at_start() {
+        let mut buf = TextBuffer::from_text("    \nnext");
+        buf.cursor = CursorState::at(Position::new(0, 3));
+
+        buf.move_line_home(false);
+        assert_eq!(buf.cursor.primary.head, Position::new(0, 0));
+    }
+
+    #[test]
+    fn move_line_home_with_extend_keeps_anchor() {
+        let mut buf = TextBuffer::from_text("    hello");
+        buf.cursor = CursorState::at(Position::new(0, 8));
+
+        buf.move_line_home(true);
+        assert_eq!(buf.cursor.primary.anchor, Position::new(0, 8));
+        assert_eq!(buf.cursor.primary.head, Position::new(0, 4));
+    }
+
+    #[test]
+    fn add_cursor_above_and_below_clamp_columns() {
+        let mut buf = TextBuffer::from_text("wide\nx\nthree");
+        buf.cursor = CursorState::at(Position::new(1, 1));
+
+        assert!(buf.add_cursor_above());
+        assert!(buf.add_cursor_below());
+        assert_eq!(
+            buf.cursor.secondary,
+            vec![
+                Selection::cursor(Position::new(0, 1)),
+                Selection::cursor(Position::new(2, 1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn set_block_selection_creates_one_selection_per_line() {
+        let mut buf = TextBuffer::from_text("alpha\nbeta\ngamma");
+
+        buf.set_block_selection(Position::new(0, 1), Position::new(2, 3));
+
+        assert_eq!(
+            buf.cursor.primary,
+            Selection::new(Position::new(0, 1), Position::new(0, 3))
+        );
+        assert_eq!(
+            buf.cursor.secondary,
+            vec![
+                Selection::new(Position::new(1, 1), Position::new(1, 3)),
+                Selection::new(Position::new(2, 1), Position::new(2, 3)),
+            ]
+        );
+    }
+
+    #[test]
     fn move_buffer_start_end() {
         let mut buf = TextBuffer::from_text("line1\nline2\nline3");
         buf.cursor = CursorState::at(Position::new(1, 2));
@@ -1001,7 +1449,7 @@ mod tests {
         let mut buf = TextBuffer::from_text("hello world foo");
         buf.cursor = CursorState::at(Position::new(0, 0));
         buf.move_word_right(false);
-        assert_eq!(buf.cursor.primary.head, Position::new(0, 6));
+        assert_eq!(buf.cursor.primary.head, Position::new(0, 5));
     }
 
     #[test]
@@ -1010,6 +1458,24 @@ mod tests {
         buf.cursor = CursorState::at(Position::new(0, 11));
         buf.move_word_left(false);
         assert_eq!(buf.cursor.primary.head, Position::new(0, 6));
+    }
+
+    #[test]
+    fn move_word_respects_punctuation_boundaries() {
+        let mut buf = TextBuffer::from_text("foo.bar");
+        buf.cursor = CursorState::at(Position::new(0, 0));
+
+        buf.move_word_right(false);
+        assert_eq!(buf.cursor.primary.head, Position::new(0, 3));
+
+        buf.move_word_right(false);
+        assert_eq!(buf.cursor.primary.head, Position::new(0, 4));
+
+        buf.move_word_right(false);
+        assert_eq!(buf.cursor.primary.head, Position::new(0, 7));
+
+        buf.move_word_left(false);
+        assert_eq!(buf.cursor.primary.head, Position::new(0, 4));
     }
 
     // ── Dirty flag ────────────────────────────────────────────────────

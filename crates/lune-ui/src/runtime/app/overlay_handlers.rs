@@ -286,17 +286,16 @@ fn handle_find_replace_key(key: &KeyEvent, state: &mut AppState) -> Control<AppE
             close_overlay(state);
             Control::Changed
         }
-        KeyCode::Enter => {
-            let next = TextBuffer::search_next(&state.overlay.find_replace.search_state);
-            if let Some(idx) = next {
-                state.overlay.find_replace.search_state.current_match = Some(idx);
-                navigate_to_current_match(state);
-            }
-            Control::Changed
-        }
+        KeyCode::Enter => find_next_match(state, !state.overlay.find_replace.show_replace),
         KeyCode::Tab | KeyCode::BackTab => {
             state.overlay.find_replace.toggle_field();
             Control::Changed
+        }
+        KeyCode::Char('n') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            find_next_match(state, false)
+        }
+        KeyCode::Char('p') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            find_prev_match(state)
         }
         KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
             state.overlay.find_replace.toggle_case();
@@ -374,6 +373,17 @@ pub(super) fn update_find_search(state: &mut AppState) {
     navigate_to_current_match(state);
 }
 
+pub(super) fn find_next_match(
+    state: &mut AppState,
+    close_after_navigate: bool,
+) -> Control<AppEvent> {
+    advance_find_match(state, TextBuffer::search_next, close_after_navigate)
+}
+
+pub(super) fn find_prev_match(state: &mut AppState) -> Control<AppEvent> {
+    advance_find_match(state, TextBuffer::search_prev, false)
+}
+
 fn navigate_to_current_match(state: &mut AppState) {
     if let Some(idx) = state.overlay.find_replace.search_state.current_match {
         if let Some(&(start, _end)) = state.overlay.find_replace.search_state.matches.get(idx) {
@@ -382,5 +392,75 @@ fn navigate_to_current_match(state: &mut AppState) {
             }
             state.viewport_follow_cursor = true;
         }
+    }
+}
+
+fn advance_find_match(
+    state: &mut AppState,
+    step: fn(&SearchState) -> Option<usize>,
+    close_after_navigate: bool,
+) -> Control<AppEvent> {
+    let Some(idx) = step(&state.overlay.find_replace.search_state) else {
+        return Control::Continue;
+    };
+    state.overlay.find_replace.search_state.current_match = Some(idx);
+    navigate_to_current_match(state);
+    if close_after_navigate {
+        close_overlay(state);
+    }
+    Control::Changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_with_text(text: &str) -> AppState {
+        let mut state = AppState::new();
+        let id = state.registry.new_scratch();
+        let buf = state.registry.get_mut(id).unwrap();
+        buf.insert(Position::new(0, 0), text);
+        buf.cursor = CursorState::at(Position::new(0, 0));
+        state.active_buffer = Some(id);
+        state.tabs.push(id);
+        state
+    }
+
+    #[test]
+    fn enter_in_find_overlay_closes_and_advances() {
+        let mut state = state_with_text("foo bar foo");
+        state.overlay.open_find();
+        state.overlay.find_replace.search_state = state.active_buf().unwrap().search("foo", true);
+
+        let result = handle_find_replace_key(
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut state,
+        );
+
+        assert!(matches!(result, Control::Changed));
+        assert!(!state.overlay.is_active());
+        assert_eq!(state.overlay.find_replace.search_state.current_match, Some(1));
+        assert_eq!(
+            state.active_buf().unwrap().cursor.primary.head,
+            Position::new(0, 8)
+        );
+    }
+
+    #[test]
+    fn ctrl_p_in_find_overlay_moves_to_previous_match() {
+        let mut state = state_with_text("foo bar foo");
+        state.overlay.open_find();
+        let mut search = state.active_buf().unwrap().search("foo", true);
+        search.current_match = Some(1);
+        state.overlay.find_replace.search_state = search;
+
+        let result = handle_find_replace_key(
+            &KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            &mut state,
+        );
+
+        assert!(matches!(result, Control::Changed));
+        assert_eq!(state.overlay.find_replace.search_state.current_match, Some(0));
+        assert!(state.overlay.is_active());
     }
 }

@@ -100,6 +100,13 @@ impl Selection {
         let (start, end) = self.ordered();
         pos >= start && pos < end
     }
+
+    /// Returns `true` if this selection is a collapsed cursor at `pos`.
+    #[inline]
+    #[must_use]
+    pub fn is_cursor_at(&self, pos: Position) -> bool {
+        self.is_cursor() && self.head == pos
+    }
 }
 
 /// The full cursor state for a buffer, supporting a primary selection and
@@ -131,6 +138,92 @@ impl CursorState {
             primary: sel,
             secondary: Vec::new(),
         }
+    }
+
+    /// Returns `true` when the primary and all secondary selections are
+    /// collapsed cursors.
+    #[must_use]
+    pub fn all_cursors(&self) -> bool {
+        self.primary.is_cursor() && self.secondary.iter().all(Selection::is_cursor)
+    }
+
+    /// Returns all cursor positions in primary-then-secondary order when the
+    /// whole cursor set is collapsed.
+    #[must_use]
+    pub fn cursor_positions(&self) -> Option<Vec<Position>> {
+        if !self.all_cursors() {
+            return None;
+        }
+
+        let mut positions = Vec::with_capacity(self.secondary.len() + 1);
+        positions.push(self.primary.head);
+        positions.extend(self.secondary.iter().map(|sel| sel.head));
+        Some(positions)
+    }
+
+    /// Remove duplicate secondary cursors and normalize them in document order.
+    ///
+    /// The primary cursor remains authoritative; any secondary at the same
+    /// position is discarded.
+    pub fn normalize_secondary(&mut self) {
+        self.secondary.sort_by_key(Selection::ordered);
+        self.secondary
+            .dedup_by(|a, b| a.anchor == b.anchor && a.head == b.head);
+        self.secondary
+            .retain(|sel| sel.anchor != self.primary.anchor || sel.head != self.primary.head);
+    }
+
+    /// Remove duplicate secondary cursors and normalize them in document order.
+    ///
+    /// The primary cursor remains authoritative; any secondary at the same
+    /// position is discarded.
+    pub fn normalize_secondary_cursors(&mut self) {
+        self.secondary.retain(Selection::is_cursor);
+        self.normalize_secondary();
+        self.secondary.retain(|sel| sel.head != self.primary.head);
+    }
+
+    /// Add a secondary cursor if it does not already exist.
+    ///
+    /// Returns `false` when the cursor set is not fully collapsed or when the
+    /// target matches the primary cursor.
+    pub fn add_secondary_cursor(&mut self, pos: Position) -> bool {
+        if !self.all_cursors() || self.primary.head == pos {
+            return false;
+        }
+        if self.secondary.iter().any(|sel| sel.is_cursor_at(pos)) {
+            return false;
+        }
+        self.secondary.push(Selection::cursor(pos));
+        self.normalize_secondary_cursors();
+        true
+    }
+
+    /// Remove the secondary cursor at `pos`, if any.
+    pub fn remove_secondary_cursor(&mut self, pos: Position) -> bool {
+        let len_before = self.secondary.len();
+        self.secondary.retain(|sel| !sel.is_cursor_at(pos));
+        len_before != self.secondary.len()
+    }
+
+    /// Toggle a secondary cursor at `pos`.
+    ///
+    /// Returns `false` when the cursor set is not fully collapsed or when the
+    /// position is the primary cursor.
+    pub fn toggle_secondary_cursor(&mut self, pos: Position) -> bool {
+        if !self.all_cursors() || self.primary.head == pos {
+            return false;
+        }
+        if self.remove_secondary_cursor(pos) {
+            true
+        } else {
+            self.add_secondary_cursor(pos)
+        }
+    }
+
+    /// Drop all secondary cursors.
+    pub fn clear_secondary(&mut self) {
+        self.secondary.clear();
     }
 }
 
@@ -214,5 +307,67 @@ mod tests {
         let cs = CursorState::at(Position::new(0, 0));
         assert!(cs.primary.is_cursor());
         assert!(cs.secondary.is_empty());
+    }
+
+    #[test]
+    fn normalize_secondary_cursors_sorts_and_dedupes() {
+        let mut cs = CursorState::at(Position::new(1, 2));
+        cs.secondary = vec![
+            Selection::cursor(Position::new(2, 0)),
+            Selection::cursor(Position::new(1, 2)),
+            Selection::cursor(Position::new(0, 4)),
+            Selection::cursor(Position::new(2, 0)),
+        ];
+
+        cs.normalize_secondary_cursors();
+
+        assert_eq!(
+            cs.secondary,
+            vec![
+                Selection::cursor(Position::new(0, 4)),
+                Selection::cursor(Position::new(2, 0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn normalize_secondary_preserves_non_cursor_selections() {
+        let mut cs = CursorState::at(Position::new(0, 0));
+        cs.secondary = vec![
+            Selection::new(Position::new(2, 1), Position::new(2, 3)),
+            Selection::new(Position::new(1, 0), Position::new(1, 2)),
+        ];
+
+        cs.normalize_secondary();
+
+        assert_eq!(
+            cs.secondary,
+            vec![
+                Selection::new(Position::new(1, 0), Position::new(1, 2)),
+                Selection::new(Position::new(2, 1), Position::new(2, 3)),
+            ]
+        );
+    }
+
+    #[test]
+    fn toggle_secondary_cursor_adds_and_removes() {
+        let mut cs = CursorState::at(Position::new(0, 0));
+
+        assert!(cs.toggle_secondary_cursor(Position::new(1, 3)));
+        assert_eq!(cs.secondary, vec![Selection::cursor(Position::new(1, 3))]);
+
+        assert!(cs.toggle_secondary_cursor(Position::new(1, 3)));
+        assert!(cs.secondary.is_empty());
+    }
+
+    #[test]
+    fn add_secondary_cursor_rejects_primary_or_selection_state() {
+        let mut with_selection =
+            CursorState::from_selection(Selection::new(Position::new(0, 0), Position::new(0, 2)));
+        assert!(!with_selection.add_secondary_cursor(Position::new(1, 0)));
+
+        let mut at = CursorState::at(Position::new(0, 1));
+        assert!(!at.add_secondary_cursor(Position::new(0, 1)));
+        assert!(at.secondary.is_empty());
     }
 }

@@ -30,6 +30,10 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         return Control::Changed;
     }
 
+    if let Some(control) = handle_find_navigation_key(key, state) {
+        return control;
+    }
+
     if let Some(cmd) = state.keymap.lookup(key) {
         return Control::Event(AppEvent::Command(cmd.clone()));
     }
@@ -206,6 +210,7 @@ fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             }
             handle_mouse_click(mouse, state)
         }
+        MouseEventKind::Down(MouseButton::Middle) => handle_middle_click(mouse, state),
         MouseEventKind::Drag(MouseButton::Left) => {
             if state.root_tab == RootTab::Agents {
                 return handle_agents_mouse_drag(mouse, state);
@@ -219,6 +224,7 @@ fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
         MouseEventKind::Up(MouseButton::Left) => {
             state.dragging_border = None;
             state.agents_tab.drag = None;
+            state.block_select_anchor = None;
             Control::Continue
         }
         MouseEventKind::ScrollUp => {
@@ -257,6 +263,57 @@ fn set_viewport_from_scrollbar_row(
         state.viewport.top_line = top;
         state.viewport_follow_cursor = false;
     }
+}
+
+fn handle_find_navigation_key(
+    key: &KeyEvent,
+    state: &mut AppState,
+) -> Option<Control<AppEvent>> {
+    if state.root_tab != RootTab::Editor || !state.focus.is_focused(PanelId::Editor) {
+        return None;
+    }
+    if state.overlay.find_replace.search_state.matches.is_empty() {
+        return None;
+    }
+
+    let control = match (key.code, key.modifiers) {
+        (KeyCode::Char('n'), mods) if mods == KeyModifiers::CONTROL => {
+            Some(super::overlay_handlers::find_next_match(state, false))
+        }
+        (KeyCode::Char('p'), mods) if mods == KeyModifiers::CONTROL => {
+            Some(super::overlay_handlers::find_prev_match(state))
+        }
+        _ => None,
+    }?;
+
+    Some(control)
+}
+
+fn handle_middle_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEvent> {
+    if state.root_tab != RootTab::Editor {
+        return Control::Continue;
+    }
+
+    let Some(content_area) = state.last_editor_content_area else {
+        return Control::Continue;
+    };
+    let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
+    let has_git = state
+        .active_buffer
+        .is_some_and(|id| state.gutter_marks.contains_key(&id));
+    let Some(pos) = editor_pane::click_to_position(
+        mouse.column,
+        mouse.row,
+        content_area,
+        &state.viewport,
+        total_lines,
+        has_git,
+    ) else {
+        return Control::Continue;
+    };
+
+    state.focus.set_active(PanelId::Editor);
+    super::editor_actions::handle_paste_at_position(state, pos)
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
@@ -305,18 +362,14 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
         if let Some(left_area) = splits.left {
             if point_in_rect(col, row, left_area) {
                 state.focus.focus(PanelId::FileTree);
-                let now = Instant::now();
-                let is_double = state.last_click.is_some_and(|(t, c, r)| {
-                    c == col && r == row && now.duration_since(t).as_millis() < 500
-                });
+                let click_count = register_click(state, col, row, 500);
                 if let Some(idx) = state.file_tree.hit_test(row, left_area) {
                     state.file_tree.selected = idx;
-                    if is_double {
+                    if click_count >= 2 {
                         state.last_click = None;
                         return handle_file_tree_enter(state);
                     }
                 }
-                state.last_click = Some((now, col, row));
                 return Control::Changed;
             }
         }
@@ -359,11 +412,29 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             has_git,
         ) {
             state.focus.set_active(PanelId::Editor);
-
-            let now = Instant::now();
-            let is_double = state.last_click.is_some_and(|(t, c, r)| {
-                c == col && r == row && now.duration_since(t).as_millis() < 400
-            });
+            if mouse.modifiers.contains(KeyModifiers::CONTROL) {
+                state.block_select_anchor = None;
+                if let Some(buf) = state.active_buf_mut() {
+                    let clamped_line = pos.line.min(buf.line_count().saturating_sub(1));
+                    let clamped_col = pos.col.min(buf.line_len_no_newline(clamped_line));
+                    let _ = buf.toggle_secondary_cursor(Position::new(clamped_line, clamped_col));
+                }
+                state.viewport_follow_cursor = true;
+                return Control::Changed;
+            }
+            if mouse.modifiers.contains(KeyModifiers::ALT) {
+                if let Some(buf) = state.active_buf_mut() {
+                    let clamped_line = pos.line.min(buf.line_count().saturating_sub(1));
+                    let clamped_col = pos.col.min(buf.line_len_no_newline(clamped_line));
+                    let clamped = Position::new(clamped_line, clamped_col);
+                    buf.set_block_selection(clamped, clamped);
+                    state.block_select_anchor = Some(clamped);
+                }
+                state.viewport_follow_cursor = true;
+                return Control::Changed;
+            }
+            let click_count = register_click(state, col, row, 400);
+            state.block_select_anchor = None;
 
             if let Some(buf) = state.active_buf_mut() {
                 let clamped_line = pos.line.min(buf.line_count().saturating_sub(1));
@@ -371,12 +442,12 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
                 let clamped = Position::new(clamped_line, clamped_col);
 
                 buf.cursor = CursorState::at(clamped);
-                if is_double {
+                if click_count == 2 {
                     buf.move_word_left(false);
                     buf.move_word_right(true);
+                } else if click_count >= 3 {
+                    select_full_line(buf, clamped.line);
                     state.last_click = None;
-                } else {
-                    state.last_click = Some((now, col, row));
                 }
             }
             state.viewport_follow_cursor = true;
@@ -385,6 +456,86 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
     }
 
     Control::Continue
+}
+
+fn register_click(state: &mut AppState, col: u16, row: u16, threshold_ms: u128) -> u8 {
+    let now = Instant::now();
+    let count = match state.last_click {
+        Some(last)
+            if last.col == col
+                && last.row == row
+                && now.duration_since(last.at).as_millis() < threshold_ms =>
+        {
+            last.count.saturating_add(1).min(3)
+        }
+        _ => 1,
+    };
+    state.last_click = Some(MouseClickState {
+        at: now,
+        col,
+        row,
+        count,
+    });
+    count
+}
+
+fn select_full_line(buf: &mut TextBuffer, line: usize) {
+    let last_line = buf.line_count().saturating_sub(1);
+    let clamped = line.min(last_line);
+    let start = Position::new(clamped, 0);
+    let end = if clamped + 1 < buf.line_count() {
+        Position::new(clamped + 1, 0)
+    } else {
+        Position::new(clamped, buf.line_len_no_newline(clamped))
+    };
+    buf.cursor = CursorState::from_selection(Selection::new(start, end));
+}
+
+fn drag_target_position(mouse: MouseEvent, state: &mut AppState) -> Option<Position> {
+    let content_area = state.last_editor_content_area?;
+    let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
+    let has_git = state
+        .active_buffer
+        .is_some_and(|id| state.gutter_marks.contains_key(&id));
+
+    if mouse.row < content_area.y {
+        state.viewport.scroll_up(1);
+        state.viewport_follow_cursor = false;
+    } else if mouse.row >= content_area.y + content_area.height {
+        state
+            .viewport
+            .scroll_down(1, total_lines, content_area.height as usize);
+        state.viewport_follow_cursor = false;
+    }
+
+    if mouse.column < content_area.x {
+        state.viewport.left_col = state.viewport.left_col.saturating_sub(1);
+        state.viewport_follow_cursor = false;
+    } else if mouse.column >= content_area.x + content_area.width {
+        state.viewport.left_col = state.viewport.left_col.saturating_add(1);
+        state.viewport_follow_cursor = false;
+    }
+
+    let gutter = editor_pane::gutter_width(total_lines) + u16::from(has_git);
+    let min_x = content_area.x.saturating_add(gutter);
+    let mut max_x = content_area.x.saturating_add(content_area.width.saturating_sub(1));
+    if editor_pane::is_on_scrollbar(max_x, content_area.y, content_area, total_lines, has_git) {
+        max_x = max_x.saturating_sub(1);
+    }
+    max_x = max_x.max(min_x);
+    let clamped_x = mouse.column.clamp(min_x, max_x);
+    let clamped_y = mouse
+        .row
+        .clamp(content_area.y, content_area.y + content_area.height.saturating_sub(1));
+
+    editor_pane::click_to_position(
+        clamped_x,
+        clamped_y,
+        content_area,
+        &state.viewport,
+        total_lines,
+        has_git,
+    )
 }
 
 fn root_tab_hit_test(col: u16, area: Rect) -> Option<RootTab> {
@@ -410,31 +561,22 @@ fn root_tab_hit_test(col: u16, area: Rect) -> Option<RootTab> {
 }
 
 fn handle_editor_selection_drag(mouse: MouseEvent, state: &mut AppState) -> Control<AppEvent> {
-    let Some(content_area) = state.last_editor_content_area else {
+    let Some(pos) = drag_target_position(mouse, state) else {
         return Control::Continue;
     };
-    let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
-    let has_git = state
-        .active_buffer
-        .is_some_and(|id| state.gutter_marks.contains_key(&id));
-    let Some(pos) = editor_pane::click_to_position(
-        mouse.column,
-        mouse.row,
-        content_area,
-        &state.viewport,
-        total_lines,
-        has_git,
-    ) else {
-        return Control::Continue;
-    };
+    let block_anchor = state.block_select_anchor;
     if let Some(buf) = state.active_buf_mut() {
         let clamped_line = pos.line.min(buf.line_count().saturating_sub(1));
         let clamped = Position::new(clamped_line, pos.col.min(buf.line_len_no_newline(clamped_line)));
-        let anchor = buf.cursor.primary.anchor;
-        buf.cursor.primary = Selection {
-            anchor,
-            head: clamped,
-        };
+        if let Some(anchor) = block_anchor {
+            buf.set_block_selection(anchor, clamped);
+        } else {
+            let anchor = buf.cursor.primary.anchor;
+            buf.cursor.primary = Selection {
+                anchor,
+                head: clamped,
+            };
+        }
     }
     state.viewport_follow_cursor = true;
     Control::Changed
@@ -561,5 +703,189 @@ pub(super) fn handle_panel_command(
             Control::Changed
         }
         _ => Control::Continue,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_with_text(text: &str) -> AppState {
+        let mut state = AppState::new();
+        let id = state.registry.new_scratch();
+        let buf = state.registry.get_mut(id).unwrap();
+        buf.insert(Position::new(0, 0), text);
+        buf.cursor = CursorState::at(Position::new(0, 0));
+        state.active_buffer = Some(id);
+        state.tabs.push(id);
+        state.focus.set_active(PanelId::Editor);
+        state
+    }
+
+    #[test]
+    fn ctrl_n_cycles_to_next_search_match() {
+        let mut state = state_with_text("foo bar foo");
+        state.overlay.find_replace.search_state = state.active_buf().unwrap().search("foo", true);
+
+        let result = handle_key_event(
+            &KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            &mut state,
+        );
+
+        assert!(matches!(result, Control::Changed));
+        assert_eq!(state.overlay.find_replace.search_state.current_match, Some(1));
+        assert_eq!(
+            state.active_buf().unwrap().cursor.primary.head,
+            Position::new(0, 8)
+        );
+    }
+
+    #[test]
+    fn ctrl_p_cycles_to_previous_search_match() {
+        let mut state = state_with_text("foo bar foo");
+        let mut search = state.active_buf().unwrap().search("foo", true);
+        search.current_match = Some(1);
+        state.overlay.find_replace.search_state = search;
+
+        let result = handle_key_event(
+            &KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            &mut state,
+        );
+
+        assert!(matches!(result, Control::Changed));
+        assert_eq!(state.overlay.find_replace.search_state.current_match, Some(0));
+        assert_eq!(
+            state.active_buf().unwrap().cursor.primary.head,
+            Position::new(0, 0)
+        );
+    }
+
+    #[test]
+    fn select_full_line_includes_newline_when_present() {
+        let mut buf = TextBuffer::from_text("one\ntwo\n");
+        select_full_line(&mut buf, 0);
+        assert_eq!(
+            buf.cursor.primary,
+            Selection::new(Position::new(0, 0), Position::new(1, 0))
+        );
+    }
+
+    #[test]
+    fn register_click_tracks_triple_clicks() {
+        let mut state = AppState::new();
+        assert_eq!(register_click(&mut state, 10, 2, 400), 1);
+        assert_eq!(register_click(&mut state, 10, 2, 400), 2);
+        assert_eq!(register_click(&mut state, 10, 2, 400), 3);
+    }
+
+    #[test]
+    fn triple_click_selects_full_line() {
+        let mut state = state_with_text("alpha\nbeta");
+        state.last_editor_content_area = Some(Rect::new(0, 0, 40, 10));
+
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        let _ = handle_mouse_click(click, &mut state);
+        let _ = handle_mouse_click(click, &mut state);
+        let result = handle_mouse_click(click, &mut state);
+
+        assert!(matches!(result, Control::Changed));
+        assert_eq!(
+            state.active_buf().unwrap().cursor.primary,
+            Selection::new(Position::new(0, 0), Position::new(1, 0))
+        );
+    }
+
+    #[test]
+    fn ctrl_click_toggles_secondary_cursor() {
+        let mut state = state_with_text("alpha\nbeta");
+        state.last_editor_content_area = Some(Rect::new(0, 0, 40, 10));
+
+        let ctrl_click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 6,
+            row: 1,
+            modifiers: KeyModifiers::CONTROL,
+        };
+
+        let first = handle_mouse_click(ctrl_click, &mut state);
+        assert!(matches!(first, Control::Changed));
+        assert_eq!(
+            state.active_buf().unwrap().cursor.secondary,
+            vec![Selection::cursor(Position::new(1, 4))]
+        );
+
+        let second = handle_mouse_click(ctrl_click, &mut state);
+        assert!(matches!(second, Control::Changed));
+        assert!(state.active_buf().unwrap().cursor.secondary.is_empty());
+    }
+
+    #[test]
+    fn alt_drag_creates_block_selection() {
+        let mut state = state_with_text("alpha\nbeta\ngamma");
+        state.last_editor_content_area = Some(Rect::new(0, 0, 40, 5));
+
+        let start = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 0,
+            modifiers: KeyModifiers::ALT,
+        };
+        let drag = MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 5,
+            row: 2,
+            modifiers: KeyModifiers::ALT,
+        };
+
+        let first = handle_mouse_click(start, &mut state);
+        let second = handle_mouse_drag(drag, &mut state);
+
+        assert!(matches!(first, Control::Changed));
+        assert!(matches!(second, Control::Changed));
+        assert_eq!(
+            state.active_buf().unwrap().cursor.primary,
+            Selection::new(Position::new(0, 1), Position::new(0, 3))
+        );
+        assert_eq!(
+            state.active_buf().unwrap().cursor.secondary,
+            vec![
+                Selection::new(Position::new(1, 1), Position::new(1, 3)),
+                Selection::new(Position::new(2, 1), Position::new(2, 3)),
+            ]
+        );
+    }
+
+    #[test]
+    fn drag_outside_viewport_autoscrolls_selection() {
+        let mut state = state_with_text("0\n1\n2\n3\n4\n5");
+        state.last_editor_content_area = Some(Rect::new(0, 0, 20, 2));
+
+        let start = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        let drag = MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 2,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        let _ = handle_mouse_click(start, &mut state);
+        let result = handle_mouse_drag(drag, &mut state);
+
+        assert!(matches!(result, Control::Changed));
+        assert_eq!(state.viewport.top_line, 1);
+        assert_eq!(
+            state.active_buf().unwrap().cursor.primary,
+            Selection::new(Position::new(0, 0), Position::new(2, 0))
+        );
     }
 }

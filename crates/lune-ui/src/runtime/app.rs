@@ -223,8 +223,10 @@ pub struct AppState {
     pub git_behind: usize,
     /// Git panel state.
     pub git_panel: GitPanelState,
-    /// Last left-click info for double-click detection: (time, column, row).
-    last_click: Option<(Instant, u16, u16)>,
+    /// Last left-click info for editor multi-click gestures.
+    last_click: Option<MouseClickState>,
+    /// Anchor for an in-progress block selection drag.
+    block_select_anchor: Option<Position>,
     /// Last known mouse position within the terminal.
     last_mouse_pos: Option<(u16, u16)>,
     /// Visual effects manager (tachyonfx).
@@ -274,6 +276,15 @@ pub enum DragBorder {
     Scrollbar,
 }
 
+/// Recent mouse click state for editor multi-click gestures.
+#[derive(Clone, Copy, Debug)]
+struct MouseClickState {
+    at: Instant,
+    col: u16,
+    row: u16,
+    count: u8,
+}
+
 impl AppState {
     /// Create a new application state.
     #[must_use]
@@ -321,6 +332,7 @@ impl AppState {
             git_behind: 0,
             git_panel: GitPanelState::new(),
             last_click: None,
+            block_select_anchor: None,
             last_mouse_pos: None,
             effects: LuneEffects::new(),
             last_render: Instant::now(),
