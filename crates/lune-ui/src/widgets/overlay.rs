@@ -13,6 +13,8 @@ use crate::primitives::{
 
 use crate::event::AppCommand;
 use crate::primitives::Color;
+use crate::runtime::terminal_layouts;
+use crate::runtime::tiling::{SavedTileNode, SplitDirection};
 use crate::theme::Theme;
 use lune_ai::session::AiClientKind;
 use lune_core::language::LanguageId;
@@ -358,6 +360,7 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
         palette_cmd("Agent: Toggle Zoom", AppCommand::AgentToggleZoom),
         palette_cmd("Agent: Select Layout", AppCommand::AgentApplyLayout),
         palette_cmd("Agent: Save Current Layout", AppCommand::AgentSaveLayout),
+        palette_cmd("Agent: Save Layout As…", AppCommand::AgentSaveLayoutAs),
     ];
 
     cmds.sort_by(|a, b| a.label_lower.cmp(&b.label_lower));
@@ -711,80 +714,144 @@ pub enum LayoutPickerEntryKind {
 }
 
 /// One selectable layout picker row.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LayoutPickerEntry {
     pub label: String,
     pub pane_count: usize,
     pub kind: LayoutPickerEntryKind,
+    /// Serializable tree shape used for the picker preview.
+    pub preview: SavedTileNode,
+    /// Whether this entry is the currently active layout for the tab.
+    pub is_active: bool,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct LayoutPickerState {
-    /// Available layout entries.
+    /// Full list of layout entries available.
     pub entries: Vec<LayoutPickerEntry>,
-    /// Selected index into [`PRESET_LIST`].
+    /// Current selection, expressed as an index into
+    /// [`Self::filtered_indices`] (not into `entries`).
     pub selected: usize,
-    /// First visible row when the list needs to scroll.
+    /// First visible row when the filtered list needs to scroll.
     pub scroll_offset: usize,
+    /// Live-typed fuzzy filter text.
+    pub filter: String,
+    /// Indices into [`Self::entries`] matching the current filter.
+    pub filtered_indices: Vec<usize>,
 }
 
 impl LayoutPickerState {
     /// Create a new layout picker with the first preset selected.
     #[must_use]
-    pub const fn new(entries: Vec<LayoutPickerEntry>) -> Self {
+    pub fn new(entries: Vec<LayoutPickerEntry>) -> Self {
+        let filtered_indices = (0..entries.len()).collect();
         Self {
             entries,
             selected: 0,
             scroll_offset: 0,
+            filter: String::new(),
+            filtered_indices,
         }
     }
 
-    /// Select a specific row, clamping to the available entries.
+    /// Number of entries that currently pass the filter.
+    #[must_use]
+    pub fn filtered_len(&self) -> usize {
+        self.filtered_indices.len()
+    }
+
+    /// Append a char to the filter and refresh the match set.
+    pub fn push_filter_char(&mut self, ch: char) {
+        self.filter.push(ch);
+        self.recompute_filter();
+    }
+
+    /// Remove the last char from the filter. Returns `true` if a char was
+    /// actually removed.
+    pub fn pop_filter_char(&mut self) -> bool {
+        if self.filter.pop().is_some() {
+            self.recompute_filter();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clear the filter entirely.
+    pub fn clear_filter(&mut self) {
+        self.filter.clear();
+        self.recompute_filter();
+    }
+
+    fn recompute_filter(&mut self) {
+        if self.filter.is_empty() {
+            self.filtered_indices = (0..self.entries.len()).collect();
+        } else {
+            let needle = self.filter.to_lowercase();
+            self.filtered_indices = self
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.label.to_lowercase().contains(&needle))
+                .map(|(i, _)| i)
+                .collect();
+        }
+        if self.filtered_indices.is_empty() {
+            self.selected = 0;
+        } else if self.selected >= self.filtered_indices.len() {
+            self.selected = self.filtered_indices.len() - 1;
+        }
+        self.scroll_offset = 0;
+    }
+
+    /// Select a specific row, clamping against the filtered list.
     pub fn select(&mut self, index: usize) {
-        if self.entries.is_empty() {
+        let len = self.filtered_indices.len();
+        if len == 0 {
             self.selected = 0;
             self.scroll_offset = 0;
             return;
         }
-        self.selected = index.min(self.entries.len() - 1);
+        self.selected = index.min(len - 1);
     }
 
     /// Move selection down (wraps).
     pub fn select_next(&mut self) {
-        if !self.entries.is_empty() {
-            self.selected = (self.selected + 1) % self.entries.len();
+        let len = self.filtered_indices.len();
+        if len != 0 {
+            self.selected = (self.selected + 1) % len;
         }
     }
 
     /// Move selection up (wraps).
     pub fn select_prev(&mut self) {
-        if !self.entries.is_empty() {
-            self.selected = self
-                .selected
-                .checked_sub(1)
-                .unwrap_or(self.entries.len() - 1);
+        let len = self.filtered_indices.len();
+        if len != 0 {
+            self.selected = self.selected.checked_sub(1).unwrap_or(len - 1);
         }
     }
 
-    /// Jump to the first entry.
+    /// Jump to the first entry in the filtered list.
     pub fn select_first(&mut self) {
         self.select(0);
     }
 
-    /// Jump to the last entry.
+    /// Jump to the last entry in the filtered list.
     pub fn select_last(&mut self) {
-        if !self.entries.is_empty() {
-            self.select(self.entries.len() - 1);
+        let len = self.filtered_indices.len();
+        if len != 0 {
+            self.select(len - 1);
         }
     }
 
     /// Move selection by a page of rows.
     pub fn move_page(&mut self, delta: isize, page_size: usize) {
-        if self.entries.is_empty() {
+        let len = self.filtered_indices.len();
+        if len == 0 {
             return;
         }
 
-        let last = self.entries.len().saturating_sub(1);
+        let last = len.saturating_sub(1);
         let magnitude = page_size.max(1).saturating_mul(delta.unsigned_abs());
         let next = if delta.is_negative() {
             self.selected.saturating_sub(magnitude)
@@ -797,24 +864,26 @@ impl LayoutPickerState {
     /// Borrow the selected entry, if any.
     #[must_use]
     pub fn selected_entry(&self) -> Option<&LayoutPickerEntry> {
-        self.entries.get(self.selected)
+        let entry_idx = *self.filtered_indices.get(self.selected)?;
+        self.entries.get(entry_idx)
     }
 
     /// Compute the visible entry window for a given number of rows.
     #[must_use]
     pub fn visible_range(&self, visible_rows: usize) -> (usize, usize) {
-        if self.entries.is_empty() || visible_rows == 0 {
+        let len = self.filtered_indices.len();
+        if len == 0 || visible_rows == 0 {
             return (0, 0);
         }
 
-        let max_start = self.entries.len().saturating_sub(visible_rows);
+        let max_start = len.saturating_sub(visible_rows);
         let mut start = self.scroll_offset.min(max_start);
         if self.selected < start {
             start = self.selected;
         } else if self.selected >= start + visible_rows {
             start = self.selected + 1 - visible_rows;
         }
-        let end = (start + visible_rows).min(self.entries.len());
+        let end = (start + visible_rows).min(len);
         (start, end)
     }
 }
@@ -940,16 +1009,18 @@ impl InputDialogState {
     /// Validate the input. Returns an error message if invalid, None if OK.
     pub fn validate(&self) -> Option<&'static str> {
         let trimmed = self.input.trim();
+        if matches!(
+            self.action,
+            InputDialogAction::SaveAgentLayout | InputDialogAction::RenameAgentLayout { .. }
+        ) {
+            return terminal_layouts::validate_layout_name(&self.input);
+        }
         if trimmed.is_empty() {
             return Some("Input cannot be empty");
         }
         // Path separator check only applies to file/dir operations.
-        if !matches!(
-            self.action,
-            InputDialogAction::CommitMessage
-                | InputDialogAction::SaveAgentLayout
-                | InputDialogAction::RenameAgentLayout { .. }
-        ) && (trimmed.contains('/') || trimmed.contains('\\'))
+        if !matches!(self.action, InputDialogAction::CommitMessage)
+            && (trimmed.contains('/') || trimmed.contains('\\'))
         {
             return Some("Name cannot contain path separators");
         }
@@ -1591,23 +1662,33 @@ fn render_theme_picker(area: Rect, buf: &mut Buffer, state: &ThemePickerState, t
     }
 }
 
+/// Minimum inner width that still has room for a list + preview split.
+const LAYOUT_PICKER_PREVIEW_MIN_INNER_WIDTH: u16 = 46;
+/// Width reserved for the list column when the preview is shown.
+const LAYOUT_PICKER_LIST_COL_WIDTH: u16 = 26;
+
 /// Render the layout picker popup for built-in and saved agent layouts.
 #[allow(clippy::cast_possible_truncation)]
 fn render_layout_picker(area: Rect, buf: &mut Buffer, state: &LayoutPickerState, theme: &Theme) {
-    let popup_w = (area.width * 35 / 100).max(30).min(area.width);
-    let max_list_rows = area.height.saturating_sub(4);
-    let list_rows = state.entries.len().min(usize::from(max_list_rows)) as u16;
-    let popup_h = (2 + list_rows + 1).max(4).min(area.height);
-    let popup_x = area.x + (area.width - popup_w) / 2;
-    let popup_y = area.y + (area.height - popup_h) / 3;
+    // Widen the popup so the preview has room to breathe.
+    let popup_w = (area.width * 60 / 100).clamp(30, area.width.min(90));
+    let preferred_h: u16 = 16;
+    let popup_h = preferred_h.min(area.height.saturating_sub(2)).max(6);
+    let popup_x = area.x + area.width.saturating_sub(popup_w) / 2;
+    let popup_y = area.y + area.height.saturating_sub(popup_h) / 3;
 
     let popup_rect = Rect::new(popup_x, popup_y, popup_w, popup_h);
     Clear.render(popup_rect, buf);
 
+    let title = if state.filter.is_empty() {
+        " Select Layout ".to_string()
+    } else {
+        format!(" Select Layout · filter: {} ", state.filter)
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
-        .title(" Select Layout ")
+        .title(title)
         .style(Style::new().fg(theme.overlay_border));
     let inner = block.inner(popup_rect);
     block.render(popup_rect, buf);
@@ -1616,39 +1697,186 @@ fn render_layout_picker(area: Rect, buf: &mut Buffer, state: &LayoutPickerState,
         return;
     }
 
-    let list_y = inner.y;
+    // Decide whether there is room for a side-by-side preview column.
+    let (list_area, preview_area) = if inner.width >= LAYOUT_PICKER_PREVIEW_MIN_INNER_WIDTH {
+        let list_w = LAYOUT_PICKER_LIST_COL_WIDTH.min(inner.width - 10);
+        let list = Rect::new(inner.x, inner.y, list_w, inner.height);
+        // Gap of 1 cell for a subtle column divider.
+        let preview = Rect::new(
+            inner.x + list_w + 1,
+            inner.y,
+            inner.width - list_w - 1,
+            inner.height,
+        );
+        (list, Some(preview))
+    } else {
+        (inner, None)
+    };
+
+    let list_y = list_area.y;
     let footer_y = inner.y + inner.height.saturating_sub(1);
-    let visible_rows = usize::from(footer_y.saturating_sub(list_y));
+    let list_height = footer_y.saturating_sub(list_y);
+    let visible_rows = usize::from(list_height);
     let (start, end) = state.visible_range(visible_rows);
 
-    for (row, entry) in state.entries[start..end].iter().enumerate() {
+    for (row, entry_idx) in state.filtered_indices[start..end].iter().enumerate() {
+        let Some(entry) = state.entries.get(*entry_idx) else {
+            continue;
+        };
         let i = start + row;
         let y = list_y + row as u16;
+        let marker = if entry.is_active { "● " } else { "  " };
         let label = match entry.kind {
             LayoutPickerEntryKind::Preset(_) => {
-                format!("  {} ({} panes)", entry.label, entry.pane_count)
+                format!("{marker}{} ({} panes)", entry.label, entry.pane_count)
             }
             LayoutPickerEntryKind::Saved(_) => {
-                format!("  {} [Saved] ({} panes)", entry.label, entry.pane_count)
+                format!(
+                    "{marker}{} [Saved] ({} panes)",
+                    entry.label, entry.pane_count
+                )
             }
         };
-        let label = truncate_inline_text(&label, inner.width as usize);
+        let label = truncate_inline_text(&label, list_area.width as usize);
         if i == state.selected {
             Line::from(Span::styled(label, theme.overlay_selected))
-                .render(Rect::new(inner.x, y, inner.width, 1), buf);
+                .render(Rect::new(list_area.x, y, list_area.width, 1), buf);
         } else {
-            Line::from(Span::from(label)).render(Rect::new(inner.x, y, inner.width, 1), buf);
+            Line::from(Span::from(label))
+                .render(Rect::new(list_area.x, y, list_area.width, 1), buf);
+        }
+    }
+
+    if let Some(preview_area) = preview_area {
+        // Subtle divider between list and preview columns.
+        let divider_x = preview_area.x.saturating_sub(1);
+        for y in inner.y..footer_y {
+            buf[(divider_x, y)]
+                .set_char('│')
+                .set_fg(theme.overlay_border);
+        }
+
+        if let Some(entry) = state.selected_entry() {
+            let preview_rect = Rect::new(
+                preview_area.x,
+                preview_area.y,
+                preview_area.width,
+                list_height,
+            );
+            render_saved_layout_preview(preview_rect, buf, &entry.preview, theme);
         }
     }
 
     if footer_y > list_y {
         let footer = layout_picker_footer(
             state,
-            start > 0 || state.entries.len() > end,
+            start > 0 || state.filtered_indices.len() > end,
             inner.width as usize,
         );
         Line::from(Span::from(footer).dim())
             .render(Rect::new(inner.x, footer_y, inner.width, 1), buf);
+    }
+}
+
+/// Render an ASCII sketch of a saved layout tree.
+///
+/// Draws an outer frame, then recursively draws split dividers at the
+/// ratio-indicated positions. Leaves are numbered 1, 2, 3, … in depth-first
+/// encounter order, which matches the order panes are instantiated when the
+/// layout is applied.
+fn render_saved_layout_preview(area: Rect, buf: &mut Buffer, tree: &SavedTileNode, theme: &Theme) {
+    if area.width < 8 || area.height < 4 {
+        return;
+    }
+
+    // Outer frame
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .style(Style::new().fg(theme.fg_muted));
+    block.render(area, buf);
+
+    let inner_x = area.x + 1;
+    let inner_y = area.y + 1;
+    let inner_w = area.width.saturating_sub(2);
+    let inner_h = area.height.saturating_sub(2);
+    if inner_w == 0 || inner_h == 0 {
+        return;
+    }
+    let inner = Rect::new(inner_x, inner_y, inner_w, inner_h);
+
+    let mut leaves: Vec<Rect> = Vec::new();
+    render_preview_tree(tree, inner, buf, theme, &mut leaves);
+
+    // Number each leaf in its center.
+    for (i, rect) in leaves.iter().enumerate() {
+        if rect.width == 0 || rect.height == 0 {
+            continue;
+        }
+        let label = format!("{}", i + 1);
+        let x = rect.x + rect.width / 2;
+        let y = rect.y + rect.height / 2;
+        buf[(x, y)]
+            .set_symbol(&label)
+            .set_fg(theme.fg)
+            .set_bg(theme.bg);
+    }
+}
+
+/// Recursive half of the preview renderer. Draws split dividers and
+/// collects the leaf rectangles that remain.
+fn render_preview_tree(
+    tree: &SavedTileNode,
+    area: Rect,
+    buf: &mut Buffer,
+    theme: &Theme,
+    leaves: &mut Vec<Rect>,
+) {
+    match tree {
+        SavedTileNode::Leaf => leaves.push(area),
+        SavedTileNode::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } => match direction {
+            SplitDirection::Vertical => {
+                if area.width < 3 {
+                    leaves.push(area);
+                    return;
+                }
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let first_w = ((f64::from(area.width) * ratio).round() as u16)
+                    .clamp(1, area.width.saturating_sub(2));
+                let split_col = area.x + first_w;
+                for y in area.y..area.y + area.height {
+                    buf[(split_col, y)].set_char('│').set_fg(theme.fg_muted);
+                }
+                let first_rect = Rect::new(area.x, area.y, first_w, area.height);
+                let second_rect =
+                    Rect::new(split_col + 1, area.y, area.width - first_w - 1, area.height);
+                render_preview_tree(first, first_rect, buf, theme, leaves);
+                render_preview_tree(second, second_rect, buf, theme, leaves);
+            }
+            SplitDirection::Horizontal => {
+                if area.height < 3 {
+                    leaves.push(area);
+                    return;
+                }
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let first_h = ((f64::from(area.height) * ratio).round() as u16)
+                    .clamp(1, area.height.saturating_sub(2));
+                let split_row = area.y + first_h;
+                for x in area.x..area.x + area.width {
+                    buf[(x, split_row)].set_char('─').set_fg(theme.fg_muted);
+                }
+                let first_rect = Rect::new(area.x, area.y, area.width, first_h);
+                let second_rect =
+                    Rect::new(area.x, split_row + 1, area.width, area.height - first_h - 1);
+                render_preview_tree(first, first_rect, buf, theme, leaves);
+                render_preview_tree(second, second_rect, buf, theme, leaves);
+            }
+        },
     }
 }
 
@@ -1659,15 +1887,15 @@ fn layout_picker_footer(
 ) -> String {
     let candidates: &[&str] = match state.selected_entry().map(|entry| &entry.kind) {
         Some(LayoutPickerEntryKind::Saved(_)) => &[
-            " ↑↓ select · Enter apply · R rename · D delete · S save · Esc cancel",
-            " ↑↓ move · Enter apply · R/D manage · S save · Esc",
-            " Enter apply · R/D · S · Esc",
+            " type to filter · Enter apply · Alt+↑↓ reorder · ^R rename · ^D delete · ^S save · Esc",
+            " type to filter · Enter apply · Alt+↑↓ · ^R/^D/^S · Esc",
+            " Enter apply · ^R ^D ^S · Esc",
             " Enter · Esc",
         ],
         _ => &[
-            " ↑↓ select · Enter apply · S save · Esc cancel",
-            " ↑↓ move · Enter apply · S save · Esc",
-            " Enter apply · S · Esc",
+            " type to filter · Enter apply · ^S save · Esc cancel",
+            " type to filter · Enter apply · ^S · Esc",
+            " Enter apply · ^S · Esc",
             " Enter · Esc",
         ],
     };
@@ -1680,8 +1908,8 @@ fn layout_picker_footer(
             |candidate| (*candidate).to_string(),
         );
 
-    if show_position && !state.entries.is_empty() {
-        let position = format!("  {}/{} ", state.selected + 1, state.entries.len());
+    if show_position && !state.filtered_indices.is_empty() {
+        let position = format!("  {}/{} ", state.selected + 1, state.filtered_indices.len());
         if footer.chars().count() + position.chars().count() <= max_width {
             footer.push_str(&position);
         }
@@ -2978,17 +3206,29 @@ mod tests {
         assert_eq!(d.cursor_pos, 12);
     }
 
+    fn preset_entry(i: usize) -> LayoutPickerEntry {
+        LayoutPickerEntry {
+            label: format!("Layout {i}"),
+            pane_count: i + 1,
+            kind: LayoutPickerEntryKind::Preset(i),
+            preview: SavedTileNode::Leaf,
+            is_active: false,
+        }
+    }
+
+    fn saved_entry(label: &str) -> LayoutPickerEntry {
+        LayoutPickerEntry {
+            label: label.to_string(),
+            pane_count: 2,
+            kind: LayoutPickerEntryKind::Saved(0),
+            preview: SavedTileNode::Leaf,
+            is_active: false,
+        }
+    }
+
     #[test]
     fn layout_picker_visible_range_keeps_selected_row_in_view() {
-        let mut state = LayoutPickerState::new(
-            (0..8)
-                .map(|i| LayoutPickerEntry {
-                    label: format!("Layout {i}"),
-                    pane_count: i + 1,
-                    kind: LayoutPickerEntryKind::Preset(i),
-                })
-                .collect(),
-        );
+        let mut state = LayoutPickerState::new((0..8).map(preset_entry).collect());
         state.selected = 6;
 
         assert_eq!(state.visible_range(3), (4, 7));
@@ -3000,6 +3240,8 @@ mod tests {
             label: "Single".to_string(),
             pane_count: 1,
             kind: LayoutPickerEntryKind::Preset(0),
+            preview: SavedTileNode::Leaf,
+            is_active: false,
         }]);
 
         let footer = layout_picker_footer(&state, false, 120);
@@ -3010,11 +3252,7 @@ mod tests {
 
     #[test]
     fn layout_picker_footer_includes_saved_actions_for_saved_layouts() {
-        let state = LayoutPickerState::new(vec![LayoutPickerEntry {
-            label: "Saved".to_string(),
-            pane_count: 2,
-            kind: LayoutPickerEntryKind::Saved(0),
-        }]);
+        let state = LayoutPickerState::new(vec![saved_entry("Saved")]);
 
         let footer = layout_picker_footer(&state, false, 120);
         assert!(footer.contains("R rename"));
@@ -3023,11 +3261,7 @@ mod tests {
 
     #[test]
     fn layout_picker_footer_compacts_for_narrow_popups() {
-        let state = LayoutPickerState::new(vec![LayoutPickerEntry {
-            label: "Saved".to_string(),
-            pane_count: 2,
-            kind: LayoutPickerEntryKind::Saved(0),
-        }]);
+        let state = LayoutPickerState::new(vec![saved_entry("Saved")]);
 
         let footer = layout_picker_footer(&state, false, 32);
         assert!(footer.contains("R/D") || footer.contains("Enter"));
@@ -3037,11 +3271,7 @@ mod tests {
 
     #[test]
     fn layout_picker_footer_never_exceeds_available_width() {
-        let state = LayoutPickerState::new(vec![LayoutPickerEntry {
-            label: "Saved".to_string(),
-            pane_count: 2,
-            kind: LayoutPickerEntryKind::Saved(0),
-        }]);
+        let state = LayoutPickerState::new(vec![saved_entry("Saved")]);
 
         let footer = layout_picker_footer(&state, true, 12);
         assert!(footer.chars().count() <= 12, "footer was {footer:?}");
@@ -3058,16 +3288,158 @@ mod tests {
     }
 
     #[test]
+    fn layout_picker_preview_numbers_every_leaf() {
+        use crate::theme::Theme;
+
+        // A 2×2 grid: [first = vertical split, second = vertical split] joined horizontally.
+        let leaf = || Box::new(SavedTileNode::Leaf);
+        let tree = SavedTileNode::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 0.5,
+            first: Box::new(SavedTileNode::Split {
+                direction: SplitDirection::Vertical,
+                ratio: 0.5,
+                first: leaf(),
+                second: leaf(),
+            }),
+            second: Box::new(SavedTileNode::Split {
+                direction: SplitDirection::Vertical,
+                ratio: 0.5,
+                first: leaf(),
+                second: leaf(),
+            }),
+        };
+
+        let area = Rect::new(0, 0, 30, 14);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        render_saved_layout_preview(area, &mut buf, &tree, &theme);
+
+        let rendered: String = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_string())
+            .collect::<String>();
+        assert!(rendered.contains('1'), "missing leaf label 1");
+        assert!(rendered.contains('2'), "missing leaf label 2");
+        assert!(rendered.contains('3'), "missing leaf label 3");
+        assert!(rendered.contains('4'), "missing leaf label 4");
+    }
+
+    #[test]
+    fn layout_picker_preview_noop_on_tiny_area() {
+        use crate::theme::Theme;
+
+        let area = Rect::new(0, 0, 4, 2);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        // Must not panic, must not draw into buf beyond its bounds.
+        render_saved_layout_preview(area, &mut buf, &SavedTileNode::Leaf, &theme);
+    }
+
+    #[test]
+    fn layout_picker_preview_single_leaf_leaves_interior_empty() {
+        use crate::theme::Theme;
+
+        let area = Rect::new(0, 0, 20, 8);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        render_saved_layout_preview(area, &mut buf, &SavedTileNode::Leaf, &theme);
+
+        // Outer frame should be drawn.
+        assert_eq!(buf[(0, 0)].symbol(), "┌");
+        assert_eq!(buf[(area.width - 1, 0)].symbol(), "┐");
+        assert_eq!(buf[(0, area.height - 1)].symbol(), "└");
+        assert_eq!(buf[(area.width - 1, area.height - 1)].symbol(), "┘");
+        // A "1" label should appear somewhere.
+        let rendered: String = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_string())
+            .collect::<String>();
+        assert!(rendered.contains('1'));
+    }
+
+    #[test]
+    fn layout_picker_filter_narrows_entries_case_insensitive() {
+        let mut state = LayoutPickerState::new(vec![
+            LayoutPickerEntry {
+                label: "Main Stack".to_string(),
+                pane_count: 3,
+                kind: LayoutPickerEntryKind::Saved(0),
+                preview: SavedTileNode::Leaf,
+                is_active: false,
+            },
+            LayoutPickerEntry {
+                label: "Editor + Shell".to_string(),
+                pane_count: 2,
+                kind: LayoutPickerEntryKind::Saved(1),
+                preview: SavedTileNode::Leaf,
+                is_active: false,
+            },
+            LayoutPickerEntry {
+                label: "Grid (2×2)".to_string(),
+                pane_count: 4,
+                kind: LayoutPickerEntryKind::Preset(3),
+                preview: SavedTileNode::Leaf,
+                is_active: false,
+            },
+        ]);
+        assert_eq!(state.filtered_len(), 3);
+
+        state.push_filter_char('M');
+        state.push_filter_char('a');
+        state.push_filter_char('i');
+        state.push_filter_char('n');
+        assert_eq!(state.filtered_len(), 1);
+        assert_eq!(state.selected_entry().unwrap().label, "Main Stack");
+
+        state.pop_filter_char();
+        state.pop_filter_char();
+        assert_eq!(state.filter, "Ma");
+        assert_eq!(state.filtered_len(), 1);
+
+        state.clear_filter();
+        assert_eq!(state.filtered_len(), 3);
+    }
+
+    #[test]
+    fn layout_picker_filter_keeps_selection_in_bounds() {
+        let mut state = LayoutPickerState::new(vec![
+            LayoutPickerEntry {
+                label: "Alpha".to_string(),
+                pane_count: 1,
+                kind: LayoutPickerEntryKind::Preset(0),
+                preview: SavedTileNode::Leaf,
+                is_active: false,
+            },
+            LayoutPickerEntry {
+                label: "Beta".to_string(),
+                pane_count: 1,
+                kind: LayoutPickerEntryKind::Preset(1),
+                preview: SavedTileNode::Leaf,
+                is_active: false,
+            },
+            LayoutPickerEntry {
+                label: "Gamma".to_string(),
+                pane_count: 1,
+                kind: LayoutPickerEntryKind::Preset(2),
+                preview: SavedTileNode::Leaf,
+                is_active: false,
+            },
+        ]);
+        state.select(2); // pick Gamma
+        assert_eq!(state.selected_entry().unwrap().label, "Gamma");
+
+        state.push_filter_char('a'); // matches Alpha, Beta, Gamma (all contain 'a')
+        assert_eq!(state.filtered_len(), 3);
+
+        state.push_filter_char('l'); // only "Alpha"
+        assert_eq!(state.filtered_len(), 1);
+        assert_eq!(state.selected_entry().unwrap().label, "Alpha");
+    }
+
+    #[test]
     fn layout_picker_page_move_clamps_within_bounds() {
-        let mut state = LayoutPickerState::new(
-            (0..10)
-                .map(|i| LayoutPickerEntry {
-                    label: format!("Layout {i}"),
-                    pane_count: i + 1,
-                    kind: LayoutPickerEntryKind::Preset(i),
-                })
-                .collect(),
-        );
+        let mut state = LayoutPickerState::new((0..10).map(preset_entry).collect());
         state.select(8);
         state.move_page(1, 5);
         assert_eq!(state.selected, 9);

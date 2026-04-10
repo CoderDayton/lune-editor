@@ -9,7 +9,8 @@ use rustc_hash::FxHashMap;
 use lune_ai::AiSessionId;
 
 use super::tiling::{
-    PRESET_LIST, PaneId, SavedAgentLayout, SplitDirection, SplitSide, TileNode, build_preset_layout,
+    PRESET_LIST, PaneId, SavedAgentLayout, SavedPaneKind, SplitDirection, SplitSide, TileNode,
+    build_preset_layout,
 };
 
 // ── Pane ───────────────────────────────────────────────────────────────
@@ -51,6 +52,10 @@ pub struct AgentsTabState {
     pub drag: Option<DragState>,
     /// Whether a single pane is zoomed (temporarily full-screen).
     pub zoomed: bool,
+    /// Normalized name of the saved layout the current tree was
+    /// instantiated from, if any. Cleared when a preset is applied or the
+    /// tree is mutated in ways that diverge from the saved shape.
+    pub active_saved_layout: Option<String>,
 }
 
 impl Default for AgentsTabState {
@@ -70,6 +75,7 @@ impl AgentsTabState {
             next_id: 0,
             drag: None,
             zoomed: false,
+            active_saved_layout: None,
         }
     }
 
@@ -92,6 +98,7 @@ impl AgentsTabState {
         let id = self.alloc_pane_id();
         self.layout = Some(TileNode::leaf(id));
         self.focused = Some(id);
+        self.active_saved_layout = None;
         id
     }
 
@@ -114,6 +121,8 @@ impl AgentsTabState {
         let layout = self.layout.as_mut()?;
         if layout.split_pane(focused, new_id, direction, side) {
             self.focused = Some(new_id);
+            // Structural change — no longer a pristine saved layout.
+            self.active_saved_layout = None;
             Some(new_id)
         } else {
             None
@@ -138,6 +147,8 @@ impl AgentsTabState {
         let layout = self.layout.as_mut()?;
         if layout.remove_pane(focused) {
             let pane = self.panes.remove(&focused)?;
+            // Closing a pane changes the tree shape.
+            self.active_saved_layout = None;
             Some(pane.session_id)
         } else {
             // Remove failed — revert focus.
@@ -162,6 +173,7 @@ impl AgentsTabState {
             self.focused = None;
             self.drag = None;
             self.zoomed = false;
+            self.active_saved_layout = None;
             self.panes.remove(&pane_id);
             return true;
         }
@@ -177,6 +189,7 @@ impl AgentsTabState {
 
         self.panes.remove(&pane_id);
         self.drag = None;
+        self.active_saved_layout = None;
 
         let next_focus = self.layout.as_ref().and_then(|layout| {
             layout
@@ -248,6 +261,8 @@ impl AgentsTabState {
             None => return (Vec::new(), Vec::new()),
         };
 
+        // Applying a preset detaches from whatever saved layout was active.
+        self.active_saved_layout = None;
         self.apply_layout_template(info.pane_count, |ids| {
             build_preset_layout(preset_index, ids)
         })
@@ -258,14 +273,53 @@ impl AgentsTabState {
         &mut self,
         saved: &SavedAgentLayout,
     ) -> (Vec<PaneId>, Vec<AiSessionId>) {
-        self.apply_layout_template(saved.pane_count(), |ids| saved.instantiate(ids))
+        let result = self.apply_layout_template(saved.pane_count(), |ids| saved.instantiate(ids));
+        self.active_saved_layout =
+            Some(super::terminal_layouts::normalize_layout_name(&saved.name));
+        result
     }
 
     /// Capture the current layout tree as a named saved layout.
+    ///
+    /// No per-pane client hints are captured. Use
+    /// [`Self::save_layout_with_kinds`] from the app layer when the AI
+    /// manager is available and session kinds should be remembered.
     #[must_use]
     pub fn save_layout(&self, name: String) -> Option<SavedAgentLayout> {
         let root = self.layout.as_ref()?.to_saved();
-        Some(SavedAgentLayout { name, root })
+        Some(SavedAgentLayout {
+            name,
+            root,
+            pane_kinds: Vec::new(),
+        })
+    }
+
+    /// Capture the current layout tree plus per-leaf client kinds.
+    ///
+    /// `resolve_kind` is called for every pane in depth-first order. It may
+    /// return `None` when the session is not yet registered, which becomes a
+    /// `None` slot in the saved layout.
+    #[must_use]
+    pub fn save_layout_with_kinds<F>(
+        &self,
+        name: String,
+        mut resolve_kind: F,
+    ) -> Option<SavedAgentLayout>
+    where
+        F: FnMut(PaneId) -> Option<SavedPaneKind>,
+    {
+        let layout = self.layout.as_ref()?;
+        let root = layout.to_saved();
+        let pane_kinds: Vec<Option<SavedPaneKind>> = layout
+            .pane_ids()
+            .into_iter()
+            .map(&mut resolve_kind)
+            .collect();
+        Some(SavedAgentLayout {
+            name,
+            root,
+            pane_kinds,
+        })
     }
 
     fn apply_layout_template<F>(
@@ -499,6 +553,49 @@ mod tests {
     }
 
     #[test]
+    fn save_layout_with_kinds_records_each_leaf_in_order() {
+        let mut state = AgentsTabState::new();
+        let first = state.add_first_pane();
+        state.register_pane(first, dummy_session_id(), "A".into());
+        let second = state.split_focused(SplitDirection::Vertical).unwrap();
+        state.register_pane(second, dummy_session_id(), "B".into());
+
+        let saved = state
+            .save_layout_with_kinds("Mixed".to_string(), |pane_id| {
+                if pane_id == first {
+                    Some(SavedPaneKind::Shell)
+                } else {
+                    Some(SavedPaneKind::ClaudeCode)
+                }
+            })
+            .unwrap();
+
+        assert_eq!(
+            saved.pane_kinds,
+            vec![Some(SavedPaneKind::Shell), Some(SavedPaneKind::ClaudeCode),]
+        );
+    }
+
+    #[test]
+    fn save_layout_with_kinds_reports_none_for_missing_session() {
+        let mut state = AgentsTabState::new();
+        let first = state.add_first_pane();
+        state.register_pane(first, dummy_session_id(), "A".into());
+        let _second = state.split_focused(SplitDirection::Vertical).unwrap();
+        // `second` deliberately left unregistered.
+
+        let saved = state
+            .save_layout_with_kinds("Partial".to_string(), |pane_id| {
+                (pane_id == first).then_some(SavedPaneKind::Shell)
+            })
+            .unwrap();
+
+        assert_eq!(saved.pane_kinds.len(), 2);
+        assert_eq!(saved.pane_kinds[0], Some(SavedPaneKind::Shell));
+        assert_eq!(saved.pane_kinds[1], None);
+    }
+
+    #[test]
     fn apply_saved_layout_closes_excess_sessions() {
         let mut state = AgentsTabState::new();
         let first = state.add_first_pane();
@@ -511,6 +608,7 @@ mod tests {
         let saved = SavedAgentLayout {
             name: "Single".to_string(),
             root: crate::runtime::tiling::SavedTileNode::Leaf,
+            pane_kinds: Vec::new(),
         };
         let (new_ids, closed) = state.apply_saved_layout(&saved);
 

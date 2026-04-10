@@ -12,5 +12,5 @@ expression: buffer_to_text(&buf)
                 │  Agent: Focus Next                           │
                 │  Agent: Focus Previous                       │
                 │  Agent: Save Current Layout                  │
-                │  Agent: Select Layout                        │
+                │  Agent: Save Layout As…                      │
                 └──────────────────────────────────────────────┘

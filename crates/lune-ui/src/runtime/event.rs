@@ -218,10 +218,17 @@ pub enum AppCommand {
     AgentFocusPrev,
     /// Toggle zoom on the focused agent pane.
     AgentToggleZoom,
-    /// Prompt for a name and save the current agent layout.
+    /// Save the current agent layout, reusing the active saved layout's
+    /// name when one is set. Falls back to [`AgentSaveLayoutAs`] when
+    /// there is no active layout to overwrite.
     AgentSaveLayout,
+    /// Always prompt for a new name, even when an active layout exists.
+    AgentSaveLayoutAs,
     /// Persist the current agent layout under the given name.
     AgentSaveLayoutConfirmed(String),
+    /// Persist the current agent layout, replacing any existing layout
+    /// with the same normalized name without prompting.
+    AgentSaveLayoutOverwriteConfirmed(String),
     /// Delete the saved agent layout at the given index.
     AgentDeleteSavedLayout(usize),
     /// Rename the saved agent layout at the given index.

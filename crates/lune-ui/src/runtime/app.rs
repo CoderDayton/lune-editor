@@ -1360,6 +1360,51 @@ fn close_tab_by_id(state: &mut AppState, bid: BufferId) {
 
 // ── Command handling ──────────────────────────────────────────────────
 
+/// Upsert the current agent layout under `name` and show a toast with the
+/// outcome. No-op when there is nothing to save.
+fn perform_save_agent_layout(state: &mut AppState, name: &str) {
+    // Capture each pane's current session kind so applying the layout
+    // later can respawn the same client instead of always falling back to
+    // a plain shell.
+    let Some(saved) = state
+        .agents_tab
+        .save_layout_with_kinds(name.to_string(), |pane_id| {
+            let pane = state.agents_tab.panes.get(&pane_id)?;
+            let session = state.ai_manager.session(pane.session_id)?;
+            Some(crate::runtime::tiling::SavedPaneKind::from(session.kind()))
+        })
+    else {
+        state
+            .overlay
+            .notify("No agent layout to save yet", NotificationLevel::Warning);
+        return;
+    };
+    match terminal_layouts::upsert_saved_layout(&mut state.saved_agent_layouts, saved) {
+        Some(terminal_layouts::SaveLayoutOutcome::Inserted { name, .. }) => {
+            state.agents_tab.active_saved_layout =
+                Some(terminal_layouts::normalize_layout_name(&name));
+            state
+                .overlay
+                .notify(format!("Saved layout: {name}"), NotificationLevel::Info);
+            state.persist_saved_agent_layouts();
+        }
+        Some(terminal_layouts::SaveLayoutOutcome::Updated { name, .. }) => {
+            state.agents_tab.active_saved_layout =
+                Some(terminal_layouts::normalize_layout_name(&name));
+            state.overlay.notify(
+                format!("Updated saved layout: {name}"),
+                NotificationLevel::Info,
+            );
+            state.persist_saved_agent_layouts();
+        }
+        None => {
+            state
+                .overlay
+                .notify("Layout name cannot be empty", NotificationLevel::Warning);
+        }
+    }
+}
+
 /// Handle application commands.
 #[allow(clippy::too_many_lines)]
 fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
@@ -1526,6 +1571,27 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             Control::Changed
         }
         AppCommand::AgentSaveLayout => {
+            if state.agents_tab.layout.is_none() {
+                state
+                    .overlay
+                    .notify("No agent layout to save yet", NotificationLevel::Warning);
+                return Control::Changed;
+            }
+            let active_name = state.agents_tab.active_saved_layout.clone();
+            let still_exists = active_name.as_deref().is_some_and(|name| {
+                state.saved_agent_layouts.iter().any(|layout| {
+                    terminal_layouts::normalize_layout_name(&layout.name).eq_ignore_ascii_case(name)
+                })
+            });
+            if let (Some(name), true) = (active_name, still_exists) {
+                // Overwrite silently — the user already named this layout.
+                perform_save_agent_layout(state, &name);
+            } else {
+                open_save_agent_layout_dialog(state);
+            }
+            Control::Changed
+        }
+        AppCommand::AgentSaveLayoutAs => {
             if state.agents_tab.layout.is_some() {
                 open_save_agent_layout_dialog(state);
             } else {
@@ -1536,38 +1602,41 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             Control::Changed
         }
         AppCommand::AgentSaveLayoutConfirmed(name) => {
-            if let Some(saved) = state.agents_tab.save_layout(name.clone()) {
-                match terminal_layouts::upsert_saved_layout(&mut state.saved_agent_layouts, saved) {
-                    Some(terminal_layouts::SaveLayoutOutcome::Inserted { name, .. }) => {
-                        state
-                            .overlay
-                            .notify(format!("Saved layout: {name}"), NotificationLevel::Info);
-                        state.persist_saved_agent_layouts();
-                    }
-                    Some(terminal_layouts::SaveLayoutOutcome::Updated { name, .. }) => {
-                        state.overlay.notify(
-                            format!("Updated saved layout: {name}"),
-                            NotificationLevel::Info,
-                        );
-                        state.persist_saved_agent_layouts();
-                    }
-                    None => {
-                        state
-                            .overlay
-                            .notify("Layout name cannot be empty", NotificationLevel::Warning);
-                    }
-                }
-            } else {
+            if state.agents_tab.layout.is_none() {
                 state
                     .overlay
                     .notify("No agent layout to save yet", NotificationLevel::Warning);
+                return Control::Changed;
             }
+            let normalized = terminal_layouts::normalize_layout_name(name);
+            let collision = state.saved_agent_layouts.iter().any(|layout| {
+                terminal_layouts::normalize_layout_name(&layout.name)
+                    .eq_ignore_ascii_case(&normalized)
+            });
+            if collision {
+                state.overlay.open_confirm(
+                    format!("Layout \"{normalized}\" already exists. Overwrite?"),
+                    AppCommand::AgentSaveLayoutOverwriteConfirmed(name.clone()),
+                );
+            } else {
+                perform_save_agent_layout(state, name);
+            }
+            Control::Changed
+        }
+        AppCommand::AgentSaveLayoutOverwriteConfirmed(name) => {
+            perform_save_agent_layout(state, name);
             Control::Changed
         }
         AppCommand::AgentDeleteSavedLayout(index) => {
             if let Some(deleted) =
                 terminal_layouts::delete_saved_layout(&mut state.saved_agent_layouts, *index)
             {
+                let deleted_normalized = terminal_layouts::normalize_layout_name(&deleted.name);
+                if state.agents_tab.active_saved_layout.as_deref()
+                    == Some(deleted_normalized.as_str())
+                {
+                    state.agents_tab.active_saved_layout = None;
+                }
                 state.persist_saved_agent_layouts();
                 state.overlay.notify(
                     format!("Deleted saved layout: {}", deleted.name),
@@ -1592,7 +1661,14 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
                 *index,
                 name,
             ) {
-                Some(terminal_layouts::RenameLayoutOutcome::Renamed { to, .. }) => {
+                Some(terminal_layouts::RenameLayoutOutcome::Renamed { from, to, .. }) => {
+                    let from_normalized = terminal_layouts::normalize_layout_name(&from);
+                    if state.agents_tab.active_saved_layout.as_deref()
+                        == Some(from_normalized.as_str())
+                    {
+                        state.agents_tab.active_saved_layout =
+                            Some(terminal_layouts::normalize_layout_name(&to));
+                    }
                     state.persist_saved_agent_layouts();
                     state.overlay.notify(
                         format!("Renamed saved layout to: {to}"),
@@ -1602,9 +1678,18 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
                 }
                 Some(terminal_layouts::RenameLayoutOutcome::ReplacedExisting {
                     index: selected,
+                    from,
                     to,
-                    ..
                 }) => {
+                    let from_normalized = terminal_layouts::normalize_layout_name(&from);
+                    let to_normalized = terminal_layouts::normalize_layout_name(&to);
+                    if state.agents_tab.active_saved_layout.as_deref()
+                        == Some(from_normalized.as_str())
+                        || state.agents_tab.active_saved_layout.as_deref()
+                            == Some(to_normalized.as_str())
+                    {
+                        state.agents_tab.active_saved_layout = Some(to_normalized);
+                    }
                     state.persist_saved_agent_layouts();
                     state.overlay.notify(
                         format!("Renamed layout and replaced existing: {to}"),
@@ -3000,16 +3085,43 @@ mod tests {
             &mut state,
         );
         assert!(matches!(first_save, Control::Changed));
+        assert_eq!(state.saved_agent_layouts.len(), 1);
+        assert_eq!(state.saved_agent_layouts[0].pane_count(), 1);
 
         state
             .agents_tab
             .split_focused(tiling::SplitDirection::Vertical);
+        // Second save with a normalized-equal name should prompt for
+        // overwrite instead of silently replacing.
         let second_save = handle_command(
             &AppCommand::AgentSaveLayoutConfirmed("main stack".to_string()),
             &mut state,
         );
-
         assert!(matches!(second_save, Control::Changed));
+        assert_eq!(
+            state.saved_agent_layouts.len(),
+            1,
+            "collision should not change storage until confirmed"
+        );
+        assert_eq!(
+            state.saved_agent_layouts[0].pane_count(),
+            1,
+            "existing layout must remain untouched"
+        );
+        assert!(
+            matches!(
+                state.overlay.active,
+                Some(overlay::OverlayKind::ConfirmDialog { .. })
+            ),
+            "overwrite confirmation dialog should be open"
+        );
+
+        // Confirm the overwrite.
+        let confirmed = handle_command(
+            &AppCommand::AgentSaveLayoutOverwriteConfirmed("main stack".to_string()),
+            &mut state,
+        );
+        assert!(matches!(confirmed, Control::Changed));
         assert_eq!(state.saved_agent_layouts.len(), 1);
         assert_eq!(state.saved_agent_layouts[0].name, "main stack");
         assert_eq!(state.saved_agent_layouts[0].pane_count(), 2);
@@ -3024,6 +3136,7 @@ mod tests {
             tiling::SavedAgentLayout {
                 name: "One".to_string(),
                 root: tiling::SavedTileNode::Leaf,
+                pane_kinds: Vec::new(),
             },
             tiling::SavedAgentLayout {
                 name: "Two".to_string(),
@@ -3033,6 +3146,7 @@ mod tests {
                     first: Box::new(tiling::SavedTileNode::Leaf),
                     second: Box::new(tiling::SavedTileNode::Leaf),
                 },
+                pane_kinds: Vec::new(),
             },
         ];
         state.persist_saved_agent_layouts();
@@ -3067,6 +3181,7 @@ mod tests {
         state.saved_agent_layouts = vec![tiling::SavedAgentLayout {
             name: "One".to_string(),
             root: tiling::SavedTileNode::Leaf,
+            pane_kinds: Vec::new(),
         }];
 
         let result = handle_command(
@@ -3093,10 +3208,12 @@ mod tests {
             tiling::SavedAgentLayout {
                 name: "One".to_string(),
                 root: tiling::SavedTileNode::Leaf,
+                pane_kinds: Vec::new(),
             },
             tiling::SavedAgentLayout {
                 name: "Two".to_string(),
                 root: tiling::SavedTileNode::Leaf,
+                pane_kinds: Vec::new(),
             },
         ];
 
@@ -3147,11 +3264,14 @@ mod tests {
                 first: Box::new(tiling::SavedTileNode::Leaf),
                 second: Box::new(tiling::SavedTileNode::Leaf),
             },
+            pane_kinds: Vec::new(),
         };
         let entry = overlay::LayoutPickerEntry {
             label: saved.name.clone(),
             pane_count: saved.pane_count(),
             kind: overlay::LayoutPickerEntryKind::Saved(0),
+            preview: saved.root.clone(),
+            is_active: false,
         };
         state.saved_agent_layouts.push(saved);
 
@@ -3187,6 +3307,7 @@ mod tests {
         let saved = vec![tiling::SavedAgentLayout {
             name: "Persisted".to_string(),
             root: tiling::SavedTileNode::Leaf,
+            pane_kinds: Vec::new(),
         }];
         db.put_raw(b"ui:agent_layouts", &saved).unwrap();
 
@@ -3222,6 +3343,7 @@ mod tests {
         state.saved_agent_layouts.push(tiling::SavedAgentLayout {
             name: "Saved".to_string(),
             root: tiling::SavedTileNode::Leaf,
+            pane_kinds: Vec::new(),
         });
 
         let result = handle_command(&AppCommand::AgentApplyLayout, &mut state);

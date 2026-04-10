@@ -62,11 +62,59 @@ pub enum SavedTileNode {
     },
 }
 
+/// Serializable mirror of [`lune_ai::session::AiClientKind`] for persistence.
+///
+/// Kept separate from the AI crate so saved layouts don't introduce a serde
+/// dependency there. Convert via [`From`]/[`to_client_kind`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SavedPaneKind {
+    /// Plain shell.
+    Shell,
+    /// Claude Code CLI.
+    ClaudeCode,
+    /// User-supplied command.
+    Custom { name: String, command: String },
+}
+
+impl SavedPaneKind {
+    /// Convert to the runtime [`lune_ai::session::AiClientKind`].
+    #[must_use]
+    pub fn to_client_kind(&self) -> lune_ai::session::AiClientKind {
+        match self {
+            Self::Shell => lune_ai::session::AiClientKind::Shell,
+            Self::ClaudeCode => lune_ai::session::AiClientKind::ClaudeCode,
+            Self::Custom { name, command } => lune_ai::session::AiClientKind::Custom {
+                name: name.clone(),
+                command: command.clone(),
+            },
+        }
+    }
+}
+
+impl From<&lune_ai::session::AiClientKind> for SavedPaneKind {
+    fn from(kind: &lune_ai::session::AiClientKind) -> Self {
+        match kind {
+            lune_ai::session::AiClientKind::Shell => Self::Shell,
+            lune_ai::session::AiClientKind::ClaudeCode => Self::ClaudeCode,
+            lune_ai::session::AiClientKind::Custom { name, command } => Self::Custom {
+                name: name.clone(),
+                command: command.clone(),
+            },
+        }
+    }
+}
+
 /// A user-saved agent layout template.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedAgentLayout {
     pub name: String,
     pub root: SavedTileNode,
+    /// Per-pane client kind hints, indexed by depth-first leaf order.
+    ///
+    /// `None` at a position means the pane should default to `Shell` when
+    /// the layout is instantiated. An empty vec means no hints are stored.
+    #[serde(default)]
+    pub pane_kinds: Vec<Option<SavedPaneKind>>,
 }
 
 /// Minimum ratio for any split (10%).
@@ -877,6 +925,7 @@ mod tests {
         let saved = SavedAgentLayout {
             name: "Main Stack".to_string(),
             root: tree.to_saved(),
+            pane_kinds: Vec::new(),
         };
         let rebuilt = saved.instantiate(&[p(0), p(1), p(2)]).unwrap();
 
@@ -886,10 +935,44 @@ mod tests {
     }
 
     #[test]
+    fn saved_pane_kind_round_trip_through_ai_client_kind() {
+        let shell_saved = SavedPaneKind::from(&lune_ai::session::AiClientKind::Shell);
+        assert_eq!(shell_saved, SavedPaneKind::Shell);
+        let shell_back = shell_saved.to_client_kind();
+        assert_eq!(shell_back, lune_ai::session::AiClientKind::Shell);
+
+        let custom = lune_ai::session::AiClientKind::Custom {
+            name: "Rawr".to_string(),
+            command: "/usr/bin/rawr".to_string(),
+        };
+        let saved = SavedPaneKind::from(&custom);
+        assert_eq!(
+            saved,
+            SavedPaneKind::Custom {
+                name: "Rawr".to_string(),
+                command: "/usr/bin/rawr".to_string(),
+            }
+        );
+        assert_eq!(saved.to_client_kind(), custom);
+    }
+
+    #[test]
+    fn saved_layout_carries_pane_kinds() {
+        let saved = SavedAgentLayout {
+            name: "Mixed".to_string(),
+            root: Presets::side_by_side([p(1), p(2)]).to_saved(),
+            pane_kinds: vec![Some(SavedPaneKind::Shell), Some(SavedPaneKind::ClaudeCode)],
+        };
+        assert_eq!(saved.pane_kinds.len(), 2);
+        assert_eq!(saved.pane_kinds[1], Some(SavedPaneKind::ClaudeCode));
+    }
+
+    #[test]
     fn saved_layout_instantiate_requires_exact_pane_count() {
         let saved = SavedAgentLayout {
             name: "Two Up".to_string(),
             root: Presets::side_by_side([p(10), p(11)]).to_saved(),
+            pane_kinds: Vec::new(),
         };
 
         assert!(saved.instantiate(&[p(0)]).is_none());

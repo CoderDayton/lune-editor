@@ -390,6 +390,7 @@ pub fn parse_command(s: &str) -> Option<AppCommand> {
         "agent_toggle_zoom" => Some(AppCommand::AgentToggleZoom),
         "agent_apply_layout" => Some(AppCommand::AgentApplyLayout),
         "agent_save_layout" => Some(AppCommand::AgentSaveLayout),
+        "agent_save_layout_as" => Some(AppCommand::AgentSaveLayoutAs),
         // Settings
         "open_settings" => Some(AppCommand::OpenSettings),
         "open_keybindings" => Some(AppCommand::OpenKeybindings),

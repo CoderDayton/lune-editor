@@ -9,8 +9,8 @@ expression: buffer_to_text(&buf)
                 │> sav                                         │
                 │──────────────────────────────────────────────│
                 │  Agent: Save Current Layout                  │
+                │  Agent: Save Layout As…                      │
                 │  Save                                        │
                 │  Save All                                    │
-                │                                              │
                 │                                              │
                 └──────────────────────────────────────────────┘

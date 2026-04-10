@@ -4,7 +4,10 @@
 //! higher-level saved-layout mutation rules so different terminal surfaces can
 //! share consistent naming, overwrite, rename, and delete semantics.
 
-use super::tiling::SavedAgentLayout;
+use super::tiling::{PRESET_LIST, SavedAgentLayout};
+
+/// Maximum characters allowed in a saved layout name after trimming.
+pub const MAX_LAYOUT_NAME_LEN: usize = 48;
 
 /// Result of saving a layout by name.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,6 +39,32 @@ pub fn normalize_layout_name(name: &str) -> String {
 
 fn same_layout_name(lhs: &str, rhs: &str) -> bool {
     normalize_layout_name(lhs).eq_ignore_ascii_case(&normalize_layout_name(rhs))
+}
+
+/// Validate a user-typed saved-layout name.
+///
+/// Returns `None` when the name is acceptable, or a short human-readable
+/// error message otherwise. Rules:
+///
+/// - Must not be empty after trimming/collapsing whitespace.
+/// - Must not exceed [`MAX_LAYOUT_NAME_LEN`] characters.
+/// - Must not collide with a preset layout name (case-insensitive).
+#[must_use]
+pub fn validate_layout_name(name: &str) -> Option<&'static str> {
+    let normalized = normalize_layout_name(name);
+    if normalized.is_empty() {
+        return Some("Layout name cannot be empty");
+    }
+    if normalized.chars().count() > MAX_LAYOUT_NAME_LEN {
+        return Some("Layout name is too long");
+    }
+    if PRESET_LIST
+        .iter()
+        .any(|preset| preset.name.eq_ignore_ascii_case(&normalized))
+    {
+        return Some("Name clashes with a built-in preset");
+    }
+    None
 }
 
 /// Suggest the next default layout name without colliding with existing names.
@@ -113,9 +142,11 @@ pub fn rename_saved_layout(
 
     if let Some(duplicate_index) = duplicate_index {
         let root = layouts[index].root.clone();
+        let pane_kinds = layouts[index].pane_kinds.clone();
         layouts[duplicate_index] = SavedAgentLayout {
             name: normalized.clone(),
             root,
+            pane_kinds,
         };
         layouts.remove(index);
         let final_index = if index < duplicate_index {
@@ -146,6 +177,26 @@ pub fn delete_saved_layout(
     (index < layouts.len()).then(|| layouts.remove(index))
 }
 
+/// Swap the layout at `index` with its neighbour in the given direction.
+///
+/// `delta` is `-1` to move up and `1` to move down. Returns the new index
+/// when the swap succeeded, or `None` when the move would go out of bounds.
+pub fn reorder_saved_layout(
+    layouts: &mut [SavedAgentLayout],
+    index: usize,
+    delta: isize,
+) -> Option<usize> {
+    if index >= layouts.len() {
+        return None;
+    }
+    let target = index.checked_add_signed(delta)?;
+    if target >= layouts.len() {
+        return None;
+    }
+    layouts.swap(index, target);
+    Some(target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,6 +206,7 @@ mod tests {
         SavedAgentLayout {
             name: name.to_string(),
             root: SavedTileNode::Leaf,
+            pane_kinds: Vec::new(),
         }
     }
 
@@ -198,6 +250,62 @@ mod tests {
         );
         assert_eq!(layouts.len(), 2);
         assert_eq!(layouts[1].name, "gamma");
+    }
+
+    #[test]
+    fn validate_layout_name_accepts_sensible_names() {
+        assert!(validate_layout_name("Main Stack").is_none());
+        assert!(validate_layout_name("  padded name ").is_none());
+    }
+
+    #[test]
+    fn validate_layout_name_rejects_empty_and_whitespace() {
+        assert!(validate_layout_name("").is_some());
+        assert!(validate_layout_name("   ").is_some());
+    }
+
+    #[test]
+    fn validate_layout_name_rejects_preset_collisions() {
+        for preset in PRESET_LIST {
+            assert!(
+                validate_layout_name(preset.name).is_some(),
+                "expected preset name {:?} to be rejected",
+                preset.name
+            );
+            assert!(
+                validate_layout_name(&preset.name.to_lowercase()).is_some(),
+                "expected lowercased preset {:?} to be rejected",
+                preset.name
+            );
+        }
+    }
+
+    #[test]
+    fn validate_layout_name_rejects_too_long() {
+        let long = "x".repeat(MAX_LAYOUT_NAME_LEN + 1);
+        assert!(validate_layout_name(&long).is_some());
+    }
+
+    #[test]
+    fn reorder_saved_layout_swaps_with_neighbor() {
+        let mut layouts = vec![layout("A"), layout("B"), layout("C")];
+        assert_eq!(reorder_saved_layout(&mut layouts, 0, 1), Some(1));
+        assert_eq!(layouts[0].name, "B");
+        assert_eq!(layouts[1].name, "A");
+
+        assert_eq!(reorder_saved_layout(&mut layouts, 2, -1), Some(1));
+        assert_eq!(layouts[1].name, "C");
+        assert_eq!(layouts[2].name, "A");
+    }
+
+    #[test]
+    fn reorder_saved_layout_rejects_out_of_bounds() {
+        let mut layouts = vec![layout("A"), layout("B")];
+        assert_eq!(reorder_saved_layout(&mut layouts, 0, -1), None);
+        assert_eq!(reorder_saved_layout(&mut layouts, 1, 1), None);
+        assert_eq!(reorder_saved_layout(&mut layouts, 5, 1), None);
+        assert_eq!(layouts[0].name, "A");
+        assert_eq!(layouts[1].name, "B");
     }
 
     #[test]
