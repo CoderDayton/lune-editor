@@ -76,6 +76,7 @@ impl Keymap {
         const CTRL_ALT: KeyModifiers = KeyModifiers::from_bits_truncate(
             KeyModifiers::CONTROL.bits() | KeyModifiers::ALT.bits(),
         );
+        const ALT: KeyModifiers = KeyModifiers::ALT;
 
         let bindings: &[(KeyCode, KeyModifiers, AppCommand)] = &[
             // Application lifecycle
@@ -91,6 +92,15 @@ impl Keymap {
             (Char('1'), CTRL, AppCommand::ShowEditorTab),
             (Char('2'), CTRL, AppCommand::ShowAgentsTab),
             (Char('`'), CTRL, AppCommand::ToggleAgentsTab),
+            // Agents tab — pane multiplexer
+            (Char('N'), CTRL_SHIFT, AppCommand::AgentSplitAuto),
+            (Char('\\'), ALT, AppCommand::AgentSplitVertical),
+            (Char('-'), ALT, AppCommand::AgentSplitHorizontal),
+            (Char('x'), ALT, AppCommand::AgentClosePane),
+            (Char('j'), ALT, AppCommand::AgentFocusNext),
+            (Char('k'), ALT, AppCommand::AgentFocusPrev),
+            (Char('z'), ALT, AppCommand::AgentToggleZoom),
+            (Char(','), ALT, AppCommand::AgentApplyLayout),
             // Panel toggles
             (Char('b'), CTRL, AppCommand::ToggleFileTree),
             (Char('g'), CTRL, AppCommand::ToggleGitPanel),

@@ -23,18 +23,6 @@ pub struct AgentPane {
     pub title: String,
 }
 
-// ── Leader key ─────────────────────────────────────────────────────────
-
-/// Tracks the Ctrl+A leader key state machine.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum LeaderState {
-    /// Normal mode — keystrokes go to the focused pane's PTY.
-    #[default]
-    Inactive,
-    /// Leader key pressed — next keystroke is a pane command.
-    Active,
-}
-
 // ── Drag state ─────────────────────────────────────────────────────────
 
 /// Tracks an in-progress mouse drag on a split border.
@@ -59,8 +47,6 @@ pub struct AgentsTabState {
     pub focused: Option<PaneId>,
     /// Counter for generating unique pane IDs.
     next_id: u32,
-    /// Leader key state machine.
-    pub leader: LeaderState,
     /// Active mouse drag on a split border.
     pub drag: Option<DragState>,
     /// Whether a single pane is zoomed (temporarily full-screen).
@@ -82,7 +68,6 @@ impl AgentsTabState {
             panes: FxHashMap::default(),
             focused: None,
             next_id: 0,
-            leader: LeaderState::Inactive,
             drag: None,
             zoomed: false,
         }

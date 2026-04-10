@@ -1,7 +1,7 @@
 #![allow(clippy::wildcard_imports)]
 
 use super::*;
-use crate::runtime::agents::{DragState, LeaderState};
+use crate::runtime::agents::DragState;
 use crate::runtime::tiling;
 
 pub(super) fn render_agents_tab(area: Rect, buf: &mut Buffer, state: &mut AppState) {
@@ -57,10 +57,24 @@ fn render_empty_agents_tab(content: Rect, buf: &mut Buffer, state: &AppState) {
     Line::from("No agent sessions yet.")
         .style(Style::new().fg(state.theme.fg))
         .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
-    if inner.height > 1 {
-        Line::from("Press Ctrl+A then Enter to open a smart-split pane.")
-            .style(Style::new().fg(state.theme.fg_muted))
-            .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
+
+    let hints: &[&str] = &[
+        "Ctrl+Shift+N   open a new agent pane",
+        "Alt+\\ / Alt+-  split vertical / horizontal",
+        "Alt+j / Alt+k  focus next / prev pane",
+        "Alt+x          close focused pane",
+        "Alt+z          toggle zoom",
+        "Alt+,          layout picker",
+    ];
+    let muted = Style::new().fg(state.theme.fg_muted);
+    for (i, hint) in hints.iter().enumerate() {
+        let row = inner.y + 2 + u16::try_from(i).unwrap_or(u16::MAX);
+        if row >= inner.y + inner.height {
+            break;
+        }
+        Line::from(*hint)
+            .style(muted)
+            .render(Rect::new(inner.x, row, inner.width, 1), buf);
     }
 }
 
@@ -189,67 +203,6 @@ pub(super) fn sync_agent_session_size(session: &mut lune_ai::AiSession, area: Re
 }
 
 pub(super) fn handle_agents_tab_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
-    use tiling::SplitDirection;
-
-    if key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        state.agents_tab.leader = LeaderState::Active;
-        return Control::Changed;
-    }
-
-    if state.agents_tab.leader == LeaderState::Active {
-        state.agents_tab.leader = LeaderState::Inactive;
-        return match key.code {
-            KeyCode::Enter | KeyCode::Char('a') => {
-                Control::Event(AppEvent::Command(AppCommand::AgentSplitAuto))
-            }
-            KeyCode::Char('v') => begin_agent_split_session(
-                state,
-                Some((SplitDirection::Vertical, tiling::SplitSide::Second)),
-            ),
-            KeyCode::Char('s') => begin_agent_split_session(
-                state,
-                Some((SplitDirection::Horizontal, tiling::SplitSide::Second)),
-            ),
-            KeyCode::Char('x') => {
-                if let Some(session_id) = state.agents_tab.close_focused() {
-                    state.ai_manager.close_session(session_id);
-                }
-                Control::Changed
-            }
-            KeyCode::Char('n') => {
-                state.agents_tab.focus_next();
-                Control::Changed
-            }
-            KeyCode::Char('p') => {
-                state.agents_tab.focus_prev();
-                Control::Changed
-            }
-            KeyCode::Left => {
-                if let Some(layout) = state.agents_tab.layout.as_mut() {
-                    layout.adjust_ratio(-tiling::RESIZE_STEP);
-                }
-                Control::Changed
-            }
-            KeyCode::Right => {
-                if let Some(layout) = state.agents_tab.layout.as_mut() {
-                    layout.adjust_ratio(tiling::RESIZE_STEP);
-                }
-                Control::Changed
-            }
-            KeyCode::Char('z') => {
-                state.agents_tab.toggle_zoom();
-                Control::Changed
-            }
-            KeyCode::Char('e') => {
-                state.set_root_tab(RootTab::Editor);
-                Control::Changed
-            }
-            KeyCode::Char('l') => Control::Event(AppEvent::Command(AppCommand::AgentApplyLayout)),
-            KeyCode::Char('w') => Control::Event(AppEvent::Command(AppCommand::AgentSaveLayout)),
-            _ => Control::Continue,
-        };
-    }
-
     if state.agents_tab.is_empty() {
         return Control::Continue;
     }
