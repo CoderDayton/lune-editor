@@ -2676,6 +2676,62 @@ mod tests {
     }
 
     #[test]
+    fn render_agents_tab_empty_state_centers_message_stack() {
+        let count_u16 = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
+        let mut state = AppState::new();
+        let area = Rect::new(0, 0, 80, 20);
+        let mut buf = Buffer::empty(area);
+
+        render_agents_tab(area, &mut buf, &mut state);
+
+        let message = "No agent sessions yet.";
+        let hint = "Ctrl+N         open a new agent pane";
+        let content = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(area)[0];
+        let inner = Block::default().borders(Borders::ALL).inner(content);
+        let total_height = 8;
+        let start_y = inner.y + inner.height.saturating_sub(total_height) / 2;
+        let text_block_width = [
+            count_u16(hint.chars().count()),
+            count_u16(
+                "Alt+\\ / Alt+-  split vertical / horizontal"
+                    .chars()
+                    .count(),
+            ),
+            count_u16("Alt+j / Alt+k  focus next / prev pane".chars().count()),
+            count_u16("Alt+x          close focused pane".chars().count()),
+            count_u16("Alt+z          toggle zoom".chars().count()),
+            count_u16("Alt+,          layout picker".chars().count()),
+        ]
+        .into_iter()
+        .max()
+        .unwrap();
+        let expected_heading_x = inner.x
+            + inner
+                .width
+                .saturating_sub(count_u16(message.chars().count()))
+                / 2;
+        let expected_block_x = inner.x + inner.width.saturating_sub(text_block_width) / 2;
+
+        let top_inner_row = row_text(&buf, area, inner.y);
+        assert!(!top_inner_row.contains(message));
+
+        let message_row = row_text(&buf, area, start_y);
+        let message_x = count_u16(
+            message_row[..message_row.find(message).unwrap()]
+                .chars()
+                .count(),
+        );
+        assert_eq!(message_x, expected_heading_x);
+
+        let hint_row = row_text(&buf, area, start_y + 2);
+        let hint_x = count_u16(hint_row[..hint_row.find(hint).unwrap()].chars().count());
+        assert_eq!(hint_x, expected_block_x);
+    }
+
+    #[test]
     fn render_agents_tab_degraded_state_keeps_status_bar_visible() {
         let mut state = AppState::new();
         let pane_id = state.agents_tab.add_first_pane();

@@ -54,27 +54,57 @@ fn render_empty_agents_tab(content: Rect, buf: &mut Buffer, state: &AppState) {
         return;
     }
 
-    Line::from("No agent sessions yet.")
-        .style(Style::new().fg(state.theme.fg))
-        .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
-
-    let hints: &[&str] = &[
-        "Ctrl+N         open a new agent pane",
-        "Alt+\\ / Alt+-  split vertical / horizontal",
-        "Alt+j / Alt+k  focus next / prev pane",
-        "Alt+x          close focused pane",
-        "Alt+z          toggle zoom",
-        "Alt+,          layout picker",
+    let count_u16 = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
+    let heading = ("No agent sessions yet.", Style::new().fg(state.theme.fg));
+    let lines = [
+        ("", Style::new().fg(state.theme.fg_muted)),
+        (
+            "Ctrl+N         open a new agent pane",
+            Style::new().fg(state.theme.fg_muted),
+        ),
+        (
+            "Alt+\\ / Alt+-  split vertical / horizontal",
+            Style::new().fg(state.theme.fg_muted),
+        ),
+        (
+            "Alt+j / Alt+k  focus next / prev pane",
+            Style::new().fg(state.theme.fg_muted),
+        ),
+        (
+            "Alt+x          close focused pane",
+            Style::new().fg(state.theme.fg_muted),
+        ),
+        (
+            "Alt+z          toggle zoom",
+            Style::new().fg(state.theme.fg_muted),
+        ),
+        (
+            "Alt+,          layout picker",
+            Style::new().fg(state.theme.fg_muted),
+        ),
     ];
-    let muted = Style::new().fg(state.theme.fg_muted);
-    for (i, hint) in hints.iter().enumerate() {
-        let row = inner.y + 2 + u16::try_from(i).unwrap_or(u16::MAX);
+    let total_height = count_u16(lines.len()).saturating_add(1);
+    let start_y = inner.y + inner.height.saturating_sub(total_height) / 2;
+    let text_block_width = lines
+        .iter()
+        .map(|(line, _)| count_u16(line.chars().count()))
+        .max()
+        .unwrap_or(0)
+        .min(inner.width);
+    let start_x = inner.x + inner.width.saturating_sub(text_block_width) / 2;
+    let heading_width = count_u16(heading.0.chars().count()).min(inner.width);
+    let heading_x = inner.x + inner.width.saturating_sub(heading_width) / 2;
+    Line::from(heading.0)
+        .style(heading.1)
+        .render(Rect::new(heading_x, start_y, heading_width, 1), buf);
+    for (i, (line, style)) in lines.iter().enumerate() {
+        let row = start_y + 1 + u16::try_from(i).unwrap_or(u16::MAX);
         if row >= inner.y + inner.height {
             break;
         }
-        Line::from(*hint)
-            .style(muted)
-            .render(Rect::new(inner.x, row, inner.width, 1), buf);
+        Line::from(*line)
+            .style(*style)
+            .render(Rect::new(start_x, row, text_block_width, 1), buf);
     }
 }
 
