@@ -186,10 +186,7 @@ pub(super) fn handle_paste(state: &mut AppState) -> Control<AppEvent> {
     Control::Changed
 }
 
-pub(super) fn handle_paste_at_position(
-    state: &mut AppState,
-    pos: Position,
-) -> Control<AppEvent> {
+pub(super) fn handle_paste_at_position(state: &mut AppState, pos: Position) -> Control<AppEvent> {
     let Some(text) = read_clipboard_text(state) else {
         return Control::Changed;
     };

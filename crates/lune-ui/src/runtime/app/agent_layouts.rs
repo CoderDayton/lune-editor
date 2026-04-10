@@ -29,12 +29,18 @@ fn build_agent_layout_picker_entries(state: &AppState) -> Vec<overlay::LayoutPic
     entries
 }
 
-pub(super) fn agent_pane_term_size(pane_id: tiling::PaneId, state: &AppState) -> Option<AiTermSize> {
+pub(super) fn agent_pane_term_size(
+    pane_id: tiling::PaneId,
+    state: &AppState,
+) -> Option<AiTermSize> {
     if let (Some(area), Some(layout)) = (
         state.last_agents_content_area,
         state.agents_tab.layout.as_ref(),
     ) {
-        if let Some((_, rect)) = layout.compute_rects(area).into_iter().find(|(id, _)| *id == pane_id)
+        if let Some((_, rect)) = layout
+            .compute_rects(area)
+            .into_iter()
+            .find(|(id, _)| *id == pane_id)
         {
             return Some(AiTermSize::new(rect.height.max(1), rect.width.max(1)));
         }
@@ -92,10 +98,7 @@ pub(super) fn open_agent_layout_picker_with_selection(
     state.focus.focus(PanelId::CommandPalette);
 }
 
-pub(super) fn apply_agent_layout_entry(
-    entry: &overlay::LayoutPickerEntry,
-    state: &mut AppState,
-) {
+pub(super) fn apply_agent_layout_entry(entry: &overlay::LayoutPickerEntry, state: &mut AppState) {
     let (new_pane_ids, closed_sessions) = match entry.kind {
         overlay::LayoutPickerEntryKind::Preset(idx) => state.agents_tab.apply_preset(idx),
         overlay::LayoutPickerEntryKind::Saved(idx) => {
@@ -244,10 +247,7 @@ fn layout_picker_page_size(state: &AppState) -> usize {
         .map_or(8, |area| usize::from(area.height.saturating_sub(4)).max(1))
 }
 
-pub(super) fn handle_layout_picker_key(
-    key: &KeyEvent,
-    state: &mut AppState,
-) -> Control<AppEvent> {
+pub(super) fn handle_layout_picker_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
     match key.code {
         KeyCode::Esc => {
             close_overlay(state);
@@ -300,9 +300,10 @@ pub(super) fn handle_layout_picker_key(
             {
                 open_rename_agent_layout_dialog(index, state);
             } else {
-                state
-                    .overlay
-                    .notify("Preset layouts cannot be renamed", NotificationLevel::Warning);
+                state.overlay.notify(
+                    "Preset layouts cannot be renamed",
+                    NotificationLevel::Warning,
+                );
             }
             Control::Changed
         }
@@ -315,9 +316,10 @@ pub(super) fn handle_layout_picker_key(
             {
                 confirm_delete_agent_layout(index, state);
             } else {
-                state
-                    .overlay
-                    .notify("Preset layouts cannot be deleted", NotificationLevel::Warning);
+                state.overlay.notify(
+                    "Preset layouts cannot be deleted",
+                    NotificationLevel::Warning,
+                );
             }
             Control::Changed
         }

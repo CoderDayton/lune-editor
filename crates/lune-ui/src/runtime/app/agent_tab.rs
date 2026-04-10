@@ -357,7 +357,10 @@ const fn fallback_auto_split_for_rect(
     if tiling::can_render_split(rect, tiling::SplitDirection::Vertical) {
         Some(default_agent_split())
     } else if tiling::can_render_split(rect, tiling::SplitDirection::Horizontal) {
-        Some((tiling::SplitDirection::Horizontal, tiling::SplitSide::Second))
+        Some((
+            tiling::SplitDirection::Horizontal,
+            tiling::SplitSide::Second,
+        ))
     } else {
         None
     }
@@ -629,14 +632,16 @@ pub(super) fn handle_ai_client_picker_key(
             close_overlay(state);
             Control::Changed
         }
-        KeyCode::Enter => state
-            .overlay
-            .ai_client_picker
-            .selected_kind()
-            .map_or(Control::Continue, |kind| {
-                close_overlay(state);
-                Control::Event(AppEvent::Command(AppCommand::AiNewSession(kind)))
-            }),
+        KeyCode::Enter => {
+            state
+                .overlay
+                .ai_client_picker
+                .selected_kind()
+                .map_or(Control::Continue, |kind| {
+                    close_overlay(state);
+                    Control::Event(AppEvent::Command(AppCommand::AiNewSession(kind)))
+                })
+        }
         KeyCode::Up => {
             state.overlay.ai_client_picker.select_prev();
             Control::Changed

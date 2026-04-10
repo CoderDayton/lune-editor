@@ -657,9 +657,10 @@ fn render_secondary_cursor(
     let cx = x + cursor_screen_col as u16;
     let cell = &mut buf[(cx, y)];
     let style = match vim_mode {
-        VimMode::Normal | VimMode::Visual | VimMode::VisualLine | VimMode::Command => {
-            Style::new().fg(theme.bg).bg(theme.accent).add_modifier(Modifier::BOLD)
-        }
+        VimMode::Normal | VimMode::Visual | VimMode::VisualLine | VimMode::Command => Style::new()
+            .fg(theme.bg)
+            .bg(theme.accent)
+            .add_modifier(Modifier::BOLD),
         VimMode::Insert => Style::new()
             .fg(theme.accent)
             .add_modifier(Modifier::UNDERLINED | Modifier::BOLD),

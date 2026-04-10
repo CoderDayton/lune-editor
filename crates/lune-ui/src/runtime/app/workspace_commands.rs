@@ -21,7 +21,9 @@ pub(super) fn handle_workspace_command(
         | AppCommand::RenameConfirmed { .. }
         | AppCommand::DeleteConfirmed(_) => handle_file_tree_command(cmd, state),
         AppCommand::ChangeLanguage(lang_id) => handle_change_language(*lang_id, state),
-        AppCommand::OpenSettings | AppCommand::OpenKeybindings => handle_open_config_file(cmd, state),
+        AppCommand::OpenSettings | AppCommand::OpenKeybindings => {
+            handle_open_config_file(cmd, state)
+        }
         _ => return None,
     };
     Some(control)
@@ -170,7 +172,9 @@ fn handle_file_tree_command(cmd: &AppCommand, state: &mut AppState) -> Control<A
 
 fn handle_create_file(path: &Path, state: &mut AppState) -> Control<AppEvent> {
     if let Some(ref mut ws) = state.workspace {
-        match ws.execute(&lune_core::workspace::FileOp::CreateFile(path.to_path_buf())) {
+        match ws.execute(&lune_core::workspace::FileOp::CreateFile(
+            path.to_path_buf(),
+        )) {
             Ok(()) => {
                 if let Err(e) = state.file_tree.refresh(ws) {
                     log::error!("Failed to refresh file tree: {e}");

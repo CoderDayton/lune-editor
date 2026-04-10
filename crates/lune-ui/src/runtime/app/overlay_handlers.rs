@@ -291,10 +291,18 @@ fn handle_find_replace_key(key: &KeyEvent, state: &mut AppState) -> Control<AppE
             state.overlay.find_replace.toggle_field();
             Control::Changed
         }
-        KeyCode::Char('n') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+        KeyCode::Char('n')
+            if key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+        {
             find_next_match(state, false)
         }
-        KeyCode::Char('p') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+        KeyCode::Char('p')
+            if key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+        {
             find_prev_match(state)
         }
         KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) => {
@@ -366,7 +374,9 @@ fn handle_find_replace_key(key: &KeyEvent, state: &mut AppState) -> Control<AppE
 pub(super) fn update_find_search(state: &mut AppState) {
     let query = state.overlay.find_replace.find_input.clone();
     let case_sensitive = state.overlay.find_replace.case_sensitive;
-    let new_search = state.active_buf().map(|buf| buf.search(&query, case_sensitive));
+    let new_search = state
+        .active_buf()
+        .map(|buf| buf.search(&query, case_sensitive));
     if let Some(search) = new_search {
         state.overlay.find_replace.search_state = search;
     }
@@ -439,7 +449,10 @@ mod tests {
 
         assert!(matches!(result, Control::Changed));
         assert!(!state.overlay.is_active());
-        assert_eq!(state.overlay.find_replace.search_state.current_match, Some(1));
+        assert_eq!(
+            state.overlay.find_replace.search_state.current_match,
+            Some(1)
+        );
         assert_eq!(
             state.active_buf().unwrap().cursor.primary.head,
             Position::new(0, 8)
@@ -460,7 +473,10 @@ mod tests {
         );
 
         assert!(matches!(result, Control::Changed));
-        assert_eq!(state.overlay.find_replace.search_state.current_match, Some(0));
+        assert_eq!(
+            state.overlay.find_replace.search_state.current_match,
+            Some(0)
+        );
         assert!(state.overlay.is_active());
     }
 }

@@ -493,7 +493,10 @@ impl TextBuffer {
         }
 
         let target_line = topmost.line - 1;
-        let target = Position::new(target_line, topmost.col.min(self.line_len_no_newline(target_line)));
+        let target = Position::new(
+            target_line,
+            topmost.col.min(self.line_len_no_newline(target_line)),
+        );
         self.cursor.add_secondary_cursor(target)
     }
 
@@ -909,7 +912,12 @@ impl TextBuffer {
         }
         let mut idx = char_idx;
 
-        while idx > 0 && matches!(Self::char_kind(self.char_at_idx(idx - 1)), CharKind::Whitespace) {
+        while idx > 0
+            && matches!(
+                Self::char_kind(self.char_at_idx(idx - 1)),
+                CharKind::Whitespace
+            )
+        {
             idx -= 1;
         }
         if idx == 0 {
@@ -961,7 +969,13 @@ impl TextBuffer {
     fn selection_positions(&self) -> Vec<Position> {
         std::iter::once(&self.cursor.primary)
             .chain(self.cursor.secondary.iter())
-            .map(|sel| if sel.is_cursor() { sel.head } else { sel.ordered().0 })
+            .map(|sel| {
+                if sel.is_cursor() {
+                    sel.head
+                } else {
+                    sel.ordered().0
+                }
+            })
             .collect()
     }
 

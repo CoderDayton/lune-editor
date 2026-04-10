@@ -1,13 +1,13 @@
 #![allow(clippy::wildcard_imports)]
 
-use super::*;
 use super::editor_actions::{
-    apply_vim_action, apply_vim_action_visual, handle_add_cursor_above,
-    handle_add_cursor_below, handle_clear_secondary_cursors, handle_copy, handle_cut,
-    handle_cut_line, handle_delete_word_left, handle_delete_word_right, handle_duplicate_line,
-    handle_move_line_down, handle_move_line_up, handle_paste, handle_select_all,
-    handle_shift_tab, handle_tab_or_indent,
+    apply_vim_action, apply_vim_action_visual, handle_add_cursor_above, handle_add_cursor_below,
+    handle_clear_secondary_cursors, handle_copy, handle_cut, handle_cut_line,
+    handle_delete_word_left, handle_delete_word_right, handle_duplicate_line,
+    handle_move_line_down, handle_move_line_up, handle_paste, handle_select_all, handle_shift_tab,
+    handle_tab_or_indent,
 };
+use super::*;
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn handle_insert_mode(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
@@ -139,10 +139,7 @@ pub(super) fn handle_visual_mode(key: &KeyEvent, state: &mut AppState) -> Contro
     }
 }
 
-pub(super) fn handle_vim_command_key(
-    key: &KeyEvent,
-    state: &mut AppState,
-) -> Control<AppEvent> {
+pub(super) fn handle_vim_command_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
     match key.code {
         KeyCode::Esc => {
             state.vim.cmdline_clear();
@@ -224,7 +221,9 @@ fn apply_arrow_motion(key: &KeyEvent, state: &mut AppState, extend: bool) -> Con
         (KeyCode::Down, true) => Some(TextBuffer::move_buffer_end),
         _ => None,
     };
-    method.map_or(Control::Continue, |m| apply_motion(state, |buf| m(buf, extend)))
+    method.map_or(Control::Continue, |m| {
+        apply_motion(state, |buf| m(buf, extend))
+    })
 }
 
 #[cfg(test)]
@@ -248,15 +247,20 @@ mod tests {
         let mut state = state_with_text("    hello");
         state.active_buf_mut().unwrap().cursor = CursorState::at(Position::new(0, 8));
 
-        let first = handle_insert_mode(&KeyEvent::new(KeyCode::Home, KeyModifiers::NONE), &mut state);
+        let first = handle_insert_mode(
+            &KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+            &mut state,
+        );
         assert!(matches!(first, Control::Changed));
         assert_eq!(
             state.active_buf().unwrap().cursor.primary.head,
             Position::new(0, 4)
         );
 
-        let second =
-            handle_insert_mode(&KeyEvent::new(KeyCode::Home, KeyModifiers::NONE), &mut state);
+        let second = handle_insert_mode(
+            &KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+            &mut state,
+        );
         assert!(matches!(second, Control::Changed));
         assert_eq!(
             state.active_buf().unwrap().cursor.primary.head,
@@ -269,10 +273,7 @@ mod tests {
         let mut state = state_with_text("    hello");
         state.active_buf_mut().unwrap().cursor = CursorState::at(Position::new(0, 6));
 
-        let left = handle_insert_mode(
-            &KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
-            &mut state,
-        );
+        let left = handle_insert_mode(&KeyEvent::new(KeyCode::Left, KeyModifiers::ALT), &mut state);
         assert!(matches!(left, Control::Changed));
         assert_eq!(
             state.active_buf().unwrap().cursor.primary.head,
@@ -352,7 +353,10 @@ mod tests {
         buf.cursor = CursorState::at(Position::new(0, 1));
         assert!(buf.toggle_secondary_cursor(Position::new(1, 1)));
 
-        let result = handle_insert_mode(&KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE), &mut state);
+        let result = handle_insert_mode(
+            &KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE),
+            &mut state,
+        );
 
         assert!(matches!(result, Control::Changed));
         assert_eq!(state.active_buf().unwrap().text(), "o!ne\nt!wo");

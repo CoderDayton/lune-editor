@@ -96,7 +96,10 @@ fn start_ai_session_with_context(state: &mut AppState) {
             )
         });
     let client_name = kind.display_name().to_string();
-    match state.ai_manager.new_session(kind, cwd.as_deref(), &env, size) {
+    match state
+        .ai_manager
+        .new_session(kind, cwd.as_deref(), &env, size)
+    {
         Ok(_id) => {
             log::info!("Started AI session ({client_name}) with editor context");
         }
@@ -110,10 +113,7 @@ fn start_ai_session_with_context(state: &mut AppState) {
     }
 }
 
-pub(super) fn handle_ai_new_session(
-    kind: AiClientKind,
-    state: &mut AppState,
-) -> Control<AppEvent> {
+pub(super) fn handle_ai_new_session(kind: AiClientKind, state: &mut AppState) -> Control<AppEvent> {
     let ctx = state.collect_editor_context();
     let env = ctx.to_env_vars();
     let cwd = state.workspace.as_ref().map(|ws| ws.root().to_path_buf());
@@ -130,7 +130,10 @@ pub(super) fn handle_ai_new_session(
         })
         .unwrap_or_default();
     let client_name = kind.display_name().to_string();
-    match state.ai_manager.new_session(kind, cwd.as_deref(), &env, size) {
+    match state
+        .ai_manager
+        .new_session(kind, cwd.as_deref(), &env, size)
+    {
         Ok(session_id) => {
             log::info!("Started AI session: {client_name}");
             if let Some(pane_id) = state.agents_tab_pending_pane.take() {
