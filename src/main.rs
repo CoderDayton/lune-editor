@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use lune_core::config::ConfigPaths;
 use lune_core::recovery::RecoveryState;
 use lune_core::settings::{CliOverrides, Settings};
-use lune_core::state_db::{self, StateDb};
+use lune_core::state_db::StateDb;
 
 /// Print usage information.
 fn print_help() {
@@ -113,24 +113,11 @@ fn main() -> Result<()> {
         }
     }
 
-    // Open the sled-backed state database and run TOML migration.
-    let state_db = config_paths.as_ref().and_then(|cp| {
-        match StateDb::open(&cp.state_dir()) {
-            Ok(db) => {
-                // One-time migration from legacy TOML files.
-                match state_db::migrate_toml_state(&cp.state_dir(), &db) {
-                    Ok(n) if n > 0 => eprintln!("Migrated {n} state file(s) from TOML to sled"),
-                    Err(e) => eprintln!("Warning: TOML migration error: {e}"),
-                    _ => {}
-                }
-                Some(db)
-            }
-            Err(e) => {
-                eprintln!("Warning: failed to open state database: {e}");
-                None
-            }
-        }
-    });
+    // Open the global state database. The per-workspace database is
+    // attached later, once the workspace root has been determined.
+    let mut state_db = config_paths
+        .as_ref()
+        .map(|cp| StateDb::open(&cp.state_dir()));
 
     // Load settings from global config.
     let mut settings = config_paths.as_ref().map_or_else(Settings::default, |cp| {
@@ -152,6 +139,23 @@ fn main() -> Result<()> {
     // Store config paths on state for use by settings commands and recovery.
     if let Some(ref cp) = config_paths {
         state.set_config_paths(cp.clone());
+    }
+
+    // Determine the workspace root early so we can attach the per-workspace
+    // DB before handing ownership of state_db to AppState.
+    let workspace_root = determine_workspace_root(&paths);
+
+    // Best-effort: attach the per-workspace sled database. If another Lune
+    // instance is editing the same workspace (lock contention) or the
+    // directory can't be created, we keep the global DB and continue with
+    // workspace persistence disabled.
+    if let (Some(db), Some(root)) = (state_db.as_mut(), workspace_root.as_deref()) {
+        if let Err(e) = db.attach_workspace(root) {
+            eprintln!(
+                "Warning: workspace state disabled for {} ({e}). Another Lune instance may be editing this workspace.",
+                root.display()
+            );
+        }
     }
 
     // Attach the state database for reactive persistence.
@@ -191,9 +195,6 @@ fn main() -> Result<()> {
             }
         }
     }
-
-    // Determine the workspace root for state persistence.
-    let workspace_root = determine_workspace_root(&paths);
 
     // Open files/directories from CLI positional args and merge workspace settings.
     open_paths_or_cwd(&mut state, &mut settings, &overrides, &paths);
@@ -366,12 +367,12 @@ fn check_crash_recovery(state: &mut lune_ui::app::AppState, config_paths: Option
 }
 
 /// Restore saved workspace state (open files, cursor positions, layout).
-fn restore_workspace_state(state: &mut lune_ui::app::AppState, workspace_root: Option<&Path>) {
-    let (Some(db), Some(root)) = (state.state_db(), workspace_root) else {
+fn restore_workspace_state(state: &mut lune_ui::app::AppState, _workspace_root: Option<&Path>) {
+    let Some(db) = state.state_db() else {
         return;
     };
 
-    match db.get_workspace(root) {
+    match db.get_workspace() {
         Ok(Some(mut wstate)) => {
             wstate.prune_missing_files();
             state.restore_workspace_state(&wstate);

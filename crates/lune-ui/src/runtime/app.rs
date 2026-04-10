@@ -593,7 +593,7 @@ impl AppState {
                 let Some(file_path) = file_path else {
                     continue;
                 };
-                match db.get_undo(&root, &file_path) {
+                match db.get_undo(&file_path) {
                     Ok(Some(undo_state)) => {
                         if let Some(buf) = self.registry.get_mut(id) {
                             if !buf.restore_undo_state(undo_state) {
@@ -637,10 +637,9 @@ impl AppState {
     /// Called on clean exit. Iterates open buffers, extracts undo state
     /// (capped at 1000 transactions), and writes each to the database.
     pub fn persist_undo_history(&self) {
-        let (Some(db), Some(ws)) = (self.state_db(), self.workspace.as_ref()) else {
+        let Some(db) = self.state_db() else {
             return;
         };
-        let root = ws.root().to_path_buf();
 
         for &id in &self.tabs {
             let Some(buf) = self.registry.get(id) else {
@@ -653,7 +652,7 @@ impl AppState {
             if state.undo_entries.is_empty() && state.redo_entries.is_empty() {
                 continue;
             }
-            if let Err(e) = db.put_undo(&root, file_path, &state) {
+            if let Err(e) = db.put_undo(file_path, &state) {
                 log::warn!("persist undo for {}: {e}", file_path.display());
             }
         }
@@ -1962,6 +1961,37 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn render_produces_single_status_row_for_various_window_heights() {
+        use crate::primitives::Color;
+        let mantle = Color::Rgb(24, 24, 37);
+
+        for h in [10_u16, 20, 40, 80] {
+            let mut state = AppState::new();
+            let id = state.registry.new_scratch();
+            state.tabs.push(id);
+            state.active_buffer = Some(id);
+
+            let area = Rect::new(0, 0, 120, h);
+            let mut buf = Buffer::empty(area);
+            let mut global = LuneGlobal::default();
+            let _ = render(area, &mut buf, &mut state, &mut global);
+
+            let mantle_rows: Vec<u16> = (0..h)
+                .filter(|&y| {
+                    (0..area.width)
+                        .any(|x| buf.cell((x, y)).and_then(|c| c.style().bg) == Some(mantle))
+                })
+                .collect();
+            assert_eq!(
+                mantle_rows,
+                vec![h - 1],
+                "at window height {h}, mantle should appear only on row {}; got rows {mantle_rows:?}",
+                h - 1
+            );
+        }
+    }
+
     // ── AppState construction ─────────────────────────────────────
 
     #[test]
@@ -3147,7 +3177,7 @@ mod tests {
     fn save_agent_layout_persists_to_state_db() {
         let mut state = AppState::new();
         let dir = tempfile::tempdir().unwrap();
-        state.set_state_db(lune_core::state_db::StateDb::open(dir.path()).unwrap());
+        state.set_state_db(lune_core::state_db::StateDb::open(dir.path()));
         let first = state.agents_tab.add_first_pane();
         state
             .agents_tab
@@ -3174,7 +3204,7 @@ mod tests {
     fn save_agent_layout_overwrites_existing_name_after_normalization() {
         let mut state = AppState::new();
         let dir = tempfile::tempdir().unwrap();
-        state.set_state_db(lune_core::state_db::StateDb::open(dir.path()).unwrap());
+        state.set_state_db(lune_core::state_db::StateDb::open(dir.path()));
         let first = state.agents_tab.add_first_pane();
         state
             .agents_tab
@@ -3231,7 +3261,7 @@ mod tests {
     fn rename_and_delete_saved_agent_layouts_persist() {
         let mut state = AppState::new();
         let dir = tempfile::tempdir().unwrap();
-        state.set_state_db(lune_core::state_db::StateDb::open(dir.path()).unwrap());
+        state.set_state_db(lune_core::state_db::StateDb::open(dir.path()));
         state.saved_agent_layouts = vec![
             tiling::SavedAgentLayout {
                 name: "One".to_string(),
@@ -3469,7 +3499,7 @@ mod tests {
     #[test]
     fn set_state_db_loads_saved_agent_layouts() {
         let dir = tempfile::tempdir().unwrap();
-        let db = lune_core::state_db::StateDb::open(dir.path()).unwrap();
+        let db = lune_core::state_db::StateDb::open(dir.path());
         let saved = vec![tiling::SavedAgentLayout {
             name: "Persisted".to_string(),
             root: tiling::SavedTileNode::Leaf,
@@ -3486,7 +3516,7 @@ mod tests {
     #[test]
     fn set_state_db_surfaces_saved_agent_layout_decode_failures() {
         let dir = tempfile::tempdir().unwrap();
-        let db = lune_core::state_db::StateDb::open(dir.path()).unwrap();
+        let db = lune_core::state_db::StateDb::open(dir.path());
         db.put_raw(b"ui:agent_layouts", &123_u32).unwrap();
 
         let mut state = AppState::new();

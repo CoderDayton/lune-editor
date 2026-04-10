@@ -254,6 +254,46 @@ mod tests {
     }
 
     #[test]
+    fn status_bar_height_is_always_one_regardless_of_window_height() {
+        let state = LayoutState::default();
+        for h in [3_u16, 10, 20, 40, 60, 100, 200, 500] {
+            // Simulate render_editor_tab's actual input: content_area after the
+            // root tab bar is skimmed off, i.e. Rect(y=1, h=h-1).
+            let content = Rect::new(0, 1, 120, h - 1);
+            let splits = compute_layout(content, &state);
+            assert_eq!(
+                splits.status.height, 1,
+                "status height should be 1 for window height {h}, got {}",
+                splits.status.height
+            );
+            assert_eq!(
+                splits.status.y,
+                h - 1,
+                "status should be at the last row for window height {h}",
+            );
+        }
+    }
+
+    #[test]
+    fn root_layout_splits_give_single_row_for_tabs_bar() {
+        // Mirror the root layout in runtime/app.rs: [Length(1), Min(1)].
+        use ratatui::layout::{Constraint, Direction, Layout};
+        for h in [3_u16, 10, 20, 40, 60, 100, 200, 500] {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(1)])
+                .split(Rect::new(0, 0, 120, h));
+            assert_eq!(
+                chunks[0].height, 1,
+                "root tabs should be 1 row for window height {h}, got {}",
+                chunks[0].height
+            );
+            assert_eq!(chunks[1].y, 1);
+            assert_eq!(chunks[1].height, h - 1);
+        }
+    }
+
+    #[test]
     fn layout_with_file_tree() {
         let state = LayoutState {
             show_file_tree: true,
