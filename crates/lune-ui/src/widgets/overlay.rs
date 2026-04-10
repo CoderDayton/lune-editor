@@ -15,7 +15,7 @@ use crate::event::AppCommand;
 use crate::primitives::Color;
 use crate::theme::Theme;
 use lune_ai::session::AiClientKind;
-use lune_core::language::{LanguageId, lang};
+use lune_core::language::LanguageId;
 
 // ── Overlay kinds ─────────────────────────────────────────────────────
 
@@ -359,31 +359,6 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
         palette_cmd("Agent: Select Layout", AppCommand::AgentApplyLayout),
         palette_cmd("Agent: Save Current Layout", AppCommand::AgentSaveLayout),
     ];
-
-    // Language change commands.
-    let languages = [
-        ("Rust", lang::RUST),
-        ("Python", lang::PYTHON),
-        ("JavaScript", lang::JAVASCRIPT),
-        ("TypeScript", lang::TYPESCRIPT),
-        ("TSX", lang::TSX),
-        ("JSON", lang::JSON),
-        ("TOML", lang::TOML),
-        ("YAML", lang::YAML),
-        ("Markdown", lang::MARKDOWN),
-        ("C", lang::C),
-        ("C++", lang::CPP),
-        ("Go", lang::GO),
-        ("HTML", lang::HTML),
-        ("CSS", lang::CSS),
-        ("Shell", lang::SHELL),
-        ("Plain Text", lang::PLAIN_TEXT),
-    ];
-
-    for (name, lid) in languages {
-        let label = format!("Change Language: {name}");
-        cmds.push(palette_cmd(&label, AppCommand::ChangeLanguage(lid)));
-    }
 
     cmds.sort_by(|a, b| a.label_lower.cmp(&b.label_lower));
     cmds
