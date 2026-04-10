@@ -20,6 +20,7 @@ flamegraph.svg
 
 # AI assistant context
 CLAUDE.md
+.codex
 
 # Internal planning docs — not part of public repo
 docs/plans/
