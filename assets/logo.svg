@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 172" role="img" aria-labelledby="logo-title logo-desc">
+  <title id="logo-title">Lune Editor</title>
+  <desc id="logo-desc">A compact editor window with a gutter, code rows, a highlighted AI suggestion, and a clean status bar.</desc>
+
+  <defs>
+    <linearGradient id="panel" x1="96" y1="0" x2="96" y2="172" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#181825"/>
+      <stop offset="100%" stop-color="#11111b"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="192" height="172" rx="18" fill="url(#panel)" stroke="#313244" stroke-width="1.5"/>
+  <line x1="0" y1="26" x2="192" y2="26" stroke="#313244" stroke-width="1"/>
+
+  <g>
+    <circle cx="18" cy="13" r="3.5" fill="#f38ba8"/>
+    <circle cx="30" cy="13" r="3.5" fill="#f9e2af"/>
+    <circle cx="42" cy="13" r="3.5" fill="#a6e3a1"/>
+  </g>
+  <rect x="69" y="8" width="54" height="10" rx="5" fill="#313244"/>
+
+  <rect x="10" y="36" width="24" height="102" rx="10" fill="#11111b" opacity="0.95"/>
+  <line x1="42" y1="36" x2="42" y2="138" stroke="#313244" stroke-width="1"/>
+
+  <g fill="#6c7086">
+    <circle cx="22" cy="48" r="2.5"/>
+    <circle cx="22" cy="64" r="2.5"/>
+    <circle cx="22" cy="80" r="2.5" fill="#cba6f7"/>
+    <circle cx="22" cy="96" r="2.5"/>
+    <circle cx="22" cy="112" r="2.5"/>
+  </g>
+
+  <g fill="#a6adc8">
+    <rect x="52" y="43" width="108" height="8" rx="2"/>
+    <rect x="52" y="59" width="122" height="8" rx="2"/>
+    <rect x="52" y="91" width="114" height="8" rx="2"/>
+    <rect x="52" y="107" width="130" height="8" rx="2"/>
+    <rect x="52" y="123" width="94" height="8" rx="2"/>
+  </g>
+
+  <rect x="48" y="74" width="118" height="10" rx="3" fill="#cba6f7"/>
+  <rect x="169" y="74" width="13" height="10" rx="3" fill="#45475a"/>
+
+  <rect x="10" y="144" width="172" height="16" rx="8" fill="#313244"/>
+  <rect x="18" y="149" width="28" height="6" rx="3" fill="#cba6f7"/>
+  <rect x="55" y="149" width="44" height="6" rx="3" fill="#585b70"/>
+  <rect x="157" y="149" width="17" height="6" rx="3" fill="#89b4fa"/>
+</svg>
