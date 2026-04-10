@@ -303,19 +303,16 @@ impl Highlighter for TreeSitterHighlighter {
         self.line_byte_offsets = compute_line_byte_offsets(&self.source);
     }
 
-    fn highlight_lines(&mut self, line_range: Range<usize>) -> Vec<HighlightedLine> {
-        if self.source.is_empty() {
-            return line_range.map(HighlightedLine::new).collect();
-        }
-
+    fn highlight_lines(&mut self, line_range: Range<usize>) -> &[HighlightedLine] {
         let total_lines = self.line_byte_offsets.len();
 
-        // Clamp the requested range.
-        let start_line = line_range.start.min(total_lines);
-        let end_line = line_range.end.min(total_lines);
-
-        if start_line >= end_line {
-            return Vec::new();
+        if self.source.is_empty() || total_lines == 0 {
+            // Fast path: empty buffer. Lazily grow a plain-line cache
+            // big enough to satisfy the request.
+            self.ensure_empty_cache(line_range.end);
+            let end = line_range.end.min(self.cached_result.len());
+            let start = line_range.start.min(end);
+            return &self.cached_result[start..end];
         }
 
         // The cache stores the full file's highlight result for the
@@ -326,15 +323,29 @@ impl Highlighter for TreeSitterHighlighter {
             self.rebuild_full_cache(total_lines);
         }
 
-        let end_line = end_line.min(self.cached_result.len());
-        if start_line >= end_line {
-            return Vec::new();
-        }
-        self.cached_result[start_line..end_line].to_vec()
+        let end_line = line_range.end.min(self.cached_result.len());
+        let start_line = line_range.start.min(end_line);
+        &self.cached_result[start_line..end_line]
     }
 }
 
 impl TreeSitterHighlighter {
+    /// Ensure the cache covers at least the requested line count with
+    /// plain (unstyled) entries. Used on the empty-buffer fast path to
+    /// honour the trait's slice-return contract without allocating on
+    /// every frame.
+    fn ensure_empty_cache(&mut self, line_count: usize) {
+        if line_count > self.cached_result.len() {
+            let start = self.cached_result.len();
+            self.cached_result.reserve(line_count - start);
+            for i in start..line_count {
+                self.cached_result.push(HighlightedLine::new(i));
+            }
+        }
+        self.cached_range = 0..self.cached_result.len();
+        self.cached_generation = self.generation;
+    }
+
     /// Re-run tree-sitter over the entire source and rebuild
     /// `cached_result` as a per-line vector. Called at most once per
     /// buffer edit, not per frame.

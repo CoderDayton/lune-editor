@@ -20,7 +20,7 @@ pub fn create_highlighter(lang_id: LanguageId) -> Box<dyn Highlighter> {
     if let Some(re) = regex_hl::RegexHighlighter::for_language(lang_id) {
         return Box::new(re);
     }
-    Box::new(NullHighlighter)
+    Box::new(NullHighlighter::default())
 }
 
 #[cfg(test)]

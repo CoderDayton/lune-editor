@@ -28,6 +28,10 @@ pub struct RegexHighlighter {
     rules: Vec<Rule>,
     /// Cached source lines from the last `update()`.
     lines: Vec<String>,
+    /// Pre-computed highlighted spans for every line in `lines`. Kept in
+    /// lockstep with `lines` by `update()` so `highlight_lines` is a
+    /// cheap slice rather than a per-frame regex scan.
+    cached: Vec<HighlightedLine>,
 }
 
 impl RegexHighlighter {
@@ -39,7 +43,16 @@ impl RegexHighlighter {
         Some(Self {
             rules,
             lines: Vec::new(),
+            cached: Vec::new(),
         })
+    }
+
+    /// Build a `HighlightedLine` for a single cached line index.
+    fn build_cached_line(&self, idx: usize) -> HighlightedLine {
+        let text = &self.lines[idx];
+        let line_no_newline = text.trim_end_matches('\n').trim_end_matches('\r');
+        let spans = self.highlight_line(line_no_newline);
+        HighlightedLine::with_spans(idx, spans)
     }
 
     /// Highlight a single line of text, producing non-overlapping spans.
@@ -89,20 +102,20 @@ impl Highlighter for RegexHighlighter {
                 self.lines.push(buffer.line(i).unwrap_or_default());
             }
         }
+
+        // Rebuild the entire highlight cache in lock-step with `lines`
+        // so `highlight_lines` is a cheap slice on every frame.
+        self.cached.clear();
+        self.cached.reserve(self.lines.len());
+        for i in 0..self.lines.len() {
+            self.cached.push(self.build_cached_line(i));
+        }
     }
 
-    fn highlight_lines(&mut self, line_range: Range<usize>) -> Vec<HighlightedLine> {
-        let start = line_range.start.min(self.lines.len());
-        let end = line_range.end.min(self.lines.len());
-
-        (start..end)
-            .map(|i| {
-                let text = &self.lines[i];
-                let line_no_newline = text.trim_end_matches('\n').trim_end_matches('\r');
-                let spans = self.highlight_line(line_no_newline);
-                HighlightedLine::with_spans(i, spans)
-            })
-            .collect()
+    fn highlight_lines(&mut self, line_range: Range<usize>) -> &[HighlightedLine] {
+        let end = line_range.end.min(self.cached.len());
+        let start = line_range.start.min(end);
+        &self.cached[start..end]
     }
 }
 

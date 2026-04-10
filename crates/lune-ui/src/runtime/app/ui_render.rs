@@ -68,7 +68,9 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
     tab_bar::render_tab_bar(tab_area, buf, &state.tab_mgr, is_focused, &state.theme);
     state.last_editor_content_area = Some(content_area);
 
-    let highlighted = state.active_buffer.and_then(|id| {
+    // Compute the visible line range eagerly so the highlighter borrow
+    // below doesn't have to hold on to `state.viewport`.
+    let highlighted: Option<&[HighlightedLine]> = state.active_buffer.and_then(|id| {
         let viewport_height = content_area.height as usize;
         let top = state.viewport.top_line.saturating_sub(50);
         let end = state.viewport.top_line + viewport_height + 50;
@@ -100,7 +102,7 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         &mut state.viewport,
         state.viewport_follow_cursor,
         state.vim.mode,
-        highlighted.as_deref(),
+        highlighted,
         &state.syntax_theme,
         active_gutter,
         search_state,

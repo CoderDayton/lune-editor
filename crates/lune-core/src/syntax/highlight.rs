@@ -152,11 +152,15 @@ pub trait Highlighter: Send {
     /// Return styled spans for lines in the given range.
     ///
     /// The range is `[line_range.start, line_range.end)` (0-based).
-    /// Returns one `HighlightedLine` per line in the range.
+    /// The returned slice contains one `HighlightedLine` per line in
+    /// the range. The borrow is tied to `self`, so implementations are
+    /// expected to maintain an internal cache that survives across
+    /// calls — this lets the renderer walk visible lines without
+    /// re-allocating on every frame.
     ///
-    /// Takes `&mut self` so implementations can reuse internal buffers
-    /// (e.g. the tree-sitter highlighter instance) across calls.
-    fn highlight_lines(&mut self, line_range: Range<usize>) -> Vec<HighlightedLine>;
+    /// Takes `&mut self` so implementations can refresh/resize their
+    /// internal cache lazily on demand.
+    fn highlight_lines(&mut self, line_range: Range<usize>) -> &[HighlightedLine];
 }
 
 // ── Null highlighter ──────────────────────────────────────────────────
@@ -164,13 +168,31 @@ pub trait Highlighter: Send {
 /// A no-op highlighter that produces empty spans for all lines.
 ///
 /// Used as the default when no language-specific highlighter is available.
-pub struct NullHighlighter;
+/// Maintains a tiny grow-only cache so the trait's slice-return contract
+/// can be satisfied without allocating on every frame.
+#[derive(Default)]
+pub struct NullHighlighter {
+    cache: Vec<HighlightedLine>,
+}
 
 impl Highlighter for NullHighlighter {
     fn update(&mut self, _buffer: &TextBuffer, _edit_range: Option<(usize, usize)>) {}
 
-    fn highlight_lines(&mut self, line_range: Range<usize>) -> Vec<HighlightedLine> {
-        line_range.map(HighlightedLine::new).collect()
+    fn highlight_lines(&mut self, line_range: Range<usize>) -> &[HighlightedLine] {
+        // Grow the cache to cover the requested range, filling any new
+        // slots with empty (plain) line entries. Since NullHighlighter
+        // produces no spans, the cache only depends on the high-water
+        // mark of the requested range.
+        if line_range.end > self.cache.len() {
+            let start = self.cache.len();
+            self.cache.reserve(line_range.end - start);
+            for i in start..line_range.end {
+                self.cache.push(HighlightedLine::new(i));
+            }
+        }
+        let end = line_range.end.min(self.cache.len());
+        let start = line_range.start.min(end);
+        &self.cache[start..end]
     }
 }
 
@@ -224,12 +246,12 @@ mod tests {
 
     #[test]
     fn null_highlighter_produces_empty_spans() {
-        let mut hl = NullHighlighter;
+        let mut hl = NullHighlighter::default();
         let buf = TextBuffer::from_text("fn main() {\n    println!(\"hi\");\n}\n");
         hl.update(&buf, None);
         let lines = hl.highlight_lines(0..3);
         assert_eq!(lines.len(), 3);
-        for line in &lines {
+        for line in lines {
             assert!(line.is_plain());
         }
     }
