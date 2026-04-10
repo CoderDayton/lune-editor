@@ -264,30 +264,76 @@ fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             state.block_select_anchor = None;
             Control::Continue
         }
-        MouseEventKind::ScrollUp => {
-            if state.root_tab == RootTab::Editor {
-                state.viewport.scroll_up(3);
-                state.viewport_follow_cursor = false;
-                Control::Changed
-            } else {
-                Control::Continue
+        MouseEventKind::ScrollUp => handle_scroll(state, ScrollDir::Up),
+        MouseEventKind::ScrollDown => handle_scroll(state, ScrollDir::Down),
+        _ => Control::Continue,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ScrollDir {
+    Up,
+    Down,
+}
+
+/// Compute the number of lines to scroll the editor per wheel tick.
+///
+/// Starts at 1 line for files up to ~800 lines, then grows proportionally
+/// so that roughly 100 wheel ticks can traverse a file regardless of size,
+/// capped at one-third of the visible viewport so a single tick is never
+/// disorienting.
+fn editor_scroll_step(total_lines: usize, viewport_height: usize) -> usize {
+    let proportional = total_lines / 800;
+    let base = 1 + proportional; // 1 line minimum, +1 per 800 lines of file
+    let cap = (viewport_height / 3).max(1);
+    base.min(cap)
+}
+
+/// Route a mouse-wheel scroll to the currently focused pane.
+///
+/// Focus-driven, not hover-driven: whichever pane was last focused (by
+/// click or Tab cycling) receives the scroll. The editor branch scales
+/// the step with file length via [`editor_scroll_step`] so long files
+/// don't feel frozen and short files don't feel jerky. File tree and
+/// git panel always move one row per tick for precision.
+fn handle_scroll(state: &mut AppState, dir: ScrollDir) -> Control<AppEvent> {
+    match state.focus.active() {
+        PanelId::FileTree => {
+            if state.file_tree.entries.is_empty() {
+                return Control::Continue;
             }
-        }
-        MouseEventKind::ScrollDown => {
-            if state.root_tab == RootTab::Editor {
-                let total = state
-                    .active_buf()
-                    .map_or(0, lune_core::buffer::TextBuffer::line_count);
-                let height = state
-                    .last_editor_content_area
-                    .map_or(20, |a| a.height as usize);
-                state.viewport.scroll_down(3, total, height);
-                state.viewport_follow_cursor = false;
-                Control::Changed
-            } else {
-                Control::Continue
+            match dir {
+                ScrollDir::Up => state.file_tree.select_prev(1),
+                ScrollDir::Down => state.file_tree.select_next(1),
             }
+            Control::Changed
         }
+        PanelId::GitPanel => {
+            match dir {
+                ScrollDir::Up => state.git_panel.select_prev(),
+                ScrollDir::Down => state.git_panel.select_next(),
+            }
+            Control::Changed
+        }
+        PanelId::Editor => {
+            if state.root_tab != RootTab::Editor {
+                return Control::Continue;
+            }
+            let total = state
+                .active_buf()
+                .map_or(0, lune_core::buffer::TextBuffer::line_count);
+            let height = state
+                .last_editor_content_area
+                .map_or(20, |a| a.height as usize);
+            let step = editor_scroll_step(total, height);
+            match dir {
+                ScrollDir::Up => state.viewport.scroll_up(step),
+                ScrollDir::Down => state.viewport.scroll_down(step, total, height),
+            }
+            state.viewport_follow_cursor = false;
+            Control::Changed
+        }
+        // Terminal / palette / status bar: no wheel scroll for now.
         _ => Control::Continue,
     }
 }
@@ -953,5 +999,119 @@ mod tests {
             state.active_buf().unwrap().cursor.primary,
             Selection::new(Position::new(0, 0), Position::new(2, 0))
         );
+    }
+
+    #[test]
+    fn scroll_moves_editor_viewport_when_editor_focused() {
+        let mut state = state_with_text("0\n1\n2\n3\n4\n5\n6\n7\n8\n9");
+        state.last_editor_content_area = Some(Rect::new(0, 0, 20, 3));
+        state.focus.focus(PanelId::Editor);
+        state.viewport.top_line = 2;
+
+        // Small file (10 lines) + short viewport (3 rows) → 1 line per tick.
+        let scroll_up = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 5,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        let result = handle_mouse_event(scroll_up, &mut state);
+        assert!(matches!(result, Control::Changed));
+        assert_eq!(state.viewport.top_line, 1);
+
+        // A second tick confirms the step is consistent.
+        let _ = handle_mouse_event(scroll_up, &mut state);
+        assert_eq!(state.viewport.top_line, 0);
+    }
+
+    #[test]
+    fn editor_scroll_step_scales_with_file_size() {
+        // Small files scroll one line per tick.
+        assert_eq!(editor_scroll_step(0, 30), 1);
+        assert_eq!(editor_scroll_step(200, 30), 1);
+        assert_eq!(editor_scroll_step(799, 30), 1);
+
+        // Larger files get a larger step, but never more than viewport/3.
+        assert_eq!(editor_scroll_step(800, 30), 2);
+        assert_eq!(editor_scroll_step(1_600, 30), 3);
+        assert_eq!(editor_scroll_step(2_400, 30), 4);
+        // viewport/3 = 10, so a ~10k-line file is capped at 10.
+        assert_eq!(editor_scroll_step(10_000, 30), 10);
+        assert_eq!(editor_scroll_step(1_000_000, 30), 10);
+
+        // Tiny viewports still get at least 1 line.
+        assert_eq!(editor_scroll_step(100_000, 0), 1);
+        assert_eq!(editor_scroll_step(100_000, 1), 1);
+    }
+
+    #[test]
+    fn scroll_moves_file_tree_selection_when_file_tree_focused() {
+        use lune_core::workspace::{DirEntry, EntryKind};
+        use std::path::PathBuf;
+
+        let mut state = state_with_text("content");
+        state.focus.focus(PanelId::FileTree);
+        // Seed a handful of file tree entries so scroll has something to do.
+        state.file_tree.entries = (0..6)
+            .map(|i| {
+                (
+                    0usize,
+                    DirEntry {
+                        path: PathBuf::from(format!("/ws/f{i}.rs")),
+                        name: format!("f{i}.rs"),
+                        kind: EntryKind::File,
+                        git_status: None,
+                    },
+                )
+            })
+            .collect();
+        state.file_tree.selected = 0;
+
+        let scroll_down = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+        // Three ticks should advance the selection three rows (1 per tick).
+        for _ in 0..3 {
+            let result = handle_mouse_event(scroll_down, &mut state);
+            assert!(matches!(result, Control::Changed));
+        }
+        assert_eq!(
+            state.file_tree.selected, 3,
+            "three scroll ticks should have moved the tree selection by three"
+        );
+
+        // Scrolling up three ticks should walk back up.
+        let scroll_up = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+        for _ in 0..3 {
+            let _ = handle_mouse_event(scroll_up, &mut state);
+        }
+        assert_eq!(state.file_tree.selected, 0);
+
+        // And the editor viewport should not have moved.
+        assert_eq!(state.viewport.top_line, 0);
+    }
+
+    #[test]
+    fn scroll_is_ignored_when_file_tree_focused_but_empty() {
+        let mut state = state_with_text("content");
+        state.focus.focus(PanelId::FileTree);
+        assert!(state.file_tree.entries.is_empty());
+
+        let ev = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        let result = handle_mouse_event(ev, &mut state);
+        assert!(matches!(result, Control::Continue));
     }
 }
