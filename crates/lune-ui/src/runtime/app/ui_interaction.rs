@@ -278,15 +278,17 @@ enum ScrollDir {
 
 /// Compute the number of lines to scroll the editor per wheel tick.
 ///
-/// Starts at 1 line for files up to ~800 lines, then grows proportionally
-/// so that roughly 100 wheel ticks can traverse a file regardless of size,
-/// capped at one-third of the visible viewport so a single tick is never
-/// disorienting.
-fn editor_scroll_step(total_lines: usize, viewport_height: usize) -> usize {
-    let proportional = total_lines / 800;
-    let base = 1 + proportional; // 1 line minimum, +1 per 800 lines of file
-    let cap = (viewport_height / 3).max(1);
-    base.min(cap)
+/// Viewport-proportional: each tick moves roughly 20% of the visible
+/// area, with a floor of 3 lines so tiny viewports still feel
+/// responsive, and a ceiling of half the viewport so a single tick
+/// never teleports past your current context. The file's total line
+/// count is intentionally ignored — a responsive feel on a 100-line
+/// file and a 30,000-line file should look the same per tick.
+fn editor_scroll_step(viewport_height: usize) -> usize {
+    let proportional = viewport_height / 5;
+    let floor = 3;
+    let ceiling = (viewport_height / 2).max(floor);
+    proportional.clamp(floor, ceiling)
 }
 
 /// Route a mouse-wheel scroll to the currently focused pane.
@@ -325,7 +327,7 @@ fn handle_scroll(state: &mut AppState, dir: ScrollDir) -> Control<AppEvent> {
             let height = state
                 .last_editor_content_area
                 .map_or(20, |a| a.height as usize);
-            let step = editor_scroll_step(total, height);
+            let step = editor_scroll_step(height);
             match dir {
                 ScrollDir::Up => state.viewport.scroll_up(step),
                 ScrollDir::Down => state.viewport.scroll_down(step, total, height),
@@ -1003,45 +1005,49 @@ mod tests {
 
     #[test]
     fn scroll_moves_editor_viewport_when_editor_focused() {
-        let mut state = state_with_text("0\n1\n2\n3\n4\n5\n6\n7\n8\n9");
-        state.last_editor_content_area = Some(Rect::new(0, 0, 20, 3));
+        // 40-row viewport so the step is 40/5 = 8 lines per tick.
+        let text: String = (0..200)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut state = state_with_text(&text);
+        state.last_editor_content_area = Some(Rect::new(0, 0, 80, 40));
         state.focus.focus(PanelId::Editor);
-        state.viewport.top_line = 2;
+        state.viewport.top_line = 50;
 
-        // Small file (10 lines) + short viewport (3 rows) → 1 line per tick.
         let scroll_up = MouseEvent {
             kind: MouseEventKind::ScrollUp,
             column: 5,
-            row: 1,
+            row: 5,
             modifiers: KeyModifiers::NONE,
         };
         let result = handle_mouse_event(scroll_up, &mut state);
         assert!(matches!(result, Control::Changed));
-        assert_eq!(state.viewport.top_line, 1);
+        assert_eq!(state.viewport.top_line, 42);
 
-        // A second tick confirms the step is consistent.
+        // Consecutive ticks keep the step consistent.
         let _ = handle_mouse_event(scroll_up, &mut state);
-        assert_eq!(state.viewport.top_line, 0);
+        assert_eq!(state.viewport.top_line, 34);
     }
 
     #[test]
-    fn editor_scroll_step_scales_with_file_size() {
-        // Small files scroll one line per tick.
-        assert_eq!(editor_scroll_step(0, 30), 1);
-        assert_eq!(editor_scroll_step(200, 30), 1);
-        assert_eq!(editor_scroll_step(799, 30), 1);
+    fn editor_scroll_step_is_viewport_proportional() {
+        // Floor of 3 for tiny viewports.
+        assert_eq!(editor_scroll_step(0), 3);
+        assert_eq!(editor_scroll_step(5), 3);
+        assert_eq!(editor_scroll_step(14), 3);
 
-        // Larger files get a larger step, but never more than viewport/3.
-        assert_eq!(editor_scroll_step(800, 30), 2);
-        assert_eq!(editor_scroll_step(1_600, 30), 3);
-        assert_eq!(editor_scroll_step(2_400, 30), 4);
-        // viewport/3 = 10, so a ~10k-line file is capped at 10.
-        assert_eq!(editor_scroll_step(10_000, 30), 10);
-        assert_eq!(editor_scroll_step(1_000_000, 30), 10);
+        // ~20% of viewport once the viewport is big enough.
+        assert_eq!(editor_scroll_step(15), 3);
+        assert_eq!(editor_scroll_step(20), 4);
+        assert_eq!(editor_scroll_step(30), 6);
+        assert_eq!(editor_scroll_step(40), 8);
+        assert_eq!(editor_scroll_step(60), 12);
+        assert_eq!(editor_scroll_step(80), 16);
 
-        // Tiny viewports still get at least 1 line.
-        assert_eq!(editor_scroll_step(100_000, 0), 1);
-        assert_eq!(editor_scroll_step(100_000, 1), 1);
+        // Ceiling is viewport/2 — proportional already stays under that
+        // since 20% < 50%, but verify the clamp is sound for edge sizes.
+        assert!(editor_scroll_step(100) <= 50);
     }
 
     #[test]
