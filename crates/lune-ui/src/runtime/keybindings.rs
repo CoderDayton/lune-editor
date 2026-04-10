@@ -108,6 +108,8 @@ impl Keymap {
             (Char('R'), CTRL_SHIFT, AppCommand::AiRefactorFile),
             (Char('I'), CTRL_SHIFT, AppCommand::AiSummarizeChanges),
             (Char('W'), CTRL_SHIFT, AppCommand::AiCloseSession),
+            // Notifications
+            (Char('K'), CTRL_SHIFT, AppCommand::DismissNotifications),
             (Char(']'), CTRL, AppCommand::AiNextSession),
             (Char('['), CTRL, AppCommand::AiPrevSession),
             // Editor commands
@@ -378,6 +380,7 @@ pub fn parse_command(s: &str) -> Option<AppCommand> {
         // Theme
         "next_theme" => Some(AppCommand::NextTheme),
         "prev_theme" => Some(AppCommand::PrevTheme),
+        "dismiss_notifications" => Some(AppCommand::DismissNotifications),
         "open_theme_picker" => Some(AppCommand::OpenThemePicker),
         // Agent pane
         "agent_split_auto" => Some(AppCommand::AgentSplitAuto),

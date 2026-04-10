@@ -5,10 +5,10 @@
 //! The file picker provides interactive directory browsing.
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::primitives::{
-    Block, BorderType, Borders, Buffer, Clear, Line, Rect, Span, Style, Stylize, Widget,
+    Block, BorderType, Borders, Buffer, Clear, Line, Modifier, Rect, Span, Style, Stylize, Widget,
 };
 
 use crate::event::AppCommand;
@@ -62,6 +62,8 @@ pub struct OverlayState {
     pub file_picker: FilePickerState,
     /// Active notifications (toast messages).
     pub notifications: Vec<Notification>,
+    /// Tuning (timeouts, queue caps, width) for the notification system.
+    pub notification_config: NotificationConfig,
     /// AI client picker state.
     pub ai_client_picker: AiClientPickerState,
     /// Input dialog state (for file operations).
@@ -163,19 +165,64 @@ impl OverlayState {
     }
 
     /// Push a notification toast.
+    ///
+    /// Deduplicates: if the most recent notification has the same level
+    /// and message, its `count` is incremented and its TTL reset instead
+    /// of creating a new entry. This turns "Saved" × 5 into a single toast
+    /// rendered as `Saved ×5`.
+    ///
+    /// Enforces the queue cap from [`NotificationConfig::max_queue`]:
+    /// when exceeded, the oldest entry is dropped.
     pub fn notify(&mut self, message: impl Into<String>, level: NotificationLevel) {
+        let message = message.into();
+        if let Some(last) = self.notifications.last_mut() {
+            if last.level == level && last.message == message {
+                last.count = last.count.saturating_add(1);
+                last.created = Instant::now();
+                return;
+            }
+        }
         self.notifications.push(Notification {
-            message: message.into(),
+            message,
             level,
             created: Instant::now(),
+            count: 1,
         });
+        while self.notifications.len() > self.notification_config.max_queue {
+            self.notifications.remove(0);
+        }
     }
 
-    /// Remove expired notifications (older than 4 seconds).
+    /// Convenience: success toast.
+    pub fn notify_success(&mut self, message: impl Into<String>) {
+        self.notify(message, NotificationLevel::Success);
+    }
+
+    /// Convenience: info toast.
+    pub fn notify_info(&mut self, message: impl Into<String>) {
+        self.notify(message, NotificationLevel::Info);
+    }
+
+    /// Convenience: warning toast.
+    pub fn notify_warn(&mut self, message: impl Into<String>) {
+        self.notify(message, NotificationLevel::Warning);
+    }
+
+    /// Convenience: error toast.
+    pub fn notify_error(&mut self, message: impl Into<String>) {
+        self.notify(message, NotificationLevel::Error);
+    }
+
+    /// Drop expired notifications (those past their severity-specific TTL).
     pub fn prune_notifications(&mut self) {
-        let now = Instant::now();
-        self.notifications
-            .retain(|n| now.duration_since(n.created).as_secs() < 4);
+        let cfg = self.notification_config;
+        self.notifications.retain(|n| !n.is_expired(&cfg));
+    }
+
+    /// Clear every pending and visible notification at once. Used by the
+    /// dismiss-all keybinding.
+    pub fn dismiss_all_notifications(&mut self) {
+        self.notifications.clear();
     }
 }
 
@@ -350,6 +397,7 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
         palette_cmd("Select Language", AppCommand::OpenLanguagePicker),
         palette_cmd("Toggle Vim Mode", AppCommand::ToggleVimMode),
         palette_cmd("Select Theme", AppCommand::OpenThemePicker),
+        palette_cmd("Dismiss Notifications", AppCommand::DismissNotifications),
         // Agent pane commands
         palette_cmd("Agent: Split Vertical", AppCommand::AgentSplitVertical),
         palette_cmd("Agent: Split Horizontal", AppCommand::AgentSplitHorizontal),
@@ -1328,48 +1376,128 @@ impl FilePickerState {
 
 // ── Notifications ─────────────────────────────────────────────────────
 
-/// Severity level for notifications.
+/// Severity level for notifications. Ordered from least to most alarming.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotificationLevel {
-    /// Informational message.
+    /// Positive outcome ("Saved", "Committed", "Copied").
+    Success,
+    /// Informational message (neutral status updates).
     Info,
-    /// Warning.
+    /// Warning — user should notice but nothing is broken.
     Warning,
-    /// Error.
+    /// Error — something actually failed.
     Error,
 }
 
-/// A toast notification message.
+impl NotificationLevel {
+    /// Single-glyph icon shown on the left of the toast body.
+    #[must_use]
+    pub const fn icon(self) -> &'static str {
+        match self {
+            Self::Success => "✓",
+            Self::Info => "●",
+            Self::Warning => "⚠",
+            Self::Error => "✕",
+        }
+    }
+}
+
+/// Centralized tuning for the notification subsystem.
+///
+/// Keeps the timeouts, queue caps, width, and fade window in one place
+/// instead of scattering magic numbers across `notify()` / `render` /
+/// `prune_notifications`.
+#[derive(Clone, Copy, Debug)]
+pub struct NotificationConfig {
+    /// Maximum number of toasts rendered simultaneously.
+    pub max_visible: usize,
+    /// Hard cap on queue depth. Older toasts are dropped if exceeded.
+    pub max_queue: usize,
+    /// Total width of the toast frame (including borders).
+    pub width: u16,
+    /// Maximum body rows per toast before truncating the message.
+    pub max_body_rows: u16,
+    /// Time a `Success` toast lives before expiry.
+    pub ttl_success: Duration,
+    /// Time an `Info` toast lives before expiry.
+    pub ttl_info: Duration,
+    /// Time a `Warning` toast lives before expiry.
+    pub ttl_warning: Duration,
+    /// Time an `Error` toast lives before expiry (stays longest so the
+    /// user can actually read it).
+    pub ttl_error: Duration,
+    /// Duration of the fade-out right before expiry.
+    pub fade: Duration,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            max_visible: 5,
+            max_queue: 50,
+            width: 46,
+            max_body_rows: 3,
+            ttl_success: Duration::from_millis(2500),
+            ttl_info: Duration::from_millis(3500),
+            ttl_warning: Duration::from_millis(6000),
+            ttl_error: Duration::from_millis(10_000),
+            fade: Duration::from_millis(700),
+        }
+    }
+}
+
+impl NotificationConfig {
+    /// TTL for a specific severity level.
+    #[must_use]
+    pub const fn ttl_for(&self, level: NotificationLevel) -> Duration {
+        match level {
+            NotificationLevel::Success => self.ttl_success,
+            NotificationLevel::Info => self.ttl_info,
+            NotificationLevel::Warning => self.ttl_warning,
+            NotificationLevel::Error => self.ttl_error,
+        }
+    }
+}
+
+/// A toast notification message. Equal consecutive notifications are
+/// coalesced into a single entry with an incrementing `count`.
 #[derive(Clone, Debug)]
 pub struct Notification {
     /// The message text.
     pub message: String,
     /// Severity level.
     pub level: NotificationLevel,
-    /// When the notification was created.
+    /// When the notification was (last) created. Reset on dedup so a
+    /// repeated message refreshes its TTL instead of expiring early.
     pub created: Instant,
+    /// How many times this message has been pushed consecutively.
+    /// Rendered as a trailing `×N` suffix when > 1.
+    pub count: u32,
 }
 
-/// Notification TTL in seconds.
-const NOTIFICATION_TTL_SECS: f32 = 4.0;
-/// Seconds before expiry when fade-out begins.
-const NOTIFICATION_FADE_SECS: f32 = 1.0;
-
 impl Notification {
-    /// Remaining vitality: 1.0 when fresh, fading to 0.0 during the
-    /// final second before expiry.
+    /// Whether this notification has lived past its TTL.
     #[must_use]
-    pub fn vitality(&self) -> f32 {
-        let elapsed = self.created.elapsed().as_secs_f32();
-        if elapsed >= NOTIFICATION_TTL_SECS {
+    pub fn is_expired(&self, cfg: &NotificationConfig) -> bool {
+        self.created.elapsed() >= cfg.ttl_for(self.level)
+    }
+
+    /// Remaining vitality in `[0.0, 1.0]`. `1.0` while fresh, linearly
+    /// decaying over the final `cfg.fade` window, then `0.0` at expiry.
+    #[must_use]
+    pub fn vitality(&self, cfg: &NotificationConfig) -> f32 {
+        let elapsed = self.created.elapsed();
+        let ttl = cfg.ttl_for(self.level);
+        if elapsed >= ttl {
             return 0.0;
         }
-        let fade_start = NOTIFICATION_TTL_SECS - NOTIFICATION_FADE_SECS;
+        let fade_start = ttl.saturating_sub(cfg.fade);
         if elapsed <= fade_start {
-            1.0
-        } else {
-            (NOTIFICATION_TTL_SECS - elapsed) / NOTIFICATION_FADE_SECS
+            return 1.0;
         }
+        let remaining = ttl.saturating_sub(elapsed).as_secs_f32();
+        let fade_secs = cfg.fade.as_secs_f32().max(f32::EPSILON);
+        (remaining / fade_secs).clamp(0.0, 1.0)
     }
 }
 
@@ -1379,7 +1507,13 @@ impl Notification {
 #[allow(clippy::cast_possible_truncation)]
 pub fn render_overlay(area: Rect, buf: &mut Buffer, overlay: &mut OverlayState, theme: &Theme) {
     // Render notifications (bottom-right toasts).
-    render_notifications(area, buf, &overlay.notifications, theme);
+    render_notifications(
+        area,
+        buf,
+        &overlay.notifications,
+        &overlay.notification_config,
+        theme,
+    );
 
     // Render the active overlay.
     match &overlay.active {
@@ -2444,89 +2578,172 @@ fn render_centered_popup(
     }
 }
 
-/// Block characters for progress indicator (8 levels of fill).
-const PROGRESS_BLOCKS: &[char] = &[
-    '\u{258F}', '\u{258E}', '\u{258D}', '\u{258C}', '\u{258B}', '\u{258A}', '\u{2589}', '\u{2588}',
-];
-
 /// Render toast notifications in the bottom-right corner with fade-out.
 #[allow(clippy::cast_possible_truncation)]
 fn render_notifications(
     area: Rect,
     buf: &mut Buffer,
     notifications: &[Notification],
+    config: &NotificationConfig,
     theme: &Theme,
 ) {
-    if notifications.is_empty() {
+    // Each toast is a 3-row rounded-corner box; slot adds a 1-row gap.
+    const TOAST_H: u16 = 3;
+    const SLOT_H: u16 = TOAST_H + 1;
+
+    if notifications.is_empty() || area.width < 16 || area.height < 5 {
         return;
     }
 
-    let max_width: u16 = 40;
-    let mut y = area.y + area.height;
+    let toast_w = config.width.min(area.width.saturating_sub(2));
+    if toast_w < 16 {
+        return;
+    }
 
-    for notif in notifications.iter().rev().take(5) {
-        if y < area.y + 3 {
-            break;
+    // Anchor bottom-right with a 1-col / 1-row margin.
+    let right_margin: u16 = 1;
+    let bottom_margin: u16 = 1;
+    let x = area.x + area.width.saturating_sub(toast_w + right_margin);
+    let mut next_bottom = area.y + area.height.saturating_sub(bottom_margin);
+
+    let visible_count = notifications.len().min(config.max_visible);
+    let hidden = notifications.len().saturating_sub(visible_count);
+
+    // Render from newest (end of vec) upward.
+    let top_of_stack_y = {
+        let mut top = next_bottom;
+        for notif in notifications.iter().rev().take(visible_count) {
+            if next_bottom < area.y + TOAST_H {
+                break;
+            }
+            let rect = Rect::new(x, next_bottom.saturating_sub(TOAST_H), toast_w, TOAST_H);
+            render_single_toast(rect, buf, notif, config, theme);
+            top = rect.y;
+            next_bottom = next_bottom.saturating_sub(SLOT_H);
         }
+        top
+    };
 
-        let vitality = notif.vitality();
-        let message = normalize_inline_notification_message(&notif.message);
-        let content = truncate_inline_text(&message, max_width.saturating_sub(4) as usize);
-        let msg_width =
-            (u16::try_from(content.chars().count()).unwrap_or(u16::MAX) + 4).min(max_width);
-        let x = area.x + area.width - msg_width;
-        y = y.saturating_sub(3); // 2 rows per notification + 1 gap
-
-        // Notification text row.
-        let text_rect = Rect::new(x, y, msg_width, 1);
-        Clear.render(text_rect, buf);
-
-        let base_fg = match notif.level {
-            NotificationLevel::Info => theme.notif_info,
-            NotificationLevel::Warning => theme.notif_warn,
-            NotificationLevel::Error => theme.notif_error,
-        };
-
-        // Fade toward black as vitality decreases.
-        let fg = if vitality < 1.0 {
-            blend_toward(base_fg, 0, 0, 0, 1.0 - vitality)
-        } else {
-            base_fg
-        };
-
-        let text = format!(" {content} ");
-        Line::from(Span::from(text).style(Style::new().fg(fg))).render(text_rect, buf);
-
-        // Progress bar row.
-        let bar_rect = Rect::new(x, y + 1, msg_width, 1);
-        Clear.render(bar_rect, buf);
-
-        let filled_width = vitality * f32::from(msg_width);
-        #[allow(clippy::cast_sign_loss)]
-        let full_blocks = filled_width.max(0.0) as usize;
-        #[allow(clippy::cast_precision_loss)]
-        let fraction = filled_width - full_blocks as f32;
-        #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss)]
-        let partial_idx = (fraction * PROGRESS_BLOCKS.len() as f32) as usize;
-
-        let mut bar = String::with_capacity(msg_width as usize);
-        for _ in 0..full_blocks.min(msg_width as usize) {
-            bar.push('\u{2588}');
-        }
-        if full_blocks < msg_width as usize
-            && partial_idx > 0
-            && partial_idx < PROGRESS_BLOCKS.len()
-        {
-            bar.push(PROGRESS_BLOCKS[partial_idx]);
-        }
-
-        let bar_fg = blend_toward(base_fg, 0, 0, 0, 0.5);
-        Line::from(Span::from(bar).style(Style::new().fg(bar_fg))).render(bar_rect, buf);
+    // "+N more" overflow indicator above the topmost visible toast.
+    if hidden > 0 && top_of_stack_y > area.y {
+        let label = format!("+{hidden} more");
+        let label_w = u16::try_from(label.chars().count())
+            .unwrap_or(u16::MAX)
+            .min(toast_w);
+        let label_x = x + toast_w.saturating_sub(label_w);
+        let label_y = top_of_stack_y.saturating_sub(1);
+        let label_rect = Rect::new(label_x, label_y, label_w, 1);
+        Clear.render(label_rect, buf);
+        Line::from(Span::styled(label, Style::new().fg(theme.fg_muted))).render(label_rect, buf);
     }
 }
 
-fn normalize_inline_notification_message(message: &str) -> String {
-    message.split_whitespace().collect::<Vec<_>>().join(" ")
+/// Draw a single toast into `rect`. `rect.height` must be >= 3.
+fn render_single_toast(
+    rect: Rect,
+    buf: &mut Buffer,
+    notif: &Notification,
+    config: &NotificationConfig,
+    theme: &Theme,
+) {
+    if rect.width < 8 || rect.height < 3 {
+        return;
+    }
+
+    let base_fg = match notif.level {
+        NotificationLevel::Success => theme.notif_success,
+        NotificationLevel::Info => theme.notif_info,
+        NotificationLevel::Warning => theme.notif_warn,
+        NotificationLevel::Error => theme.notif_error,
+    };
+
+    let vitality = notif.vitality(config);
+    let (br, bg, bb) = theme_bg_rgb(theme.bg);
+    let border_fg = blend_toward(base_fg, br, bg, bb, 1.0 - vitality);
+    let body_fg = blend_toward(theme.fg, br, bg, bb, (1.0 - vitality) * 0.85);
+
+    // 1) Clear the rect so nothing shows through from behind.
+    Clear.render(rect, buf);
+    for dy in 0..rect.height {
+        for dx in 0..rect.width {
+            buf[(rect.x + dx, rect.y + dy)].set_bg(theme.bg);
+        }
+    }
+
+    // 2) Rounded frame.
+    let top_y = rect.y;
+    let bot_y = rect.y + rect.height - 1;
+    let left_x = rect.x;
+    let right_x = rect.x + rect.width - 1;
+
+    buf[(left_x, top_y)].set_char('╭').set_fg(border_fg);
+    buf[(right_x, top_y)].set_char('╮').set_fg(border_fg);
+    buf[(left_x, bot_y)].set_char('╰').set_fg(border_fg);
+    buf[(right_x, bot_y)].set_char('╯').set_fg(border_fg);
+    for dy in 1..rect.height.saturating_sub(1) {
+        buf[(left_x, rect.y + dy)].set_char('│').set_fg(border_fg);
+        buf[(right_x, rect.y + dy)].set_char('│').set_fg(border_fg);
+    }
+    for dx in 1..rect.width.saturating_sub(1) {
+        buf[(rect.x + dx, bot_y)].set_char('─').set_fg(border_fg);
+    }
+
+    // 3) Top border as a progress bar — filled portion uses `━` (heavy),
+    //    remainder uses `─` (light). Shrinks from full width to empty as
+    //    vitality decays.
+    let inner_w = rect.width.saturating_sub(2);
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let filled = (f32::from(inner_w) * vitality).round() as u16;
+    let filled = filled.min(inner_w);
+    for dx in 0..inner_w {
+        let ch = if dx < filled { '━' } else { '─' };
+        buf[(rect.x + 1 + dx, top_y)].set_char(ch).set_fg(border_fg);
+    }
+
+    // 4) Body row: ` <icon>  <message> [ ×N]` padded to inner width.
+    let body_y = rect.y + 1;
+    let body_x = rect.x + 1;
+    let body_w = rect.width.saturating_sub(2);
+
+    let count_suffix = if notif.count > 1 {
+        format!(" ×{}", notif.count)
+    } else {
+        String::new()
+    };
+    let count_w = u16::try_from(count_suffix.chars().count()).unwrap_or(u16::MAX);
+    // Reserve: leading space(1) + icon(1) + gap(2) + count_w + trailing space(1)
+    let reserved = 1 + 1 + 2 + count_w + 1;
+    let max_msg_w = body_w.saturating_sub(reserved);
+    let message = truncate_inline_text(&notif.message, max_msg_w as usize);
+
+    let icon_style = Style::new().fg(base_fg).add_modifier(Modifier::BOLD);
+    let body_style = Style::new().fg(body_fg);
+    let count_style = Style::new().fg(border_fg).add_modifier(Modifier::BOLD);
+
+    let mut spans = vec![
+        Span::from(" "),
+        Span::styled(notif.level.icon(), icon_style),
+        Span::from("  "),
+        Span::styled(message, body_style),
+    ];
+    if !count_suffix.is_empty() {
+        spans.push(Span::styled(count_suffix, count_style));
+    }
+    Line::from(spans).render(Rect::new(body_x, body_y, body_w, 1), buf);
+}
+
+/// Extract RGB components from a theme background color. Used so the
+/// fade-out blends toward the theme background, not hardcoded black —
+/// matters for light themes.
+const fn theme_bg_rgb(color: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::White => (255, 255, 255),
+        // Fallback for everything else (named indexed colors, Reset,
+        // Black): assume dark so the fade doesn't blow out on unknown
+        // palettes.
+        _ => (0, 0, 0),
+    }
 }
 
 #[cfg(test)]
@@ -2608,9 +2825,11 @@ mod tests {
             message: "Clipboard was dropped very quickly after writing (9ms)\nConsider keeping `Clipboard` in more persistent state somewhere.".to_string(),
             level: NotificationLevel::Error,
             created: Instant::now(),
+            count: 1,
         };
 
-        render_notifications(area, &mut buf, &[notification], &theme);
+        let config = NotificationConfig::default();
+        render_notifications(area, &mut buf, &[notification], &config, &theme);
 
         let rows: Vec<String> = (0..area.height)
             .map(|y| {
@@ -3643,40 +3862,167 @@ mod tests {
 
     #[test]
     fn vitality_fresh_is_one() {
+        let cfg = NotificationConfig::default();
         let notif = Notification {
             message: "test".to_string(),
             level: NotificationLevel::Info,
             created: Instant::now(),
+            count: 1,
         };
-        assert!((notif.vitality() - 1.0).abs() < 0.01);
+        assert!((notif.vitality(&cfg) - 1.0).abs() < 0.01);
     }
 
     #[test]
     fn vitality_at_expiry_is_zero() {
+        let cfg = NotificationConfig::default();
         let notif = Notification {
             message: "test".to_string(),
             level: NotificationLevel::Info,
             created: Instant::now()
-                .checked_sub(std::time::Duration::from_secs(5))
+                .checked_sub(std::time::Duration::from_secs(30))
                 .unwrap(),
+            count: 1,
         };
-        assert!(notif.vitality() <= 0.0);
+        assert!(notif.vitality(&cfg) <= 0.0);
     }
 
     #[test]
     fn vitality_during_fade_is_between() {
+        let cfg = NotificationConfig::default();
+        // Info TTL is 3500ms with a 700ms fade window, so placing the
+        // creation timestamp 3100ms ago puts us mid-fade.
+        let fade_midpoint = cfg.ttl_info.saturating_sub(cfg.fade / 2);
         let notif = Notification {
             message: "test".to_string(),
             level: NotificationLevel::Info,
-            created: Instant::now()
-                .checked_sub(std::time::Duration::from_millis(3500))
-                .unwrap(),
+            created: Instant::now().checked_sub(fade_midpoint).unwrap(),
+            count: 1,
         };
-        let v = notif.vitality();
+        let v = notif.vitality(&cfg);
         assert!(
             v > 0.0 && v < 1.0,
             "vitality during fade should be 0 < {v} < 1"
         );
+    }
+
+    #[test]
+    fn notify_dedups_consecutive_identical_messages() {
+        let mut overlay = OverlayState::default();
+        overlay.notify("Saved", NotificationLevel::Success);
+        overlay.notify("Saved", NotificationLevel::Success);
+        overlay.notify("Saved", NotificationLevel::Success);
+        assert_eq!(overlay.notifications.len(), 1);
+        assert_eq!(overlay.notifications[0].count, 3);
+    }
+
+    #[test]
+    fn notify_does_not_dedup_different_levels() {
+        let mut overlay = OverlayState::default();
+        overlay.notify("X", NotificationLevel::Info);
+        overlay.notify("X", NotificationLevel::Warning);
+        assert_eq!(overlay.notifications.len(), 2);
+        assert_eq!(overlay.notifications[0].count, 1);
+        assert_eq!(overlay.notifications[1].count, 1);
+    }
+
+    #[test]
+    fn notify_does_not_dedup_non_adjacent_repeats() {
+        let mut overlay = OverlayState::default();
+        overlay.notify("A", NotificationLevel::Info);
+        overlay.notify("B", NotificationLevel::Info);
+        overlay.notify("A", NotificationLevel::Info);
+        assert_eq!(overlay.notifications.len(), 3);
+    }
+
+    #[test]
+    fn notify_enforces_max_queue_by_dropping_oldest() {
+        let mut overlay = OverlayState::default();
+        overlay.notification_config.max_queue = 3;
+        for i in 0..6 {
+            overlay.notify(format!("m{i}"), NotificationLevel::Info);
+        }
+        assert_eq!(overlay.notifications.len(), 3);
+        assert_eq!(overlay.notifications[0].message, "m3");
+        assert_eq!(overlay.notifications[2].message, "m5");
+    }
+
+    #[test]
+    fn dismiss_all_clears_every_notification() {
+        let mut overlay = OverlayState::default();
+        overlay.notify("a", NotificationLevel::Info);
+        overlay.notify("b", NotificationLevel::Warning);
+        overlay.notify("c", NotificationLevel::Error);
+        overlay.dismiss_all_notifications();
+        assert!(overlay.notifications.is_empty());
+    }
+
+    #[test]
+    fn notify_helpers_produce_expected_levels() {
+        let mut overlay = OverlayState::default();
+        overlay.notify_success("s");
+        overlay.notify_info("i");
+        overlay.notify_warn("w");
+        overlay.notify_error("e");
+        let levels: Vec<NotificationLevel> =
+            overlay.notifications.iter().map(|n| n.level).collect();
+        assert_eq!(
+            levels,
+            vec![
+                NotificationLevel::Success,
+                NotificationLevel::Info,
+                NotificationLevel::Warning,
+                NotificationLevel::Error,
+            ]
+        );
+    }
+
+    #[test]
+    fn notification_level_icons_are_all_distinct() {
+        let icons = [
+            NotificationLevel::Success.icon(),
+            NotificationLevel::Info.icon(),
+            NotificationLevel::Warning.icon(),
+            NotificationLevel::Error.icon(),
+        ];
+        let unique: std::collections::BTreeSet<_> = icons.iter().collect();
+        assert_eq!(unique.len(), icons.len());
+    }
+
+    #[test]
+    fn per_severity_ttl_matches_config() {
+        let cfg = NotificationConfig::default();
+        assert!(cfg.ttl_for(NotificationLevel::Success) < cfg.ttl_for(NotificationLevel::Info));
+        assert!(cfg.ttl_for(NotificationLevel::Info) < cfg.ttl_for(NotificationLevel::Warning));
+        assert!(cfg.ttl_for(NotificationLevel::Warning) < cfg.ttl_for(NotificationLevel::Error));
+    }
+
+    #[test]
+    fn prune_respects_per_severity_ttl() {
+        let mut overlay = OverlayState::default();
+        let cfg = overlay.notification_config;
+        // A Success message whose TTL has expired should be pruned.
+        overlay.notifications.push(Notification {
+            message: "old success".to_string(),
+            level: NotificationLevel::Success,
+            created: Instant::now()
+                .checked_sub(cfg.ttl_for(NotificationLevel::Success) + Duration::from_secs(1))
+                .unwrap(),
+            count: 1,
+        });
+        // An Error message created at the same ancient timestamp should
+        // still be alive because Error has a much longer TTL.
+        let ancient = Instant::now()
+            .checked_sub(cfg.ttl_for(NotificationLevel::Success) + Duration::from_secs(1))
+            .unwrap();
+        overlay.notifications.push(Notification {
+            message: "still-live error".to_string(),
+            level: NotificationLevel::Error,
+            created: ancient,
+            count: 1,
+        });
+        overlay.prune_notifications();
+        assert_eq!(overlay.notifications.len(), 1);
+        assert_eq!(overlay.notifications[0].level, NotificationLevel::Error);
     }
 
     #[test]

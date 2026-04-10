@@ -1734,6 +1734,10 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             cycle_theme(state, false);
             Control::Changed
         }
+        AppCommand::DismissNotifications => {
+            state.overlay.dismiss_all_notifications();
+            Control::Changed
+        }
         // Agent pane commands.
         AppCommand::AgentSplitAuto => begin_agent_split_session(state, None),
         AppCommand::AgentSplitVertical => {

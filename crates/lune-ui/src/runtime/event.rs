@@ -240,6 +240,10 @@ pub enum AppCommand {
     /// Switch to the previous theme in the registry.
     PrevTheme,
 
+    // ── Notifications ───────────────────────────────────────────────
+    /// Dismiss every currently-visible toast notification.
+    DismissNotifications,
+
     // ── Settings commands ────────────────────────────────────────────
     /// Open the global config file in the editor.
     OpenSettings,

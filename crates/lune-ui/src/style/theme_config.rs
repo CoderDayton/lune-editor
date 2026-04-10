@@ -358,6 +358,7 @@ pub struct StatusBarConfig {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct NotificationColorsConfig {
+    pub success: Option<String>,
     pub info: Option<String>,
     pub warn: Option<String>,
     pub error: Option<String>,
@@ -473,6 +474,7 @@ impl ThemeConfig {
         apply_style(self.status_bar.bg.as_ref(), &mut t.status_bg);
 
         // ── Notifications ────────────────────────────────────────
+        apply_color(self.notifications.success.as_ref(), &mut t.notif_success);
         apply_color(self.notifications.info.as_ref(), &mut t.notif_info);
         apply_color(self.notifications.warn.as_ref(), &mut t.notif_warn);
         apply_color(self.notifications.error.as_ref(), &mut t.notif_error);

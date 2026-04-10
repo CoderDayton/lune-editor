@@ -151,6 +151,8 @@ pub struct Theme {
     pub status_bg: Style,
 
     // ── Notifications ─────────────────────────────────────────────
+    /// Color for success notifications.
+    pub notif_success: Color,
     /// Color for informational notifications.
     pub notif_info: Color,
     /// Color for warning notifications.
@@ -267,7 +269,8 @@ impl Theme {
             status_bg: Style::new().fg(subtext0).bg(mantle),
 
             // Notifications
-            notif_info: green,
+            notif_success: green,
+            notif_info: accent,
             notif_warn: yellow,
             notif_error: red,
 
@@ -371,7 +374,8 @@ impl Theme {
             status_bg: Style::new().fg(subtext0).bg(mantle),
 
             // Notifications
-            notif_info: green,
+            notif_success: green,
+            notif_info: accent,
             notif_warn: yellow,
             notif_error: red,
 
