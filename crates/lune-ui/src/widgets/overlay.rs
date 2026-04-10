@@ -2470,7 +2470,10 @@ fn render_notifications(
         }
 
         let vitality = notif.vitality();
-        let msg_width = (notif.message.len() as u16 + 4).min(max_width);
+        let message = normalize_inline_notification_message(&notif.message);
+        let content = truncate_inline_text(&message, max_width.saturating_sub(4) as usize);
+        let msg_width =
+            (u16::try_from(content.chars().count()).unwrap_or(u16::MAX) + 4).min(max_width);
         let x = area.x + area.width - msg_width;
         y = y.saturating_sub(3); // 2 rows per notification + 1 gap
 
@@ -2491,10 +2494,7 @@ fn render_notifications(
             base_fg
         };
 
-        let text = format!(
-            " {} ",
-            &notif.message[..notif.message.len().min((msg_width - 2) as usize)]
-        );
+        let text = format!(" {content} ");
         Line::from(Span::from(text).style(Style::new().fg(fg))).render(text_rect, buf);
 
         // Progress bar row.
@@ -2523,6 +2523,10 @@ fn render_notifications(
         let bar_fg = blend_toward(base_fg, 0, 0, 0, 0.5);
         Line::from(Span::from(bar).style(Style::new().fg(bar_fg))).render(bar_rect, buf);
     }
+}
+
+fn normalize_inline_notification_message(message: &str) -> String {
+    message.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -2593,6 +2597,41 @@ mod tests {
         overlay.prune_notifications();
         // Should still be there (just created).
         assert_eq!(overlay.notifications.len(), 1);
+    }
+
+    #[test]
+    fn notifications_collapse_multiline_messages_to_one_row() {
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        let notification = Notification {
+            message: "Clipboard was dropped very quickly after writing (9ms)\nConsider keeping `Clipboard` in more persistent state somewhere.".to_string(),
+            level: NotificationLevel::Error,
+            created: Instant::now(),
+        };
+
+        render_notifications(area, &mut buf, &[notification], &theme);
+
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .filter_map(|x| buf.cell((x, y)).map(|cell| cell.symbol().to_string()))
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.contains("Clipboard was dropped very quickly"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.contains("Consider keeping `Clipboard`"))
+                .count(),
+            0
+        );
     }
 
     #[test]

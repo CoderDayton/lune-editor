@@ -140,11 +140,7 @@ pub(super) fn handle_copy(state: &mut AppState) -> Control<AppEvent> {
     let Some(t) = text else {
         return Control::Continue;
     };
-    if let Err(e) = Clipboard::new().and_then(|mut cb| cb.set_text(t)) {
-        state
-            .overlay
-            .notify(format!("Clipboard error: {e}"), NotificationLevel::Error);
-    }
+    write_clipboard_text(state, t);
     Control::Changed
 }
 
@@ -160,11 +156,7 @@ pub(super) fn handle_cut(state: &mut AppState) -> Control<AppEvent> {
     let Some(t) = text else {
         return Control::Continue;
     };
-    if let Err(e) = Clipboard::new().and_then(|mut cb| cb.set_text(t)) {
-        state
-            .overlay
-            .notify(format!("Clipboard error: {e}"), NotificationLevel::Error);
-    }
+    write_clipboard_text(state, t);
     if let Some(buf) = state.active_buf_mut() {
         let (s, e) = buf.cursor.primary.ordered();
         buf.delete(s, e);
@@ -216,11 +208,7 @@ pub(super) fn handle_cut_line(state: &mut AppState) -> Control<AppEvent> {
         return Control::Continue;
     };
 
-    if let Err(e) = Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
-        state
-            .overlay
-            .notify(format!("Clipboard error: {e}"), NotificationLevel::Error);
-    }
+    write_clipboard_text(state, text);
 
     if let Some(buf) = state.active_buf_mut() {
         let sel = buf.cursor.primary.clone();
@@ -430,7 +418,7 @@ fn move_n(buf: &mut TextBuffer, n: usize, extend: bool, method: fn(&mut TextBuff
 }
 
 fn read_clipboard_text(state: &mut AppState) -> Option<String> {
-    match Clipboard::new().and_then(|mut cb| cb.get_text()) {
+    match state.clipboard_mut().and_then(Clipboard::get_text) {
         Ok(text) => Some(text),
         Err(e) => {
             state
@@ -438,6 +426,14 @@ fn read_clipboard_text(state: &mut AppState) -> Option<String> {
                 .notify(format!("Clipboard error: {e}"), NotificationLevel::Error);
             None
         }
+    }
+}
+
+fn write_clipboard_text(state: &mut AppState, text: String) {
+    if let Err(e) = state.clipboard_mut().and_then(|cb| cb.set_text(text)) {
+        state
+            .overlay
+            .notify(format!("Clipboard error: {e}"), NotificationLevel::Error);
     }
 }
 

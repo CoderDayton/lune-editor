@@ -241,6 +241,13 @@ pub struct AppState {
     config_paths: Option<lune_core::config::ConfigPaths>,
     /// Cached settings for hot-reload comparison and re-application.
     cached_settings: Option<Settings>,
+    /// Lazily-initialized system clipboard handle.
+    ///
+    /// On Linux/X11 the clipboard contents are served by the owning process,
+    /// so keeping one handle alive avoids arboard's "dropped very quickly
+    /// after writing" warning and prevents copied contents from vanishing
+    /// immediately.
+    clipboard: Option<Clipboard>,
     /// Sled-backed reactive state database.
     ///
     /// Set after construction via [`AppState::set_state_db`].  When present,
@@ -324,9 +331,17 @@ impl AppState {
             last_ai_term_size: None,
             config_paths: None,
             cached_settings: None,
+            clipboard: None,
             state_db: None,
             last_state_save: Instant::now(),
         }
+    }
+
+    fn clipboard_mut(&mut self) -> Result<&mut Clipboard, arboard::Error> {
+        if self.clipboard.is_none() {
+            self.clipboard = Some(Clipboard::new()?);
+        }
+        Ok(self.clipboard.as_mut().expect("clipboard initialized"))
     }
 
     /// Switch the active theme from the registry and update cached copies.
