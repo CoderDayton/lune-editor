@@ -24,7 +24,6 @@ rat-salsa = { version = "4", features = ["dialog_widgets", "async"] }
 rat-widget = { version = "3", features = ["user_directories"] }
 rat-event = "2"
 rat-focus = "2"
-tachyonfx = "0.24"
 
 # Editor core
 ropey = "1"
@@ -146,7 +145,7 @@ strip = "symbols"
 [profile.dev]
 debug = "line-tables-only"
 
-# Compile all dependencies at opt-level 3 even in dev — tree-sitter, ratatui,
-# and tachyonfx are 10-30× faster when optimized; incremental builds are unaffected.
+# Compile all dependencies at opt-level 3 even in dev — tree-sitter and ratatui
+# are 10-30× faster when optimized; incremental builds are unaffected.
 [profile.dev.package."*"]
 opt-level = 3

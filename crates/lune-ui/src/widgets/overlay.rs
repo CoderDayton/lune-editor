@@ -11,7 +11,6 @@ use crate::primitives::{
     Block, BorderType, Borders, Buffer, Clear, Line, Rect, Span, Style, Stylize, Widget,
 };
 
-use crate::effects::blend_toward;
 use crate::event::AppCommand;
 use crate::primitives::Color;
 use crate::theme::Theme;
@@ -1714,6 +1713,44 @@ fn layout_picker_footer(
     }
 
     footer
+}
+
+/// Blend a color toward the target RGB at the given intensity.
+///
+/// Used for notification age-out: the foreground is lerped toward black
+/// as the notification's vitality decays. This is a one-shot per-frame
+/// blend, not an animation.
+fn blend_toward(color: Color, tr: u8, tg: u8, tb: u8, t: f32) -> Color {
+    let (sr, sg, sb) = match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Reset | Color::Black => (0, 0, 0),
+        Color::White => (255, 255, 255),
+        Color::Red => (255, 0, 0),
+        Color::Green => (0, 255, 0),
+        Color::Blue => (0, 0, 255),
+        Color::Yellow => (255, 255, 0),
+        Color::Magenta => (255, 0, 255),
+        Color::Cyan => (0, 255, 255),
+        Color::Gray => (128, 128, 128),
+        Color::DarkGray => (64, 64, 64),
+        Color::LightRed => (255, 128, 128),
+        Color::LightGreen => (128, 255, 128),
+        Color::LightBlue => (128, 128, 255),
+        Color::LightYellow => (255, 255, 128),
+        Color::LightMagenta => (255, 128, 255),
+        Color::LightCyan => (128, 255, 255),
+        Color::Indexed(_) => return color,
+    };
+
+    let lerp = |s: u8, d: u8, t: f32| -> u8 {
+        let s_f = f32::from(s);
+        let d_f = f32::from(d);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let result = (d_f - s_f).mul_add(t, s_f).clamp(0.0, 255.0) as u8;
+        result
+    };
+
+    Color::Rgb(lerp(sr, tr, t), lerp(sg, tg, t), lerp(sb, tb, t))
 }
 
 fn truncate_inline_text(text: &str, max_width: usize) -> String {

@@ -24,7 +24,6 @@ OPTIONS:
     --theme <name>     Override active theme
     --vim              Enable vim keybinding mode
     --no-vim           Disable vim keybinding mode
-    --no-effects       Disable visual effects
     --version          Print version and exit
     --help, -h         Print this help and exit"
     );
@@ -55,7 +54,6 @@ fn parse_args() -> Option<(CliOverrides, Vec<PathBuf>)> {
                 print_version();
                 return None;
             }
-            "--no-effects" => overrides.effects_enabled = Some(false),
             "--vim" => overrides.vim_mode = Some(true),
             "--no-vim" => overrides.vim_mode = Some(false),
             "--config" => {
@@ -166,7 +164,7 @@ fn main() -> Result<()> {
         }
     }
 
-    // Apply settings to state (layout, vim, theme, effects).
+    // Apply settings to state (layout, vim, theme).
     state.apply_settings(&settings);
 
     // Load custom keybindings and merge with defaults.

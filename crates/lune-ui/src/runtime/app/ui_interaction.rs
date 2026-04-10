@@ -2,10 +2,7 @@
 
 use super::*;
 
-pub(super) fn handle_terminal_event(
-    ct_event: &CtEvent,
-    state: &mut AppState,
-) -> Control<AppEvent> {
+pub(super) fn handle_terminal_event(ct_event: &CtEvent, state: &mut AppState) -> Control<AppEvent> {
     match ct_event {
         CtEvent::Key(key_event) if key_event.kind == KeyEventKind::Press => {
             handle_key_event(key_event, state)
@@ -241,7 +238,9 @@ fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
                 let total = state
                     .active_buf()
                     .map_or(0, lune_core::buffer::TextBuffer::line_count);
-                let height = state.last_editor_content_area.map_or(20, |a| a.height as usize);
+                let height = state
+                    .last_editor_content_area
+                    .map_or(20, |a| a.height as usize);
                 state.viewport.scroll_down(3, total, height);
                 state.viewport_follow_cursor = false;
                 Control::Changed
@@ -265,10 +264,7 @@ fn set_viewport_from_scrollbar_row(
     }
 }
 
-fn handle_find_navigation_key(
-    key: &KeyEvent,
-    state: &mut AppState,
-) -> Option<Control<AppEvent>> {
+fn handle_find_navigation_key(key: &KeyEvent, state: &mut AppState) -> Option<Control<AppEvent>> {
     if state.root_tab != RootTab::Editor || !state.focus.is_focused(PanelId::Editor) {
         return None;
     }
@@ -518,15 +514,18 @@ fn drag_target_position(mouse: MouseEvent, state: &mut AppState) -> Option<Posit
 
     let gutter = editor_pane::gutter_width(total_lines) + u16::from(has_git);
     let min_x = content_area.x.saturating_add(gutter);
-    let mut max_x = content_area.x.saturating_add(content_area.width.saturating_sub(1));
+    let mut max_x = content_area
+        .x
+        .saturating_add(content_area.width.saturating_sub(1));
     if editor_pane::is_on_scrollbar(max_x, content_area.y, content_area, total_lines, has_git) {
         max_x = max_x.saturating_sub(1);
     }
     max_x = max_x.max(min_x);
     let clamped_x = mouse.column.clamp(min_x, max_x);
-    let clamped_y = mouse
-        .row
-        .clamp(content_area.y, content_area.y + content_area.height.saturating_sub(1));
+    let clamped_y = mouse.row.clamp(
+        content_area.y,
+        content_area.y + content_area.height.saturating_sub(1),
+    );
 
     editor_pane::click_to_position(
         clamped_x,
@@ -567,7 +566,10 @@ fn handle_editor_selection_drag(mouse: MouseEvent, state: &mut AppState) -> Cont
     let block_anchor = state.block_select_anchor;
     if let Some(buf) = state.active_buf_mut() {
         let clamped_line = pos.line.min(buf.line_count().saturating_sub(1));
-        let clamped = Position::new(clamped_line, pos.col.min(buf.line_len_no_newline(clamped_line)));
+        let clamped = Position::new(
+            clamped_line,
+            pos.col.min(buf.line_len_no_newline(clamped_line)),
+        );
         if let Some(anchor) = block_anchor {
             buf.set_block_selection(anchor, clamped);
         } else {
@@ -628,10 +630,7 @@ fn handle_mouse_drag(mouse: MouseEvent, state: &mut AppState) -> Control<AppEven
     Control::Changed
 }
 
-pub(super) fn handle_panel_command(
-    cmd: &AppCommand,
-    state: &mut AppState,
-) -> Control<AppEvent> {
+pub(super) fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
     match cmd {
         AppCommand::ToggleFileTree => {
             state.layout.toggle_file_tree();
@@ -640,9 +639,6 @@ pub(super) fn handle_panel_command(
             } else {
                 state.focus.set_active(PanelId::Editor);
             }
-            state
-                .effects
-                .start_panel_transition(PanelId::FileTree, state.theme.accent);
             Control::Changed
         }
         AppCommand::ToggleTerminal => {
@@ -661,9 +657,6 @@ pub(super) fn handle_panel_command(
             } else {
                 state.focus.set_active(PanelId::Editor);
             }
-            state
-                .effects
-                .start_panel_transition(PanelId::GitPanel, state.theme.accent);
             Control::Changed
         }
         AppCommand::FocusNextPane => {
@@ -733,7 +726,10 @@ mod tests {
         );
 
         assert!(matches!(result, Control::Changed));
-        assert_eq!(state.overlay.find_replace.search_state.current_match, Some(1));
+        assert_eq!(
+            state.overlay.find_replace.search_state.current_match,
+            Some(1)
+        );
         assert_eq!(
             state.active_buf().unwrap().cursor.primary.head,
             Position::new(0, 8)
@@ -753,7 +749,10 @@ mod tests {
         );
 
         assert!(matches!(result, Control::Changed));
-        assert_eq!(state.overlay.find_replace.search_state.current_match, Some(0));
+        assert_eq!(
+            state.overlay.find_replace.search_state.current_match,
+            Some(0)
+        );
         assert_eq!(
             state.active_buf().unwrap().cursor.primary.head,
             Position::new(0, 0)

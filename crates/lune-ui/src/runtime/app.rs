@@ -27,7 +27,7 @@ use lune_core::settings::Settings;
 use lune_core::watcher::{FileWatcher, WatchEvent};
 use lune_core::workspace::EntryKind;
 use lune_core::workspace_state::make_relative;
-use lune_git::{GitService, GutterMark, GutterMarks};
+use lune_git::{GitService, GutterMarks};
 
 use lune_ai::context::{
     EditorContext, FileContext, GitStatusSummary, SelectionContext, TabContext,
@@ -42,7 +42,6 @@ use crate::highlight::theme::SyntaxTheme;
 use crate::theme::Theme;
 use crate::theme_config::{ThemeId, ThemeRegistry};
 
-use crate::effects::LuneEffects;
 use crate::event::{AppCommand, AppEvent};
 use crate::focus::{FocusManager, PanelId};
 use crate::keybindings::Keymap;
@@ -68,36 +67,35 @@ mod ui_interaction;
 mod ui_render;
 mod workspace_commands;
 
+#[cfg(test)]
+use self::agent_layouts::apply_agent_layout_entry;
 use self::agent_layouts::{
     agent_pane_term_size, handle_layout_picker_key, open_agent_layout_picker,
     open_agent_layout_picker_with_selection, open_save_agent_layout_dialog,
 };
-use self::ai_commands::handle_ai_command;
-use self::editor_actions::{apply_buf_edit, apply_motion};
-use self::editor_modes::{
-    handle_insert_mode, handle_normal_mode, handle_visual_mode, handle_vim_command_key,
-};
-use self::git_commands::handle_git_command;
+#[cfg(test)]
+use self::agent_tab::split_from_point;
 use self::agent_tab::{
     begin_agent_split_session, handle_agents_mouse_down, handle_agents_mouse_drag,
-    handle_agents_tab_key, handle_ai_client_picker_key, render_agents_tab,
-    sync_agent_session_size,
+    handle_agents_tab_key, handle_ai_client_picker_key, render_agents_tab, sync_agent_session_size,
 };
-use self::overlay_handlers::{handle_overlay_key, update_find_search};
-use self::ui_interaction::{handle_panel_command, handle_terminal_event};
-#[cfg(test)]
-use self::ui_interaction::handle_focus_next_pane;
-use self::ui_render::{render_editor_tab, render_root_tabs};
-use self::workspace_commands::{handle_save, handle_save_all, handle_workspace_command};
-#[cfg(test)]
-use self::agent_layouts::apply_agent_layout_entry;
+use self::ai_commands::handle_ai_command;
 #[cfg(test)]
 use self::ai_commands::{
     handle_ai_ask_selection, handle_ai_new_session, handle_ai_refactor_file,
     handle_ai_summarize_changes,
 };
+use self::editor_actions::{apply_buf_edit, apply_motion};
+use self::editor_modes::{
+    handle_insert_mode, handle_normal_mode, handle_vim_command_key, handle_visual_mode,
+};
+use self::git_commands::handle_git_command;
+use self::overlay_handlers::{handle_overlay_key, update_find_search};
 #[cfg(test)]
-use self::agent_tab::split_from_point;
+use self::ui_interaction::handle_focus_next_pane;
+use self::ui_interaction::{handle_panel_command, handle_terminal_event};
+use self::ui_render::{render_editor_tab, render_root_tabs};
+use self::workspace_commands::{handle_save, handle_save_all, handle_workspace_command};
 
 /// Global context — embeds the rat-salsa context and shared config.
 #[derive(Default)]
@@ -211,10 +209,6 @@ pub struct AppState {
     git_service: Option<GitService>,
     /// Per-buffer git gutter marks (cached).
     gutter_marks: FxHashMap<BufferId, GutterMarks>,
-    /// Previous gutter marks snapshot for detecting new lines (diff fade-in).
-    prev_gutter_marks: FxHashMap<BufferId, GutterMarks>,
-    /// Monotonic counter for unique diff fade-in effect IDs.
-    diff_fade_counter: u64,
     /// Git branch name for the status bar.
     pub git_branch: String,
     /// Git ahead/behind counts.
@@ -229,10 +223,6 @@ pub struct AppState {
     block_select_anchor: Option<Position>,
     /// Last known mouse position within the terminal.
     last_mouse_pos: Option<(u16, u16)>,
-    /// Visual effects manager (tachyonfx).
-    pub effects: LuneEffects,
-    /// Timestamp of the last render (for effect timing).
-    last_render: Instant,
     /// AI session manager.
     pub ai_manager: AiManager,
     /// Agents tab tiling layout state.
@@ -244,10 +234,6 @@ pub struct AppState {
     /// Last known AI terminal size (to avoid redundant resizes).
     #[allow(dead_code)]
     last_ai_term_size: Option<AiTermSize>,
-    /// Whether the AI thinking effect is currently active.
-    ai_thinking_active: bool,
-    /// Notification count at last render (for detecting new notifications).
-    last_notification_count: usize,
     /// Config directory paths (for settings/recovery/workspace state I/O).
     ///
     /// Set after construction via [`AppState::set_config_paths`].
@@ -325,8 +311,6 @@ impl AppState {
             theme_registry: ThemeRegistry::new(),
             git_service: None,
             gutter_marks: FxHashMap::default(),
-            prev_gutter_marks: FxHashMap::default(),
-            diff_fade_counter: 0,
             git_branch: String::new(),
             git_ahead: 0,
             git_behind: 0,
@@ -334,15 +318,11 @@ impl AppState {
             last_click: None,
             block_select_anchor: None,
             last_mouse_pos: None,
-            effects: LuneEffects::new(),
-            last_render: Instant::now(),
             ai_manager: AiManager::new(),
             agents_tab: super::agents::AgentsTabState::new(),
             agents_tab_pending_pane: None,
             saved_agent_layouts: Vec::new(),
             last_ai_term_size: None,
-            ai_thinking_active: false,
-            last_notification_count: 0,
             config_paths: None,
             cached_settings: None,
             state_db: None,
@@ -384,7 +364,7 @@ impl AppState {
     ///
     /// Should be called once after construction and settings loading,
     /// before the event loop starts.  Maps settings fields onto the
-    /// corresponding `AppState` fields (layout, vim mode, effects, theme).
+    /// corresponding `AppState` fields (layout, vim mode, theme).
     pub fn apply_settings(&mut self, settings: &Settings) {
         // Layout / UI
         self.layout.show_file_tree = settings.ui.show_file_tree;
@@ -392,10 +372,6 @@ impl AppState {
             .set_file_tree_width_pct(settings.ui.file_tree_width_pct);
         self.layout
             .set_right_panel_width_pct(settings.ui.right_panel_width_pct);
-
-        if !settings.ui.effects_enabled {
-            self.effects.disable_all();
-        }
 
         // Editor / vim
         self.vim_enabled = settings.editor.vim_mode;
@@ -812,30 +788,6 @@ impl AppState {
                         let content = buf.text();
                         match git.gutter_marks(&rel, &content) {
                             Ok(new_marks) => {
-                                // Detect newly-added lines for fade-in.
-                                if let (Some(prev), Some(content_area)) = (
-                                    self.prev_gutter_marks.get(&id),
-                                    self.last_editor_content_area,
-                                ) {
-                                    if id == self.active_buffer.unwrap_or(id) {
-                                        for (&line, mark) in &new_marks.marks {
-                                            if *mark == GutterMark::Added
-                                                && !prev.marks.contains_key(&line)
-                                            {
-                                                let screen_row =
-                                                    line.saturating_sub(self.viewport.top_line);
-                                                if screen_row < content_area.height as usize {
-                                                    self.diff_fade_counter += 1;
-                                                    self.effects.start_diff_fade_in(
-                                                        self.diff_fade_counter,
-                                                        self.theme.diff_add_fg,
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                self.prev_gutter_marks.insert(id, new_marks.clone());
                                 self.gutter_marks.insert(id, new_marks);
                             }
                             Err(e) => {
@@ -1128,13 +1080,6 @@ pub fn render(
     // Prune expired notifications.
     state.overlay.prune_notifications();
 
-    // Trigger notification flash when new notifications appear.
-    let current_count = state.overlay.notifications.len();
-    if current_count > state.last_notification_count {
-        state.effects.start_notification_flash();
-    }
-    state.last_notification_count = current_count;
-
     // Sync tab manager from registry.
     state
         .tab_mgr
@@ -1161,12 +1106,6 @@ pub fn render(
         RootTab::Editor => render_editor_tab(content_area, buf, state),
         RootTab::Agents => render_agents_tab(content_area, buf, state),
     }
-
-    // Apply managed visual effects (tachyonfx) — modifies buffer cells in-place.
-    let now = Instant::now();
-    let elapsed = now.duration_since(state.last_render);
-    state.last_render = now;
-    state.effects.process(elapsed, buf, area);
 
     // Render overlays on top.
     overlay::render_overlay(area, buf, &mut state.overlay, &state.theme);
@@ -1303,21 +1242,6 @@ fn handle_ai_event(state: &mut AppState) -> Control<AppEvent> {
     let polled = state.ai_manager.poll_all();
     let finished_cleaned = cleanup_finished_agent_sessions(state);
     let orphaned_cleaned = prune_orphaned_agent_panes(state);
-
-    // Detect AI thinking state transitions: start/stop the effect
-    // when any active session transitions to/from Running.
-    let is_running = state
-        .ai_manager
-        .active_session()
-        .is_some_and(|s| s.state() == lune_ai::SessionState::Running);
-
-    if is_running && !state.ai_thinking_active {
-        state.ai_thinking_active = true;
-        state.effects.start_ai_thinking(state.theme.accent);
-    } else if !is_running && state.ai_thinking_active {
-        state.ai_thinking_active = false;
-        state.effects.cancel_ai_thinking();
-    }
 
     if polled || finished_cleaned || orphaned_cleaned {
         Control::Changed

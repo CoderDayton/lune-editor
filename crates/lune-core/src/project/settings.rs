@@ -109,8 +109,6 @@ pub struct UiSettings {
     pub show_ai_panel: bool,
     /// Right panel (AI/Git) width as percentage of terminal width.
     pub right_panel_width_pct: u16,
-    /// Enable visual effects (tachyonfx animations).
-    pub effects_enabled: bool,
 }
 
 impl Default for UiSettings {
@@ -120,7 +118,6 @@ impl Default for UiSettings {
             file_tree_width_pct: 20,
             show_ai_panel: false,
             right_panel_width_pct: 30,
-            effects_enabled: true,
         }
     }
 }
@@ -283,11 +280,6 @@ impl Settings {
             workspace.ui.right_panel_width_pct,
             &defaults.ui.right_panel_width_pct,
         );
-        merge_if_different(
-            &mut self.ui.effects_enabled,
-            workspace.ui.effects_enabled,
-            &defaults.ui.effects_enabled,
-        );
 
         // File tree overrides
         merge_if_different(
@@ -322,9 +314,6 @@ impl Settings {
         if let Some(vim) = overrides.vim_mode {
             self.editor.vim_mode = vim;
         }
-        if let Some(effects) = overrides.effects_enabled {
-            self.ui.effects_enabled = effects;
-        }
         if let Some(ref theme) = overrides.theme {
             self.theme.clone_from(theme);
         }
@@ -338,8 +327,6 @@ impl Settings {
 pub struct CliOverrides {
     /// `--vim` / `--no-vim`
     pub vim_mode: Option<bool>,
-    /// `--no-effects`
-    pub effects_enabled: Option<bool>,
     /// `--theme <name>`
     pub theme: Option<String>,
     /// `--config <path>` (handled at a higher level, not merged here)
@@ -369,7 +356,6 @@ mod tests {
         assert_eq!(s.editor.scroll_margin, 5);
         assert!(s.ui.show_file_tree);
         assert!(!s.ui.show_ai_panel);
-        assert!(s.ui.effects_enabled);
         assert_eq!(s.theme, "Lune Dark");
     }
 
@@ -456,14 +442,12 @@ vim_mode = true
         let mut settings = Settings::default();
         let overrides = CliOverrides {
             vim_mode: Some(true),
-            effects_enabled: Some(false),
             theme: Some("Gruvbox".to_owned()),
             config_path: None,
         };
 
         settings.apply_cli_overrides(&overrides);
         assert!(settings.editor.vim_mode);
-        assert!(!settings.ui.effects_enabled);
         assert_eq!(settings.theme, "Gruvbox");
     }
 

@@ -60,22 +60,14 @@ fn arb_ui_settings() -> impl Strategy<Value = UiSettings> {
         (10u16..50),   // file_tree_width_pct
         any::<bool>(), // show_ai_panel
         (10u16..50),   // right_panel_width_pct
-        any::<bool>(), // effects_enabled
     )
         .prop_map(
-            |(
-                show_file_tree,
-                file_tree_width_pct,
-                show_ai_panel,
-                right_panel_width_pct,
-                effects_enabled,
-            )| {
+            |(show_file_tree, file_tree_width_pct, show_ai_panel, right_panel_width_pct)| {
                 UiSettings {
                     show_file_tree,
                     file_tree_width_pct,
                     show_ai_panel,
                     right_panel_width_pct,
-                    effects_enabled,
                 }
             },
         )
