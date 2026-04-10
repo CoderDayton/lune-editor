@@ -266,6 +266,7 @@ pub(super) fn begin_agent_split_session(
     };
 
     if let Some(pane_id) = new_id {
+        refresh_active_saved_layout(state);
         state.overlay.open_ai_client_picker();
         state.agents_tab_pending_pane = Some(pane_id);
         Control::Changed

@@ -12,7 +12,8 @@ fn preset_saved_tree(preset_idx: usize, pane_count: usize) -> tiling::SavedTileN
 }
 
 fn build_agent_layout_picker_entries(state: &AppState) -> Vec<overlay::LayoutPickerEntry> {
-    let active = state.agents_tab.active_saved_layout.as_deref();
+    let active = current_matching_saved_layout_name(state);
+    let active = active.as_deref();
 
     let mut entries: Vec<_> = tiling::PRESET_LIST
         .iter()
@@ -45,6 +46,65 @@ fn build_agent_layout_picker_entries(state: &AppState) -> Vec<overlay::LayoutPic
     );
 
     entries
+}
+
+fn current_pane_kinds(state: &AppState) -> Vec<Option<tiling::SavedPaneKind>> {
+    state
+        .agents_tab
+        .layout
+        .as_ref()
+        .map(|layout| {
+            layout
+                .pane_ids()
+                .into_iter()
+                .map(|pane_id| {
+                    let pane = state.agents_tab.panes.get(&pane_id)?;
+                    let session = state.ai_manager.session(pane.session_id)?;
+                    Some(tiling::SavedPaneKind::from(session.kind()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn saved_layout_matches_current(
+    saved: &tiling::SavedAgentLayout,
+    current_root: &tiling::SavedTileNode,
+    current_kinds: &[Option<tiling::SavedPaneKind>],
+) -> bool {
+    if saved.root != *current_root {
+        return false;
+    }
+
+    if saved.pane_kinds.is_empty() {
+        return true;
+    }
+
+    saved.pane_kinds.len() == current_kinds.len()
+        && saved
+            .pane_kinds
+            .iter()
+            .zip(current_kinds)
+            .all(|(saved_kind, current_kind)| {
+                current_kind.as_ref()
+                    == Some(&saved_kind.clone().unwrap_or(tiling::SavedPaneKind::Shell))
+            })
+}
+
+pub(super) fn current_matching_saved_layout_name(state: &AppState) -> Option<String> {
+    let layout = state.agents_tab.layout.as_ref()?;
+    let current_root = layout.to_saved();
+    let current_kinds = current_pane_kinds(state);
+
+    state
+        .saved_agent_layouts
+        .iter()
+        .find(|saved| saved_layout_matches_current(saved, &current_root, &current_kinds))
+        .map(|saved| crate::runtime::terminal_layouts::normalize_layout_name(&saved.name))
+}
+
+pub(super) fn refresh_active_saved_layout(state: &mut AppState) {
+    state.agents_tab.active_saved_layout = current_matching_saved_layout_name(state);
 }
 
 pub(super) fn agent_pane_term_size(
@@ -108,10 +168,18 @@ pub(super) fn open_agent_layout_picker_with_selection(
     selected: Option<usize>,
     state: &mut AppState,
 ) {
+    let previous_filter = matches!(
+        state.overlay.active,
+        Some(overlay::OverlayKind::LayoutPicker)
+    )
+    .then(|| state.overlay.layout_picker.filter.clone());
     let entries = build_agent_layout_picker_entries(state);
     state.overlay.open_layout_picker(entries);
+    if let Some(filter) = previous_filter {
+        state.overlay.layout_picker.set_filter(filter);
+    }
     if let Some(selected) = selected {
-        state.overlay.layout_picker.select(selected);
+        state.overlay.layout_picker.select_entry_index(selected);
     }
     state.focus.focus(PanelId::CommandPalette);
 }
@@ -149,6 +217,7 @@ pub(super) fn apply_agent_layout_entry(entry: &overlay::LayoutPickerEntry, state
         state.ai_manager.close_session(sid);
     }
     spawn_sessions_for_agent_panes(&new_pane_ids, &kinds_for_new, state);
+    refresh_active_saved_layout(state);
     state.set_root_tab(RootTab::Agents);
     sync_agent_layout_geometry(state);
 }
@@ -188,6 +257,8 @@ fn spawn_sessions_for_agent_panes(
             }
         }
     }
+
+    refresh_active_saved_layout(state);
 }
 
 pub(super) fn sync_agent_layout_geometry(state: &mut AppState) {

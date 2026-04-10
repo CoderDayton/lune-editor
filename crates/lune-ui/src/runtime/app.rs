@@ -47,6 +47,7 @@ use crate::focus::{FocusManager, PanelId};
 use crate::keybindings::Keymap;
 use crate::layout::{self, LayoutSplits, LayoutState};
 use crate::runtime::terminal_layouts;
+use crate::runtime::tiling;
 use crate::vim::{VimAction, VimMode, VimState};
 use crate::widgets::editor_pane::{self, ViewportState};
 use crate::widgets::file_tree::{self, FileTreeState};
@@ -70,8 +71,9 @@ mod workspace_commands;
 #[cfg(test)]
 use self::agent_layouts::apply_agent_layout_entry;
 use self::agent_layouts::{
-    agent_pane_term_size, handle_layout_picker_key, open_agent_layout_picker,
-    open_agent_layout_picker_with_selection, open_save_agent_layout_dialog,
+    agent_pane_term_size, current_matching_saved_layout_name, handle_layout_picker_key,
+    open_agent_layout_picker, open_agent_layout_picker_with_selection,
+    open_save_agent_layout_dialog, refresh_active_saved_layout,
 };
 #[cfg(test)]
 use self::agent_tab::split_from_point;
@@ -438,6 +440,10 @@ impl AppState {
             Ok(None) => {}
             Err(e) => {
                 log::warn!("failed to load saved agent layouts: {e}");
+                self.overlay.notify(
+                    "Saved agent layouts could not be loaded after this branch's format upgrade",
+                    NotificationLevel::Warning,
+                );
             }
         }
     }
@@ -1295,6 +1301,8 @@ fn cleanup_finished_agent_sessions(state: &mut AppState) -> bool {
         state.overlay.notify(message, level);
     }
 
+    refresh_active_saved_layout(state);
+
     true
 }
 
@@ -1319,6 +1327,8 @@ fn prune_orphaned_agent_panes(state: &mut AppState) -> bool {
     for pane_id in stale_panes {
         state.agents_tab.discard_pane(pane_id);
     }
+
+    refresh_active_saved_layout(state);
 
     true
 }
@@ -1552,6 +1562,7 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             if let Some(session_id) = state.agents_tab.close_focused() {
                 state.ai_manager.close_session(session_id);
             }
+            refresh_active_saved_layout(state);
             Control::Changed
         }
         AppCommand::AgentFocusNext => {
@@ -1577,7 +1588,7 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
                     .notify("No agent layout to save yet", NotificationLevel::Warning);
                 return Control::Changed;
             }
-            let active_name = state.agents_tab.active_saved_layout.clone();
+            let active_name = current_matching_saved_layout_name(state);
             let still_exists = active_name.as_deref().is_some_and(|name| {
                 state.saved_agent_layouts.iter().any(|layout| {
                     terminal_layouts::normalize_layout_name(&layout.name).eq_ignore_ascii_case(name)
@@ -1631,13 +1642,8 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             if let Some(deleted) =
                 terminal_layouts::delete_saved_layout(&mut state.saved_agent_layouts, *index)
             {
-                let deleted_normalized = terminal_layouts::normalize_layout_name(&deleted.name);
-                if state.agents_tab.active_saved_layout.as_deref()
-                    == Some(deleted_normalized.as_str())
-                {
-                    state.agents_tab.active_saved_layout = None;
-                }
                 state.persist_saved_agent_layouts();
+                refresh_active_saved_layout(state);
                 state.overlay.notify(
                     format!("Deleted saved layout: {}", deleted.name),
                     NotificationLevel::Info,
@@ -1645,7 +1651,10 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
                 let next_selection = if state.saved_agent_layouts.is_empty() {
                     None
                 } else {
-                    Some((*index).min(state.saved_agent_layouts.len() - 1))
+                    Some(
+                        tiling::PRESET_LIST.len()
+                            + (*index).min(state.saved_agent_layouts.len() - 1),
+                    )
                 };
                 open_agent_layout_picker_with_selection(next_selection, state);
             } else {
@@ -1661,41 +1670,33 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
                 *index,
                 name,
             ) {
-                Some(terminal_layouts::RenameLayoutOutcome::Renamed { from, to, .. }) => {
-                    let from_normalized = terminal_layouts::normalize_layout_name(&from);
-                    if state.agents_tab.active_saved_layout.as_deref()
-                        == Some(from_normalized.as_str())
-                    {
-                        state.agents_tab.active_saved_layout =
-                            Some(terminal_layouts::normalize_layout_name(&to));
-                    }
+                Some(terminal_layouts::RenameLayoutOutcome::Renamed { to, .. }) => {
                     state.persist_saved_agent_layouts();
+                    refresh_active_saved_layout(state);
                     state.overlay.notify(
                         format!("Renamed saved layout to: {to}"),
                         NotificationLevel::Info,
                     );
-                    open_agent_layout_picker_with_selection(Some(*index), state);
+                    open_agent_layout_picker_with_selection(
+                        Some(tiling::PRESET_LIST.len() + *index),
+                        state,
+                    );
                 }
                 Some(terminal_layouts::RenameLayoutOutcome::ReplacedExisting {
                     index: selected,
-                    from,
                     to,
+                    ..
                 }) => {
-                    let from_normalized = terminal_layouts::normalize_layout_name(&from);
-                    let to_normalized = terminal_layouts::normalize_layout_name(&to);
-                    if state.agents_tab.active_saved_layout.as_deref()
-                        == Some(from_normalized.as_str())
-                        || state.agents_tab.active_saved_layout.as_deref()
-                            == Some(to_normalized.as_str())
-                    {
-                        state.agents_tab.active_saved_layout = Some(to_normalized);
-                    }
                     state.persist_saved_agent_layouts();
+                    refresh_active_saved_layout(state);
                     state.overlay.notify(
                         format!("Renamed layout and replaced existing: {to}"),
                         NotificationLevel::Info,
                     );
-                    open_agent_layout_picker_with_selection(Some(selected), state);
+                    open_agent_layout_picker_with_selection(
+                        Some(tiling::PRESET_LIST.len() + selected),
+                        state,
+                    );
                 }
                 None => {
                     state
@@ -3197,7 +3198,10 @@ mod tests {
             state.overlay.active,
             Some(overlay::OverlayKind::LayoutPicker)
         ));
-        assert_eq!(state.overlay.layout_picker.selected, 0);
+        assert_eq!(
+            state.overlay.layout_picker.selected,
+            tiling::PRESET_LIST.len()
+        );
         assert_eq!(state.saved_agent_layouts[0].name, "Renamed");
     }
 
@@ -3225,7 +3229,10 @@ mod tests {
             Some(overlay::OverlayKind::LayoutPicker)
         ));
         assert_eq!(state.saved_agent_layouts.len(), 1);
-        assert_eq!(state.overlay.layout_picker.selected, 0);
+        assert_eq!(
+            state.overlay.layout_picker.selected,
+            tiling::PRESET_LIST.len()
+        );
         assert_eq!(state.saved_agent_layouts[0].name, "Two");
     }
 
@@ -3301,6 +3308,66 @@ mod tests {
     }
 
     #[test]
+    fn applying_saved_layout_threads_pane_kinds_end_to_end() {
+        let mut state = AppState::new();
+        state.last_agents_content_area = Some(Rect::new(0, 0, 80, 20));
+
+        let saved = tiling::SavedAgentLayout {
+            name: "Mixed".to_string(),
+            root: tiling::SavedTileNode::Split {
+                direction: tiling::SplitDirection::Vertical,
+                ratio: 0.5,
+                first: Box::new(tiling::SavedTileNode::Leaf),
+                second: Box::new(tiling::SavedTileNode::Leaf),
+            },
+            pane_kinds: vec![
+                Some(tiling::SavedPaneKind::Shell),
+                Some(tiling::SavedPaneKind::Custom {
+                    name: "true".to_string(),
+                    command: "/bin/true".to_string(),
+                }),
+            ],
+        };
+        let entry = overlay::LayoutPickerEntry {
+            label: saved.name.clone(),
+            pane_count: saved.pane_count(),
+            kind: overlay::LayoutPickerEntryKind::Saved(0),
+            preview: saved.root.clone(),
+            is_active: false,
+        };
+        state.saved_agent_layouts.push(saved);
+
+        apply_agent_layout_entry(&entry, &mut state);
+
+        let pane_ids = state.agents_tab.layout.as_ref().unwrap().pane_ids();
+        assert_eq!(pane_ids.len(), 2);
+
+        let first_kind = state
+            .ai_manager
+            .session(state.agents_tab.panes.get(&pane_ids[0]).unwrap().session_id)
+            .unwrap()
+            .kind()
+            .clone();
+        let second_kind = state
+            .ai_manager
+            .session(state.agents_tab.panes.get(&pane_ids[1]).unwrap().session_id)
+            .unwrap()
+            .kind()
+            .clone();
+
+        assert_eq!(first_kind, AiClientKind::Shell);
+        assert_eq!(
+            second_kind,
+            AiClientKind::Custom {
+                name: "true".to_string(),
+                command: "/bin/true".to_string(),
+            }
+        );
+
+        state.ai_manager.close_all();
+    }
+
+    #[test]
     fn set_state_db_loads_saved_agent_layouts() {
         let dir = tempfile::tempdir().unwrap();
         let db = lune_core::state_db::StateDb::open(dir.path()).unwrap();
@@ -3315,6 +3382,124 @@ mod tests {
         state.set_state_db(db);
 
         assert_eq!(state.saved_agent_layouts, saved);
+    }
+
+    #[test]
+    fn set_state_db_surfaces_saved_agent_layout_decode_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = lune_core::state_db::StateDb::open(dir.path()).unwrap();
+        db.put_raw(b"ui:agent_layouts", &123_u32).unwrap();
+
+        let mut state = AppState::new();
+        state.set_state_db(db);
+
+        assert!(state.saved_agent_layouts.is_empty());
+        assert!(
+            state
+                .overlay
+                .notifications
+                .iter()
+                .any(|notif| notif.message.contains("format upgrade"))
+        );
+    }
+
+    #[test]
+    fn saved_layout_marker_recovers_after_noop_split_then_close() {
+        let mut state = AppState::new();
+        let first = state.agents_tab.add_first_pane();
+        state
+            .agents_tab
+            .register_pane(first, lune_ai::AiSessionId::new_v4(), "Shell".to_string());
+        state.saved_agent_layouts.push(tiling::SavedAgentLayout {
+            name: "Solo".to_string(),
+            root: tiling::SavedTileNode::Leaf,
+            pane_kinds: Vec::new(),
+        });
+
+        open_agent_layout_picker(&mut state);
+        assert!(
+            state
+                .overlay
+                .layout_picker
+                .entries
+                .iter()
+                .any(
+                    |entry| matches!(entry.kind, overlay::LayoutPickerEntryKind::Saved(0))
+                        && entry.is_active
+                )
+        );
+
+        let second = state
+            .agents_tab
+            .split_focused(tiling::SplitDirection::Vertical)
+            .unwrap();
+        state
+            .agents_tab
+            .register_pane(second, lune_ai::AiSessionId::new_v4(), "Shell".to_string());
+
+        open_agent_layout_picker(&mut state);
+        assert!(
+            state
+                .overlay
+                .layout_picker
+                .entries
+                .iter()
+                .any(
+                    |entry| matches!(entry.kind, overlay::LayoutPickerEntryKind::Saved(0))
+                        && !entry.is_active
+                )
+        );
+
+        let _ = state.agents_tab.close_focused();
+
+        open_agent_layout_picker(&mut state);
+        assert!(
+            state
+                .overlay
+                .layout_picker
+                .entries
+                .iter()
+                .any(
+                    |entry| matches!(entry.kind, overlay::LayoutPickerEntryKind::Saved(0))
+                        && entry.is_active
+                )
+        );
+    }
+
+    #[test]
+    fn rename_saved_layout_preserves_picker_filter() {
+        let mut state = AppState::new();
+        state.saved_agent_layouts = vec![
+            tiling::SavedAgentLayout {
+                name: "One".to_string(),
+                root: tiling::SavedTileNode::Leaf,
+                pane_kinds: Vec::new(),
+            },
+            tiling::SavedAgentLayout {
+                name: "Two".to_string(),
+                root: tiling::SavedTileNode::Leaf,
+                pane_kinds: Vec::new(),
+            },
+        ];
+
+        open_agent_layout_picker(&mut state);
+        state.overlay.layout_picker.set_filter("tw".to_string());
+
+        let result = handle_command(
+            &AppCommand::AgentRenameSavedLayoutConfirmed {
+                index: 1,
+                name: "Two Prime".to_string(),
+            },
+            &mut state,
+        );
+
+        assert!(matches!(result, Control::Changed));
+        assert_eq!(state.overlay.layout_picker.filter, "tw");
+        assert_eq!(state.overlay.layout_picker.filtered_len(), 1);
+        assert_eq!(
+            state.overlay.layout_picker.selected_entry().unwrap().label,
+            "Two Prime"
+        );
     }
 
     #[test]

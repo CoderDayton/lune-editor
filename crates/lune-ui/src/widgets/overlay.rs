@@ -783,6 +783,12 @@ impl LayoutPickerState {
         self.recompute_filter();
     }
 
+    /// Replace the current filter text and refresh the match set.
+    pub fn set_filter(&mut self, filter: String) {
+        self.filter = filter;
+        self.recompute_filter();
+    }
+
     fn recompute_filter(&mut self) {
         if self.filter.is_empty() {
             self.filtered_indices = (0..self.entries.len()).collect();
@@ -813,6 +819,19 @@ impl LayoutPickerState {
             return;
         }
         self.selected = index.min(len - 1);
+    }
+
+    /// Select a concrete entry index from [`Self::entries`].
+    pub fn select_entry_index(&mut self, entry_index: usize) {
+        let Some(filtered_index) = self
+            .filtered_indices
+            .iter()
+            .position(|&idx| idx == entry_index)
+        else {
+            self.select(0);
+            return;
+        };
+        self.select(filtered_index);
     }
 
     /// Move selection down (wraps).
@@ -1805,8 +1824,21 @@ fn render_saved_layout_preview(area: Rect, buf: &mut Buffer, tree: &SavedTileNod
     }
     let inner = Rect::new(inner_x, inner_y, inner_w, inner_h);
 
+    let mut line_masks = vec![0_u8; usize::from(inner.width) * usize::from(inner.height)];
     let mut leaves: Vec<Rect> = Vec::new();
-    render_preview_tree(tree, inner, buf, theme, &mut leaves);
+    render_preview_tree(tree, inner, inner, &mut line_masks, &mut leaves);
+
+    for y in 0..inner.height {
+        for x in 0..inner.width {
+            let mask = line_masks[preview_mask_index(inner.width, x, y)];
+            let Some(ch) = preview_mask_char(mask) else {
+                continue;
+            };
+            buf[(inner.x + x, inner.y + y)]
+                .set_char(ch)
+                .set_fg(theme.fg_muted);
+        }
+    }
 
     // Number each leaf in its center.
     for (i, rect) in leaves.iter().enumerate() {
@@ -1825,11 +1857,46 @@ fn render_saved_layout_preview(area: Rect, buf: &mut Buffer, tree: &SavedTileNod
 
 /// Recursive half of the preview renderer. Draws split dividers and
 /// collects the leaf rectangles that remain.
+const PREVIEW_NORTH: u8 = 1 << 0;
+const PREVIEW_EAST: u8 = 1 << 1;
+const PREVIEW_SOUTH: u8 = 1 << 2;
+const PREVIEW_WEST: u8 = 1 << 3;
+const PREVIEW_VERTICAL: u8 = PREVIEW_NORTH | PREVIEW_SOUTH;
+const PREVIEW_HORIZONTAL: u8 = PREVIEW_EAST | PREVIEW_WEST;
+const PREVIEW_T_DOWN: u8 = PREVIEW_HORIZONTAL | PREVIEW_SOUTH;
+const PREVIEW_T_UP: u8 = PREVIEW_HORIZONTAL | PREVIEW_NORTH;
+const PREVIEW_T_RIGHT: u8 = PREVIEW_VERTICAL | PREVIEW_EAST;
+const PREVIEW_T_LEFT: u8 = PREVIEW_VERTICAL | PREVIEW_WEST;
+
+fn preview_mask_index(width: u16, x: u16, y: u16) -> usize {
+    usize::from(y) * usize::from(width) + usize::from(x)
+}
+
+fn add_preview_mask(masks: &mut [u8], bounds: Rect, x: u16, y: u16, mask: u8) {
+    let rel_x = x.saturating_sub(bounds.x);
+    let rel_y = y.saturating_sub(bounds.y);
+    let idx = preview_mask_index(bounds.width, rel_x, rel_y);
+    masks[idx] |= mask;
+}
+
+const fn preview_mask_char(mask: u8) -> Option<char> {
+    match mask {
+        0 => None,
+        m if m == PREVIEW_NORTH || m == PREVIEW_SOUTH || m == PREVIEW_VERTICAL => Some('│'),
+        m if m == PREVIEW_EAST || m == PREVIEW_WEST || m == PREVIEW_HORIZONTAL => Some('─'),
+        PREVIEW_T_DOWN => Some('┬'),
+        PREVIEW_T_UP => Some('┴'),
+        PREVIEW_T_RIGHT => Some('├'),
+        PREVIEW_T_LEFT => Some('┤'),
+        _ => Some('┼'),
+    }
+}
+
 fn render_preview_tree(
     tree: &SavedTileNode,
+    bounds: Rect,
     area: Rect,
-    buf: &mut Buffer,
-    theme: &Theme,
+    line_masks: &mut [u8],
     leaves: &mut Vec<Rect>,
 ) {
     match tree {
@@ -1850,13 +1917,32 @@ fn render_preview_tree(
                     .clamp(1, area.width.saturating_sub(2));
                 let split_col = area.x + first_w;
                 for y in area.y..area.y + area.height {
-                    buf[(split_col, y)].set_char('│').set_fg(theme.fg_muted);
+                    let mut mask = 0;
+                    if y > area.y {
+                        mask |= PREVIEW_NORTH;
+                    }
+                    if y + 1 < area.y + area.height {
+                        mask |= PREVIEW_SOUTH;
+                    }
+                    add_preview_mask(line_masks, bounds, split_col, y, mask);
+                }
+                if area.y > bounds.y {
+                    add_preview_mask(line_masks, bounds, split_col, area.y - 1, PREVIEW_SOUTH);
+                }
+                if area.y + area.height < bounds.y + bounds.height {
+                    add_preview_mask(
+                        line_masks,
+                        bounds,
+                        split_col,
+                        area.y + area.height,
+                        PREVIEW_NORTH,
+                    );
                 }
                 let first_rect = Rect::new(area.x, area.y, first_w, area.height);
                 let second_rect =
                     Rect::new(split_col + 1, area.y, area.width - first_w - 1, area.height);
-                render_preview_tree(first, first_rect, buf, theme, leaves);
-                render_preview_tree(second, second_rect, buf, theme, leaves);
+                render_preview_tree(first, bounds, first_rect, line_masks, leaves);
+                render_preview_tree(second, bounds, second_rect, line_masks, leaves);
             }
             SplitDirection::Horizontal => {
                 if area.height < 3 {
@@ -1868,13 +1954,32 @@ fn render_preview_tree(
                     .clamp(1, area.height.saturating_sub(2));
                 let split_row = area.y + first_h;
                 for x in area.x..area.x + area.width {
-                    buf[(x, split_row)].set_char('─').set_fg(theme.fg_muted);
+                    let mut mask = 0;
+                    if x > area.x {
+                        mask |= PREVIEW_WEST;
+                    }
+                    if x + 1 < area.x + area.width {
+                        mask |= PREVIEW_EAST;
+                    }
+                    add_preview_mask(line_masks, bounds, x, split_row, mask);
+                }
+                if area.x > bounds.x {
+                    add_preview_mask(line_masks, bounds, area.x - 1, split_row, PREVIEW_EAST);
+                }
+                if area.x + area.width < bounds.x + bounds.width {
+                    add_preview_mask(
+                        line_masks,
+                        bounds,
+                        area.x + area.width,
+                        split_row,
+                        PREVIEW_WEST,
+                    );
                 }
                 let first_rect = Rect::new(area.x, area.y, area.width, first_h);
                 let second_rect =
                     Rect::new(area.x, split_row + 1, area.width, area.height - first_h - 1);
-                render_preview_tree(first, first_rect, buf, theme, leaves);
-                render_preview_tree(second, second_rect, buf, theme, leaves);
+                render_preview_tree(first, bounds, first_rect, line_masks, leaves);
+                render_preview_tree(second, bounds, second_rect, line_masks, leaves);
             }
         },
     }
@@ -3359,6 +3464,40 @@ mod tests {
     }
 
     #[test]
+    fn layout_picker_preview_draws_junctions_for_nested_splits() {
+        use crate::theme::Theme;
+
+        let tree = SavedTileNode::Split {
+            direction: SplitDirection::Vertical,
+            ratio: 0.5,
+            first: Box::new(SavedTileNode::Split {
+                direction: SplitDirection::Horizontal,
+                ratio: 0.5,
+                first: Box::new(SavedTileNode::Leaf),
+                second: Box::new(SavedTileNode::Leaf),
+            }),
+            second: Box::new(SavedTileNode::Leaf),
+        };
+
+        let area = Rect::new(0, 0, 24, 10);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        render_saved_layout_preview(area, &mut buf, &tree, &theme);
+
+        let rendered: String = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_string())
+            .collect::<String>();
+        assert!(
+            rendered.contains('┤')
+                || rendered.contains('├')
+                || rendered.contains('┬')
+                || rendered.contains('┴')
+                || rendered.contains('┼')
+        );
+    }
+
+    #[test]
     fn layout_picker_filter_narrows_entries_case_insensitive() {
         let mut state = LayoutPickerState::new(vec![
             LayoutPickerEntry {
@@ -3435,6 +3574,22 @@ mod tests {
         state.push_filter_char('l'); // only "Alpha"
         assert_eq!(state.filtered_len(), 1);
         assert_eq!(state.selected_entry().unwrap().label, "Alpha");
+    }
+
+    #[test]
+    fn layout_picker_select_entry_index_targets_filtered_row() {
+        let mut state = LayoutPickerState::new(vec![
+            saved_entry("Alpha"),
+            saved_entry("Beta"),
+            saved_entry("Gamma"),
+        ]);
+
+        state.set_filter("mm".to_string());
+        state.select_entry_index(2);
+
+        assert_eq!(state.filtered_len(), 1);
+        assert_eq!(state.selected, 0);
+        assert_eq!(state.selected_entry().unwrap().label, "Gamma");
     }
 
     #[test]

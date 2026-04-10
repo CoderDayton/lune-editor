@@ -123,12 +123,14 @@ pub(super) fn handle_ai_new_session(kind: AiClientKind, state: &mut AppState) ->
                 state
                     .agents_tab
                     .register_pane(pane_id, session_id, client_name);
+                refresh_active_saved_layout(state);
             }
         }
         Err(e) => {
             log::warn!("AI session launch failed ({client_name}): {e}");
             if let Some(pane_id) = state.agents_tab_pending_pane.take() {
                 state.agents_tab.discard_pane(pane_id);
+                refresh_active_saved_layout(state);
             }
         }
     }
