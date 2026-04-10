@@ -371,11 +371,36 @@ mod tests {
             new_start: 1,
             new_count: 4,
             lines: vec![
-                DiffLine { kind: DiffLineKind::Context, content: "line1\n".to_owned(), old_lineno: Some(1), new_lineno: Some(1) },
-                DiffLine { kind: DiffLineKind::Deletion, content: "old\n".to_owned(), old_lineno: Some(2), new_lineno: None },
-                DiffLine { kind: DiffLineKind::Addition, content: "new\n".to_owned(), old_lineno: None, new_lineno: Some(2) },
-                DiffLine { kind: DiffLineKind::Addition, content: "extra\n".to_owned(), old_lineno: None, new_lineno: Some(3) },
-                DiffLine { kind: DiffLineKind::Context, content: "line3\n".to_owned(), old_lineno: Some(3), new_lineno: Some(4) },
+                DiffLine {
+                    kind: DiffLineKind::Context,
+                    content: "line1\n".to_owned(),
+                    old_lineno: Some(1),
+                    new_lineno: Some(1),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Deletion,
+                    content: "old\n".to_owned(),
+                    old_lineno: Some(2),
+                    new_lineno: None,
+                },
+                DiffLine {
+                    kind: DiffLineKind::Addition,
+                    content: "new\n".to_owned(),
+                    old_lineno: None,
+                    new_lineno: Some(2),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Addition,
+                    content: "extra\n".to_owned(),
+                    old_lineno: None,
+                    new_lineno: Some(3),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Context,
+                    content: "line3\n".to_owned(),
+                    old_lineno: Some(3),
+                    new_lineno: Some(4),
+                },
             ],
         };
         let patch = hunk.to_patch(Path::new("test.txt"));
@@ -394,9 +419,24 @@ mod tests {
             new_start: 1,
             new_count: 3,
             lines: vec![
-                DiffLine { kind: DiffLineKind::Context, content: "ctx\n".to_owned(), old_lineno: Some(1), new_lineno: Some(1) },
-                DiffLine { kind: DiffLineKind::Addition, content: "added\n".to_owned(), old_lineno: None, new_lineno: Some(2) },
-                DiffLine { kind: DiffLineKind::Context, content: "ctx2\n".to_owned(), old_lineno: Some(2), new_lineno: Some(3) },
+                DiffLine {
+                    kind: DiffLineKind::Context,
+                    content: "ctx\n".to_owned(),
+                    old_lineno: Some(1),
+                    new_lineno: Some(1),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Addition,
+                    content: "added\n".to_owned(),
+                    old_lineno: None,
+                    new_lineno: Some(2),
+                },
+                DiffLine {
+                    kind: DiffLineKind::Context,
+                    content: "ctx2\n".to_owned(),
+                    old_lineno: Some(2),
+                    new_lineno: Some(3),
+                },
             ],
         };
         let patch = hunk.to_reverse_patch(Path::new("test.txt"));

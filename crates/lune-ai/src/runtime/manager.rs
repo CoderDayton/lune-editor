@@ -5,10 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{
-    atomic::AtomicBool,
-    Arc,
-};
+use std::sync::{Arc, atomic::AtomicBool};
 
 use rustc_hash::FxHashMap;
 
@@ -47,13 +44,8 @@ impl AiManager {
         env: &HashMap<String, String>,
         size: TermSize,
     ) -> anyhow::Result<AiSessionId> {
-        let session = AiSession::start_with_wake(
-            kind,
-            cwd,
-            env,
-            size,
-            Some(Arc::clone(&self.pending_wake)),
-        )?;
+        let session =
+            AiSession::start_with_wake(kind, cwd, env, size, Some(Arc::clone(&self.pending_wake)))?;
         let id = session.id();
         self.sessions.insert(id, session);
         self.active = Some(id);
@@ -323,15 +315,24 @@ mod tests {
     fn pending_wake_only_flips_when_reader_thread_emits_activity() {
         let mut mgr = make_manager_with_shell();
 
-        assert!(!mgr.pending_wake.swap(false, std::sync::atomic::Ordering::AcqRel));
+        assert!(
+            !mgr.pending_wake
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+        );
 
         if let Some(session) = mgr.active_session_mut() {
             session.send_input(b"echo wake_test\n").unwrap();
         }
         std::thread::sleep(std::time::Duration::from_millis(300));
 
-        assert!(mgr.pending_wake.swap(false, std::sync::atomic::Ordering::AcqRel));
-        assert!(!mgr.pending_wake.swap(false, std::sync::atomic::Ordering::AcqRel));
+        assert!(
+            mgr.pending_wake
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+        );
+        assert!(
+            !mgr.pending_wake
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+        );
         assert!(mgr.poll_all());
 
         mgr.close_all();

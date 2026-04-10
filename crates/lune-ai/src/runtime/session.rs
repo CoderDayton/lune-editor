@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 use crossbeam::channel::{self, Receiver, Sender, TryRecvError};

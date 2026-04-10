@@ -68,8 +68,8 @@ impl GitService {
     /// Stage a single hunk by applying its patch to the index.
     pub fn stage_hunk(&self, rel_path: &Path, hunk: &crate::diff::DiffHunk) -> Result<()> {
         let patch = hunk.to_patch(rel_path);
-        let diff = git2::Diff::from_buffer(patch.as_bytes())
-            .context("failed to parse hunk patch")?;
+        let diff =
+            git2::Diff::from_buffer(patch.as_bytes()).context("failed to parse hunk patch")?;
         self.repo()
             .apply(&diff, git2::ApplyLocation::Index, None)
             .context("failed to apply hunk to index")?;
@@ -195,16 +195,18 @@ mod tests {
 
         // Modify lines 2 and 18 (two distant locations → two hunks).
         let modified = "line1\nMODIFIED2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nMODIFIED18\nline19\nline20\n";
-        fs::write(
-            dir.path().join("hello.txt"),
-            modified,
-        ).unwrap();
+        fs::write(dir.path().join("hello.txt"), modified).unwrap();
 
         let diff = svc.diff_file(Path::new("hello.txt")).unwrap().unwrap();
-        assert!(diff.hunks.len() >= 2, "expected at least 2 hunks, got {}", diff.hunks.len());
+        assert!(
+            diff.hunks.len() >= 2,
+            "expected at least 2 hunks, got {}",
+            diff.hunks.len()
+        );
 
         // Stage only the first hunk.
-        svc.stage_hunk(Path::new("hello.txt"), &diff.hunks[0]).unwrap();
+        svc.stage_hunk(Path::new("hello.txt"), &diff.hunks[0])
+            .unwrap();
 
         // Check: staged diff should have 1 hunk, workdir diff should still have 1 hunk.
         let staged = svc.diff_staged(Path::new("hello.txt")).unwrap();
@@ -224,7 +226,8 @@ mod tests {
         let diff = svc.diff_file(Path::new("hello.txt")).unwrap().unwrap();
         assert_eq!(diff.hunks.len(), 1);
 
-        svc.discard_hunk(Path::new("hello.txt"), &diff.hunks[0]).unwrap();
+        svc.discard_hunk(Path::new("hello.txt"), &diff.hunks[0])
+            .unwrap();
 
         let content = fs::read_to_string(dir.path().join("hello.txt")).unwrap();
         assert_eq!(content, "aaa\nbbb\nccc\n");

@@ -222,7 +222,8 @@ impl LuneEffects {
         }
         let intensity = self.defs.diff_fade_in.intensity;
         let effect = create_diff_fade_in(intensity, tint);
-        self.manager.add_unique_effect(EffectId::DiffFadeIn(id), effect);
+        self.manager
+            .add_unique_effect(EffectId::DiffFadeIn(id), effect);
     }
 
     // ── Step 7: Configuration helpers ─────────────────────────────────

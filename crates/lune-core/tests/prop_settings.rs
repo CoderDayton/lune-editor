@@ -101,9 +101,9 @@ fn arb_file_tree_settings() -> impl Strategy<Value = FileTreeSettings> {
 
 /// Generate arbitrary `AiSettings`.
 fn arb_ai_settings() -> impl Strategy<Value = AiSettings> {
-    prop::string::string_regex("[a-z]{3,10}").unwrap().prop_map(|default_client| AiSettings {
-        default_client,
-    })
+    prop::string::string_regex("[a-z]{3,10}")
+        .unwrap()
+        .prop_map(|default_client| AiSettings { default_client })
 }
 
 /// Generate arbitrary `Settings` by composing sub-strategies.

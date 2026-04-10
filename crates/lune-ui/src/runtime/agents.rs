@@ -9,7 +9,7 @@ use rustc_hash::FxHashMap;
 use lune_ai::AiSessionId;
 
 use super::tiling::{
-    build_preset_layout, PaneId, SavedAgentLayout, SplitDirection, SplitSide, TileNode, PRESET_LIST,
+    PRESET_LIST, PaneId, SavedAgentLayout, SplitDirection, SplitSide, TileNode, build_preset_layout,
 };
 
 // ── Pane ───────────────────────────────────────────────────────────────
