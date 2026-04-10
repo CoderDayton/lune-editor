@@ -59,7 +59,7 @@ fn render_empty_agents_tab(content: Rect, buf: &mut Buffer, state: &AppState) {
         .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
 
     let hints: &[&str] = &[
-        "Ctrl+Shift+N   open a new agent pane",
+        "Ctrl+N         open a new agent pane",
         "Alt+\\ / Alt+-  split vertical / horizontal",
         "Alt+j / Alt+k  focus next / prev pane",
         "Alt+x          close focused pane",

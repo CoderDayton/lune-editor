@@ -32,6 +32,10 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         return control;
     }
 
+    if let Some(cmd) = contextual_key_command(key, state) {
+        return Control::Event(AppEvent::Command(cmd));
+    }
+
     if let Some(cmd) = state.keymap.lookup(key) {
         return Control::Event(AppEvent::Command(cmd.clone()));
     }
@@ -85,6 +89,18 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
             state.vim.enter_insert();
             handle_insert_mode(key, state)
         }
+    }
+}
+
+fn contextual_key_command(key: &KeyEvent, state: &AppState) -> Option<AppCommand> {
+    match (key.code, key.modifiers, state.root_tab) {
+        (KeyCode::Char('n'), mods, RootTab::Agents) if mods == KeyModifiers::CONTROL => {
+            Some(AppCommand::AgentSplitAuto)
+        }
+        (KeyCode::Char('n'), mods, RootTab::Editor) if mods == KeyModifiers::CONTROL => {
+            Some(AppCommand::NewFile)
+        }
+        _ => None,
     }
 }
 
@@ -747,6 +763,38 @@ mod tests {
         assert_eq!(
             state.active_buf().unwrap().cursor.primary.head,
             Position::new(0, 0)
+        );
+    }
+
+    #[test]
+    fn ctrl_n_opens_new_file_on_editor_tab() {
+        let mut state = AppState::new();
+        state.set_root_tab(RootTab::Editor);
+
+        let result = handle_key_event(
+            &KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            &mut state,
+        );
+
+        assert_eq!(
+            result,
+            Control::Event(AppEvent::Command(AppCommand::NewFile))
+        );
+    }
+
+    #[test]
+    fn ctrl_n_splits_on_agents_tab() {
+        let mut state = AppState::new();
+        state.set_root_tab(RootTab::Agents);
+
+        let result = handle_key_event(
+            &KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            &mut state,
+        );
+
+        assert_eq!(
+            result,
+            Control::Event(AppEvent::Command(AppCommand::AgentSplitAuto))
         );
     }
 

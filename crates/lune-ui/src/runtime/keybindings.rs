@@ -93,7 +93,6 @@ impl Keymap {
             (Char('2'), CTRL, AppCommand::ShowAgentsTab),
             (Char('`'), CTRL, AppCommand::ToggleAgentsTab),
             // Agents tab — pane multiplexer
-            (Char('N'), CTRL_SHIFT, AppCommand::AgentSplitAuto),
             (Char('\\'), ALT, AppCommand::AgentSplitVertical),
             (Char('-'), ALT, AppCommand::AgentSplitHorizontal),
             (Char('x'), ALT, AppCommand::AgentClosePane),
@@ -118,7 +117,7 @@ impl Keymap {
             (Char('h'), CTRL, AppCommand::Replace),
             // Command palette
             (Char('p'), CTRL, AppCommand::OpenCommandPalette),
-            // Language picker
+            // File / language picker
             (Char('n'), CTRL, AppCommand::NewFile),
             (Char('l'), CTRL, AppCommand::OpenLanguagePicker),
             // Theme
@@ -439,6 +438,19 @@ mod tests {
         assert_eq!(km.lookup(&editor), Some(&AppCommand::ShowEditorTab));
         assert_eq!(km.lookup(&agents), Some(&AppCommand::ShowAgentsTab));
         assert_eq!(km.lookup(&toggle), Some(&AppCommand::ToggleAgentsTab));
+    }
+
+    #[test]
+    fn default_keymap_keeps_ctrl_n_for_new_file_and_unbinds_ctrl_shift_n_agent_split() {
+        let km = Keymap::default_global();
+        let ctrl_n = key_event(KeyCode::Char('n'), KeyModifiers::CONTROL);
+        let ctrl_shift_n = key_event(
+            KeyCode::Char('N'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+
+        assert_eq!(km.lookup(&ctrl_n), Some(&AppCommand::NewFile));
+        assert_eq!(km.lookup(&ctrl_shift_n), None);
     }
 
     #[test]

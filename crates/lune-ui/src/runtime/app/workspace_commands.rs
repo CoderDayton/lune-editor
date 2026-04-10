@@ -109,6 +109,9 @@ fn handle_file_tree_command(cmd: &AppCommand, state: &mut AppState) -> Control<A
             Control::Changed
         }
         AppCommand::NewFile => {
+            if state.root_tab != RootTab::Editor {
+                return Control::Continue;
+            }
             let parent = file_tree_context_dir(state);
             let dialog = overlay::InputDialogState::new(
                 "New File",
@@ -368,4 +371,20 @@ fn handle_change_language(lang_id: LanguageId, state: &mut AppState) -> Control<
     state.highlighters.insert(id, hl);
     state.status_message = format!("Language: {}", lang_id.name());
     Control::Changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_file_is_ignored_outside_editor_root_tab() {
+        let mut state = AppState::new();
+        state.set_root_tab(RootTab::Agents);
+
+        let result = handle_workspace_command(&AppCommand::NewFile, &mut state);
+
+        assert_eq!(result, Some(Control::Continue));
+        assert!(state.overlay.input_dialog.is_none());
+    }
 }
