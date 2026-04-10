@@ -785,11 +785,30 @@ impl AppState {
     }
 
     /// Refresh the file tree from the current workspace.
+    ///
+    /// Also re-applies the current git file statuses to the new entries
+    /// so the status markers don't disappear after a rebuild (toggling
+    /// a directory, reacting to a watcher event, etc). This is cheap —
+    /// we reuse the cached `GitService` and its last status query.
     pub fn refresh_file_tree(&mut self) {
         if let Some(ref mut ws) = self.workspace {
             if let Err(e) = self.file_tree.refresh(ws) {
                 log::error!("Failed to refresh file tree: {e}");
             }
+        }
+        // Re-apply git status without re-running `git status` — just reuse
+        // the last-known file list from the GitService. If the service
+        // isn't initialized yet (no repo / pre-startup), this is a no-op.
+        if let Some(git) = self.git_service.take() {
+            match git.status() {
+                Ok(status) => {
+                    self.apply_git_to_file_tree(&status.files, &git);
+                }
+                Err(e) => {
+                    log::debug!("git status after refresh_file_tree failed: {e}");
+                }
+            }
+            self.git_service = Some(git);
         }
     }
 
@@ -3723,6 +3742,73 @@ mod tests {
                 .entries
                 .iter()
                 .any(|entry| matches!(entry.kind, overlay::LayoutPickerEntryKind::Saved(_)))
+        );
+    }
+
+    #[test]
+    fn refresh_file_tree_preserves_git_status() {
+        // Regression: clicking/focusing the file tree (or any action that
+        // triggers `refresh_file_tree`) used to rebuild entries with
+        // `git_status = None`, wiping the modified/untracked markers until
+        // the next full `refresh_git` cycle. `refresh_file_tree` now
+        // re-applies git status inline, so markers survive a refresh.
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = git2::Repository::init(dir.path()).expect("git init");
+        {
+            let mut cfg = repo.config().unwrap();
+            cfg.set_str("user.name", "Test").unwrap();
+            cfg.set_str("user.email", "t@t.com").unwrap();
+        }
+        // Seed an initial committed file so the repo has HEAD.
+        fs::write(dir.path().join("tracked.txt"), "initial\n").unwrap();
+        let sig = repo.signature().unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("tracked.txt")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .unwrap();
+        }
+        // Now modify the tracked file so it shows up as Modified.
+        fs::write(dir.path().join("tracked.txt"), "changed\n").unwrap();
+        // And add an untracked one.
+        fs::write(dir.path().join("new.txt"), "fresh\n").unwrap();
+
+        let mut state = AppState::new();
+        state.open_workspace(dir.path()).expect("open_workspace");
+        state.refresh_git();
+
+        // Sanity check: both files are marked before refresh.
+        let pre_statuses: Vec<_> = state
+            .file_tree
+            .entries
+            .iter()
+            .filter_map(|(_, e)| e.git_status.map(|s| (e.name.clone(), s)))
+            .collect();
+        assert!(
+            pre_statuses
+                .iter()
+                .any(|(n, _)| n == "tracked.txt" || n == "new.txt"),
+            "expected modified/untracked marker before refresh, got {pre_statuses:?}"
+        );
+
+        // Simulate the bug trigger: refresh the file tree (as happens on
+        // directory toggle / watcher events / reveal / hidden-file flip).
+        state.refresh_file_tree();
+
+        let post_statuses: Vec<_> = state
+            .file_tree
+            .entries
+            .iter()
+            .filter_map(|(_, e)| e.git_status.map(|s| (e.name.clone(), s)))
+            .collect();
+        assert_eq!(
+            post_statuses, pre_statuses,
+            "refresh_file_tree dropped git status markers: before={pre_statuses:?} after={post_statuses:?}"
         );
     }
 }

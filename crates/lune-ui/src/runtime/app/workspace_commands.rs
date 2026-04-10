@@ -89,10 +89,8 @@ fn handle_file_tree_command(cmd: &AppCommand, state: &mut AppState) -> Control<A
         AppCommand::ToggleHiddenFiles => {
             if let Some(ref mut ws) = state.workspace {
                 ws.toggle_hidden();
-                if let Err(e) = state.file_tree.refresh(ws) {
-                    log::error!("Failed to refresh file tree: {e}");
-                }
             }
+            state.refresh_file_tree();
             Control::Changed
         }
         AppCommand::RevealInFileTree(path) => {
@@ -101,11 +99,9 @@ fn handle_file_tree_command(cmd: &AppCommand, state: &mut AppState) -> Control<A
                 if let Err(e) = state.file_tree.reveal_path(&path, ws) {
                     log::error!("Failed to reveal path: {e}");
                 }
-                if let Err(e) = state.file_tree.refresh(ws) {
-                    log::error!("Failed to refresh file tree: {e}");
-                }
-                state.file_tree.select_by_path(&path, 20);
             }
+            state.refresh_file_tree();
+            state.file_tree.select_by_path(&path, 20);
             Control::Changed
         }
         AppCommand::NewFile => {
@@ -174,14 +170,13 @@ fn handle_file_tree_command(cmd: &AppCommand, state: &mut AppState) -> Control<A
 }
 
 fn handle_create_file(path: &Path, state: &mut AppState) -> Control<AppEvent> {
+    let mut refreshed = false;
     if let Some(ref mut ws) = state.workspace {
         match ws.execute(&lune_core::workspace::FileOp::CreateFile(
             path.to_path_buf(),
         )) {
             Ok(()) => {
-                if let Err(e) = state.file_tree.refresh(ws) {
-                    log::error!("Failed to refresh file tree: {e}");
-                }
+                refreshed = true;
                 state.overlay.notify(
                     format!(
                         "Created: {}",
@@ -196,18 +191,19 @@ fn handle_create_file(path: &Path, state: &mut AppState) -> Control<AppEvent> {
                     .notify(format!("Create failed: {e}"), NotificationLevel::Error);
             }
         }
+    }
+    if refreshed {
+        state.refresh_file_tree();
     }
     handle_open_file(path, state)
 }
 
 fn handle_create_dir(path: &Path, state: &mut AppState) -> Control<AppEvent> {
+    let mut refreshed = false;
     if let Some(ref mut ws) = state.workspace {
         match ws.execute(&lune_core::workspace::FileOp::CreateDir(path.to_path_buf())) {
             Ok(()) => {
-                if let Err(e) = state.file_tree.refresh(ws) {
-                    log::error!("Failed to refresh file tree: {e}");
-                }
-                state.file_tree.select_by_path(path, 20);
+                refreshed = true;
                 state.overlay.notify(
                     format!(
                         "Created: {}",
@@ -223,20 +219,22 @@ fn handle_create_dir(path: &Path, state: &mut AppState) -> Control<AppEvent> {
             }
         }
     }
+    if refreshed {
+        state.refresh_file_tree();
+        state.file_tree.select_by_path(path, 20);
+    }
     Control::Changed
 }
 
 fn handle_rename(from: &Path, to: &Path, state: &mut AppState) -> Control<AppEvent> {
+    let mut refreshed = false;
     if let Some(ref mut ws) = state.workspace {
         match ws.execute(&lune_core::workspace::FileOp::Rename {
             from: from.to_path_buf(),
             to: to.to_path_buf(),
         }) {
             Ok(()) => {
-                if let Err(e) = state.file_tree.refresh(ws) {
-                    log::error!("Failed to refresh file tree: {e}");
-                }
-                state.file_tree.select_by_path(to, 20);
+                refreshed = true;
                 for &id in &state.tabs {
                     if let Some(buf) = state.registry.get_mut(id) {
                         if buf.file_path.as_deref() == Some(from) {
@@ -255,16 +253,19 @@ fn handle_rename(from: &Path, to: &Path, state: &mut AppState) -> Control<AppEve
             }
         }
     }
+    if refreshed {
+        state.refresh_file_tree();
+        state.file_tree.select_by_path(to, 20);
+    }
     Control::Changed
 }
 
 fn handle_delete(path: &Path, state: &mut AppState) -> Control<AppEvent> {
+    let mut refreshed = false;
     if let Some(ref mut ws) = state.workspace {
         match ws.execute(&lune_core::workspace::FileOp::Delete(path.to_path_buf())) {
             Ok(()) => {
-                if let Err(e) = state.file_tree.refresh(ws) {
-                    log::error!("Failed to refresh file tree: {e}");
-                }
+                refreshed = true;
                 let to_close: Vec<_> = state
                     .tabs
                     .iter()
@@ -287,6 +288,9 @@ fn handle_delete(path: &Path, state: &mut AppState) -> Control<AppEvent> {
                     .notify(format!("Delete failed: {e}"), NotificationLevel::Error);
             }
         }
+    }
+    if refreshed {
+        state.refresh_file_tree();
     }
     Control::Changed
 }
