@@ -16,7 +16,7 @@ use crate::event::AppCommand;
 use crate::primitives::Color;
 use crate::theme::Theme;
 use lune_ai::session::AiClientKind;
-use lune_core::language::{lang, LanguageId};
+use lune_core::language::{LanguageId, lang};
 
 // ── Overlay kinds ─────────────────────────────────────────────────────
 
@@ -757,12 +757,22 @@ pub struct LayoutPickerState {
 impl LayoutPickerState {
     /// Create a new layout picker with the first preset selected.
     #[must_use]
-    pub fn new(entries: Vec<LayoutPickerEntry>) -> Self {
+    pub const fn new(entries: Vec<LayoutPickerEntry>) -> Self {
         Self {
             entries,
             selected: 0,
             scroll_offset: 0,
         }
+    }
+
+    /// Select a specific row, clamping to the available entries.
+    pub fn select(&mut self, index: usize) {
+        if self.entries.is_empty() {
+            self.selected = 0;
+            self.scroll_offset = 0;
+            return;
+        }
+        self.selected = index.min(self.entries.len() - 1);
     }
 
     /// Move selection down (wraps).
@@ -780,6 +790,34 @@ impl LayoutPickerState {
                 .checked_sub(1)
                 .unwrap_or(self.entries.len() - 1);
         }
+    }
+
+    /// Jump to the first entry.
+    pub fn select_first(&mut self) {
+        self.select(0);
+    }
+
+    /// Jump to the last entry.
+    pub fn select_last(&mut self) {
+        if !self.entries.is_empty() {
+            self.select(self.entries.len() - 1);
+        }
+    }
+
+    /// Move selection by a page of rows.
+    pub fn move_page(&mut self, delta: isize, page_size: usize) {
+        if self.entries.is_empty() {
+            return;
+        }
+
+        let last = self.entries.len().saturating_sub(1);
+        let magnitude = page_size.max(1).saturating_mul(delta.unsigned_abs());
+        let next = if delta.is_negative() {
+            self.selected.saturating_sub(magnitude)
+        } else {
+            self.selected.saturating_add(magnitude).min(last)
+        };
+        self.select(next);
     }
 
     /// Borrow the selected entry, if any.
@@ -1620,6 +1658,7 @@ fn render_layout_picker(area: Rect, buf: &mut Buffer, state: &LayoutPickerState,
                 format!("  {} [Saved] ({} panes)", entry.label, entry.pane_count)
             }
         };
+        let label = truncate_inline_text(&label, inner.width as usize);
         if i == state.selected {
             Line::from(Span::styled(label, theme.overlay_selected))
                 .render(Rect::new(inner.x, y, inner.width, 1), buf);
@@ -1629,25 +1668,71 @@ fn render_layout_picker(area: Rect, buf: &mut Buffer, state: &LayoutPickerState,
     }
 
     if footer_y > list_y {
-        let footer = layout_picker_footer(state, start > 0 || state.entries.len() > end);
+        let footer = layout_picker_footer(
+            state,
+            start > 0 || state.entries.len() > end,
+            inner.width as usize,
+        );
         Line::from(Span::from(footer).dim())
             .render(Rect::new(inner.x, footer_y, inner.width, 1), buf);
     }
 }
 
-fn layout_picker_footer(state: &LayoutPickerState, show_position: bool) -> String {
-    let mut footer = match state.selected_entry().map(|entry| &entry.kind) {
-        Some(LayoutPickerEntryKind::Saved(_)) => {
-            " ↑↓ select · Enter apply · R rename · D delete · S save · Esc cancel".to_string()
-        }
-        _ => " ↑↓ select · Enter apply · S save · Esc cancel".to_string(),
+fn layout_picker_footer(
+    state: &LayoutPickerState,
+    show_position: bool,
+    max_width: usize,
+) -> String {
+    let candidates: &[&str] = match state.selected_entry().map(|entry| &entry.kind) {
+        Some(LayoutPickerEntryKind::Saved(_)) => &[
+            " ↑↓ select · Enter apply · R rename · D delete · S save · Esc cancel",
+            " ↑↓ move · Enter apply · R/D manage · S save · Esc",
+            " Enter apply · R/D · S · Esc",
+            " Enter · Esc",
+        ],
+        _ => &[
+            " ↑↓ select · Enter apply · S save · Esc cancel",
+            " ↑↓ move · Enter apply · S save · Esc",
+            " Enter apply · S · Esc",
+            " Enter · Esc",
+        ],
     };
 
+    let mut footer = candidates
+        .iter()
+        .find(|candidate| candidate.chars().count() <= max_width)
+        .map_or_else(
+            || truncate_inline_text(candidates.last().copied().unwrap_or(""), max_width),
+            |candidate| (*candidate).to_string(),
+        );
+
     if show_position && !state.entries.is_empty() {
-        footer.push_str(&format!("  {}/{} ", state.selected + 1, state.entries.len()));
+        let position = format!("  {}/{} ", state.selected + 1, state.entries.len());
+        if footer.chars().count() + position.chars().count() <= max_width {
+            footer.push_str(&position);
+        }
     }
 
     footer
+}
+
+fn truncate_inline_text(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let text_len = text.chars().count();
+    if text_len <= max_width {
+        return text.to_string();
+    }
+
+    if max_width == 1 {
+        return "…".to_string();
+    }
+
+    let mut out: String = text.chars().take(max_width - 1).collect();
+    out.push('…');
+    out
 }
 
 fn render_input_dialog(area: Rect, buf: &mut Buffer, state: &InputDialogState, theme: &Theme) {
@@ -2124,10 +2209,11 @@ mod tests {
         cp.type_char('v');
         // Should match "Save" and "Save All".
         assert!(cp.filtered_commands.len() >= 2);
-        assert!(cp
-            .filtered_commands
-            .iter()
-            .all(|c| c.label.to_lowercase().contains("sav")));
+        assert!(
+            cp.filtered_commands
+                .iter()
+                .all(|c| c.label.to_lowercase().contains("sav"))
+        );
     }
 
     #[test]
@@ -2904,7 +2990,7 @@ mod tests {
             kind: LayoutPickerEntryKind::Preset(0),
         }]);
 
-        let footer = layout_picker_footer(&state, false);
+        let footer = layout_picker_footer(&state, false, 120);
         assert!(footer.contains("Enter apply"));
         assert!(!footer.contains("R rename"));
         assert!(!footer.contains("D delete"));
@@ -2918,9 +3004,63 @@ mod tests {
             kind: LayoutPickerEntryKind::Saved(0),
         }]);
 
-        let footer = layout_picker_footer(&state, false);
+        let footer = layout_picker_footer(&state, false, 120);
         assert!(footer.contains("R rename"));
         assert!(footer.contains("D delete"));
+    }
+
+    #[test]
+    fn layout_picker_footer_compacts_for_narrow_popups() {
+        let state = LayoutPickerState::new(vec![LayoutPickerEntry {
+            label: "Saved".to_string(),
+            pane_count: 2,
+            kind: LayoutPickerEntryKind::Saved(0),
+        }]);
+
+        let footer = layout_picker_footer(&state, false, 32);
+        assert!(footer.contains("R/D") || footer.contains("Enter"));
+        assert!(!footer.contains("D delete"));
+        assert!(footer.chars().count() <= 32);
+    }
+
+    #[test]
+    fn layout_picker_footer_never_exceeds_available_width() {
+        let state = LayoutPickerState::new(vec![LayoutPickerEntry {
+            label: "Saved".to_string(),
+            pane_count: 2,
+            kind: LayoutPickerEntryKind::Saved(0),
+        }]);
+
+        let footer = layout_picker_footer(&state, true, 12);
+        assert!(footer.chars().count() <= 12, "footer was {footer:?}");
+    }
+
+    #[test]
+    fn truncate_inline_text_adds_ellipsis_for_long_labels() {
+        assert_eq!(
+            truncate_inline_text("Main stack with wide label", 10),
+            "Main stac…"
+        );
+        assert_eq!(truncate_inline_text("abc", 1), "…");
+        assert_eq!(truncate_inline_text("abc", 0), "");
+    }
+
+    #[test]
+    fn layout_picker_page_move_clamps_within_bounds() {
+        let mut state = LayoutPickerState::new(
+            (0..10)
+                .map(|i| LayoutPickerEntry {
+                    label: format!("Layout {i}"),
+                    pane_count: i + 1,
+                    kind: LayoutPickerEntryKind::Preset(i),
+                })
+                .collect(),
+        );
+        state.select(8);
+        state.move_page(1, 5);
+        assert_eq!(state.selected, 9);
+        state.move_page(-1, 20);
+        assert_eq!(state.selected, 0);
     }
 
     #[test]

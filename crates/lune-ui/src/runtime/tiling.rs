@@ -75,6 +75,14 @@ const MIN_RATIO: f64 = 0.1;
 const MAX_RATIO: f64 = 0.9;
 /// Resize step when nudging a border via keyboard.
 pub const RESIZE_STEP: f64 = 0.05;
+/// Minimum width for each pane when creating a new vertical split.
+pub const MIN_RENDERABLE_PANE_COLS: u16 = 12;
+/// Minimum height for each pane when creating a new horizontal split.
+pub const MIN_RENDERABLE_PANE_ROWS: u16 = 4;
+/// Width of the divider line between two panes.
+const SPLIT_BORDER_SPAN: u16 = 1;
+/// Minimum visible span of a pane when the layout must degrade under resize.
+const MIN_VISIBLE_PANE_SPAN: u16 = 1;
 
 impl TileNode {
     // ── Constructors ───────────────────────────────────────────────
@@ -423,6 +431,18 @@ impl SavedAgentLayout {
     }
 }
 
+/// Whether `area` is large enough to create a new split that leaves both panes
+/// comfortably usable.
+#[must_use]
+pub const fn can_render_split(area: Rect, direction: SplitDirection) -> bool {
+    match direction {
+        SplitDirection::Vertical => area.width >= MIN_RENDERABLE_PANE_COLS * 2 + SPLIT_BORDER_SPAN,
+        SplitDirection::Horizontal => {
+            area.height >= MIN_RENDERABLE_PANE_ROWS * 2 + SPLIT_BORDER_SPAN
+        }
+    }
+}
+
 // ── Border description ─────────────────────────────────────────────────
 
 /// A rendered split border.
@@ -463,23 +483,45 @@ impl Border {
 fn subdivide(area: Rect, direction: SplitDirection, ratio: f64) -> (Rect, Rect) {
     match direction {
         SplitDirection::Vertical => {
+            if area.width < MIN_VISIBLE_PANE_SPAN * 2 + SPLIT_BORDER_SPAN {
+                return (area, Rect::new(area.x, area.y, 0, 0));
+            }
             // 1-cell vertical border between left and right.
-            let usable = area.width.saturating_sub(1);
+            let usable = area.width.saturating_sub(SPLIT_BORDER_SPAN);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let left_w = (f64::from(usable) * ratio).round() as u16;
+            let left_w = (f64::from(usable) * ratio).round().clamp(
+                f64::from(MIN_VISIBLE_PANE_SPAN),
+                f64::from(usable.saturating_sub(MIN_VISIBLE_PANE_SPAN)),
+            ) as u16;
             let right_w = usable.saturating_sub(left_w);
             let left = Rect::new(area.x, area.y, left_w, area.height);
-            let right = Rect::new(area.x + left_w + 1, area.y, right_w, area.height);
+            let right = Rect::new(
+                area.x + left_w + SPLIT_BORDER_SPAN,
+                area.y,
+                right_w,
+                area.height,
+            );
             (left, right)
         }
         SplitDirection::Horizontal => {
+            if area.height < MIN_VISIBLE_PANE_SPAN * 2 + SPLIT_BORDER_SPAN {
+                return (area, Rect::new(area.x, area.y, 0, 0));
+            }
             // 1-cell horizontal border between top and bottom.
-            let usable = area.height.saturating_sub(1);
+            let usable = area.height.saturating_sub(SPLIT_BORDER_SPAN);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let top_h = (f64::from(usable) * ratio).round() as u16;
+            let top_h = (f64::from(usable) * ratio).round().clamp(
+                f64::from(MIN_VISIBLE_PANE_SPAN),
+                f64::from(usable.saturating_sub(MIN_VISIBLE_PANE_SPAN)),
+            ) as u16;
             let bottom_h = usable.saturating_sub(top_h);
             let top = Rect::new(area.x, area.y, area.width, top_h);
-            let bottom = Rect::new(area.x, area.y + top_h + 1, area.width, bottom_h);
+            let bottom = Rect::new(
+                area.x,
+                area.y + top_h + SPLIT_BORDER_SPAN,
+                area.width,
+                bottom_h,
+            );
             (top, bottom)
         }
     }
@@ -489,18 +531,36 @@ fn subdivide(area: Rect, direction: SplitDirection, ratio: f64) -> (Rect, Rect) 
 fn border_rect(area: Rect, direction: SplitDirection, ratio: f64) -> Border {
     match direction {
         SplitDirection::Vertical => {
-            let usable = area.width.saturating_sub(1);
+            if area.width < MIN_VISIBLE_PANE_SPAN * 2 + SPLIT_BORDER_SPAN {
+                return Border {
+                    rect: Rect::new(area.x, area.y, 0, 0),
+                    direction,
+                };
+            }
+            let usable = area.width.saturating_sub(SPLIT_BORDER_SPAN);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let left_w = (f64::from(usable) * ratio).round() as u16;
+            let left_w = (f64::from(usable) * ratio).round().clamp(
+                f64::from(MIN_VISIBLE_PANE_SPAN),
+                f64::from(usable.saturating_sub(MIN_VISIBLE_PANE_SPAN)),
+            ) as u16;
             Border {
                 rect: Rect::new(area.x + left_w, area.y, 1, area.height),
                 direction,
             }
         }
         SplitDirection::Horizontal => {
-            let usable = area.height.saturating_sub(1);
+            if area.height < MIN_VISIBLE_PANE_SPAN * 2 + SPLIT_BORDER_SPAN {
+                return Border {
+                    rect: Rect::new(area.x, area.y, 0, 0),
+                    direction,
+                };
+            }
+            let usable = area.height.saturating_sub(SPLIT_BORDER_SPAN);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let top_h = (f64::from(usable) * ratio).round() as u16;
+            let top_h = (f64::from(usable) * ratio).round().clamp(
+                f64::from(MIN_VISIBLE_PANE_SPAN),
+                f64::from(usable.saturating_sub(MIN_VISIBLE_PANE_SPAN)),
+            ) as u16;
             Border {
                 rect: Rect::new(area.x, area.y + top_h, area.width, 1),
                 direction,
@@ -862,5 +922,39 @@ mod tests {
                 .map(|b| u32::from(b.rect.width) * u32::from(b.rect.height))
                 .sum::<u32>();
         assert_eq!(total_cells, u32::from(a.width) * u32::from(a.height));
+    }
+
+    #[test]
+    fn can_render_split_enforces_minimum_usable_geometry() {
+        assert!(can_render_split(
+            Rect::new(0, 0, MIN_RENDERABLE_PANE_COLS * 2 + 1, 20),
+            SplitDirection::Vertical
+        ));
+        assert!(!can_render_split(
+            Rect::new(0, 0, MIN_RENDERABLE_PANE_COLS * 2, 20),
+            SplitDirection::Vertical
+        ));
+        assert!(can_render_split(
+            Rect::new(0, 0, 40, MIN_RENDERABLE_PANE_ROWS * 2 + 1),
+            SplitDirection::Horizontal
+        ));
+        assert!(!can_render_split(
+            Rect::new(0, 0, 40, MIN_RENDERABLE_PANE_ROWS * 2),
+            SplitDirection::Horizontal
+        ));
+    }
+
+    #[test]
+    fn tiny_split_area_degrades_without_zero_border_artifacts() {
+        let tree = Presets::side_by_side([p(0), p(1)]);
+        let area = Rect::new(0, 0, 2, 5);
+        let rects = tree.compute_rects(area);
+        let borders = tree.compute_borders(area);
+
+        assert_eq!(rects[0].1, area);
+        assert_eq!(rects[1].1.width, 0);
+        assert_eq!(rects[1].1.height, 0);
+        assert_eq!(borders[0].rect.width, 0);
+        assert_eq!(borders[0].rect.height, 0);
     }
 }

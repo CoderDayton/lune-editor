@@ -64,15 +64,15 @@ pub fn upsert_saved_layout(
         return None;
     }
 
+    let name = saved.name.clone();
+
     if let Some(index) = layouts
         .iter()
         .position(|layout| same_layout_name(&layout.name, &saved.name))
     {
-        let name = saved.name.clone();
         layouts[index] = saved;
         Some(SaveLayoutOutcome::Updated { index, name })
     } else {
-        let name = saved.name.clone();
         layouts.push(saved);
         Some(SaveLayoutOutcome::Inserted {
             index: layouts.len() - 1,
@@ -86,16 +86,16 @@ pub fn upsert_saved_layout(
 pub fn rename_saved_layout(
     layouts: &mut Vec<SavedAgentLayout>,
     index: usize,
-    new_name: String,
+    new_name: &str,
 ) -> Option<RenameLayoutOutcome> {
-    let normalized = normalize_layout_name(&new_name);
+    let normalized = normalize_layout_name(new_name);
     if normalized.is_empty() || index >= layouts.len() {
         return None;
     }
 
     let from = layouts[index].name.clone();
     if same_layout_name(&from, &normalized) {
-        layouts[index].name = normalized.clone();
+        layouts[index].name.clone_from(&normalized);
         return Some(RenameLayoutOutcome::Renamed {
             index,
             from,
@@ -129,7 +129,7 @@ pub fn rename_saved_layout(
             to: normalized,
         })
     } else {
-        layouts[index].name = normalized.clone();
+        layouts[index].name.clone_from(&normalized);
         Some(RenameLayoutOutcome::Renamed {
             index,
             from,
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn rename_saved_layout_replaces_existing_duplicate_name() {
         let mut layouts = vec![layout("Alpha"), layout("Beta"), layout("Gamma")];
-        let outcome = rename_saved_layout(&mut layouts, 0, " gamma ".to_string()).unwrap();
+        let outcome = rename_saved_layout(&mut layouts, 0, " gamma ").unwrap();
         assert_eq!(
             outcome,
             RenameLayoutOutcome::ReplacedExisting {
