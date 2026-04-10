@@ -37,6 +37,19 @@ fn print_version() {
     );
 }
 
+/// Consume the next argument as a value for `flag`, or print an error.
+fn next_arg_value<'a>(
+    iter: &mut std::slice::Iter<'a, String>,
+    flag: &str,
+    what: &str,
+) -> Option<&'a String> {
+    let v = iter.next();
+    if v.is_none() {
+        eprintln!("Error: {flag} requires {what}");
+    }
+    v
+}
+
 /// Parse CLI arguments into overrides and positional paths.
 fn parse_args() -> Option<(CliOverrides, Vec<PathBuf>)> {
     let raw: Vec<String> = std::env::args().skip(1).collect();
@@ -57,20 +70,12 @@ fn parse_args() -> Option<(CliOverrides, Vec<PathBuf>)> {
             "--vim" => overrides.vim_mode = Some(true),
             "--no-vim" => overrides.vim_mode = Some(false),
             "--config" => {
-                if let Some(val) = iter.next() {
-                    overrides.config_path = Some(PathBuf::from(val));
-                } else {
-                    eprintln!("Error: --config requires a path argument");
-                    return None;
-                }
+                let val = next_arg_value(&mut iter, "--config", "a path argument")?;
+                overrides.config_path = Some(PathBuf::from(val));
             }
             "--theme" => {
-                if let Some(val) = iter.next() {
-                    overrides.theme = Some(val.clone());
-                } else {
-                    eprintln!("Error: --theme requires a name argument");
-                    return None;
-                }
+                let val = next_arg_value(&mut iter, "--theme", "a name argument")?;
+                overrides.theme = Some(val.clone());
             }
             other if other.starts_with("--") => {
                 eprintln!("Unknown option: {other}");
@@ -273,33 +278,27 @@ fn open_paths_or_cwd(
     overrides: &CliOverrides,
     paths: &[PathBuf],
 ) {
-    if paths.is_empty() {
-        // No arguments: auto-open CWD as workspace.
-        if let Ok(cwd) = std::env::current_dir() {
-            merge_workspace_settings(state, settings, overrides, &cwd);
-            match state.open_workspace(&cwd) {
-                Ok(()) => {}
-                Err(e) => eprintln!("Warning: could not open workspace {}: {e}", cwd.display()),
-            }
-        }
+    // Empty args → fall back to CWD as a single directory "argument".
+    let cwd_fallback: Vec<PathBuf>;
+    let paths: &[PathBuf] = if paths.is_empty() {
+        cwd_fallback = std::env::current_dir().ok().into_iter().collect();
+        &cwd_fallback
     } else {
-        for path in paths {
-            if path.is_dir() {
-                merge_workspace_settings(state, settings, overrides, path);
-                match state.open_workspace(path) {
-                    Ok(()) => {}
-                    Err(e) => {
-                        eprintln!("Warning: could not open workspace {}: {e}", path.display());
-                    }
-                }
-            } else if path.exists() {
-                match state.open_file(path) {
-                    Ok(_id) => {}
-                    Err(e) => eprintln!("Warning: could not open {}: {e}", path.display()),
-                }
-            } else {
-                eprintln!("Warning: path not found: {}", path.display());
+        paths
+    };
+
+    for path in paths {
+        if path.is_dir() {
+            merge_workspace_settings(state, settings, overrides, path);
+            if let Err(e) = state.open_workspace(path) {
+                eprintln!("Warning: could not open workspace {}: {e}", path.display());
             }
+        } else if path.exists() {
+            if let Err(e) = state.open_file(path) {
+                eprintln!("Warning: could not open {}: {e}", path.display());
+            }
+        } else {
+            eprintln!("Warning: path not found: {}", path.display());
         }
     }
 }

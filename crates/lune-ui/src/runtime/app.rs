@@ -1399,27 +1399,22 @@ fn perform_save_agent_layout(state: &mut AppState, name: &str) {
             Some(crate::runtime::tiling::SavedPaneKind::from(session.kind()))
         })
     else {
-        state
-            .overlay
-            .notify("No agent layout to save yet", NotificationLevel::Warning);
+        notify_no_agent_layout_to_save(state);
         return;
     };
     match terminal_layouts::upsert_saved_layout(&mut state.saved_agent_layouts, saved) {
-        Some(terminal_layouts::SaveLayoutOutcome::Inserted { name, .. }) => {
+        Some(outcome) => {
+            let (verb, name) = match outcome {
+                terminal_layouts::SaveLayoutOutcome::Inserted { name, .. } => ("Saved", name),
+                terminal_layouts::SaveLayoutOutcome::Updated { name, .. } => {
+                    ("Updated saved", name)
+                }
+            };
             state.agents_tab.active_saved_layout =
                 Some(terminal_layouts::normalize_layout_name(&name));
             state
                 .overlay
-                .notify(format!("Saved layout: {name}"), NotificationLevel::Info);
-            state.persist_saved_agent_layouts();
-        }
-        Some(terminal_layouts::SaveLayoutOutcome::Updated { name, .. }) => {
-            state.agents_tab.active_saved_layout =
-                Some(terminal_layouts::normalize_layout_name(&name));
-            state.overlay.notify(
-                format!("Updated saved layout: {name}"),
-                NotificationLevel::Info,
-            );
+                .notify(format!("{verb} layout: {name}"), NotificationLevel::Info);
             state.persist_saved_agent_layouts();
         }
         None => {
@@ -1430,16 +1425,190 @@ fn perform_save_agent_layout(state: &mut AppState, name: &str) {
     }
 }
 
+type CommandHandler = fn(&AppCommand, &mut AppState) -> Option<Control<AppEvent>>;
+
+fn dispatch_subcommand(cmd: &AppCommand, state: &mut AppState) -> Option<Control<AppEvent>> {
+    for handler in [
+        handle_workspace_command as CommandHandler,
+        handle_ai_command,
+        handle_git_command,
+    ] {
+        if let Some(control) = handler(cmd, state) {
+            return Some(control);
+        }
+    }
+    None
+}
+
+fn notify_no_agent_layout_to_save(state: &mut AppState) {
+    state
+        .overlay
+        .notify("No agent layout to save yet", NotificationLevel::Warning);
+}
+
+fn ensure_agent_layout_to_save(state: &mut AppState) -> bool {
+    if state.agents_tab.layout.is_some() {
+        true
+    } else {
+        notify_no_agent_layout_to_save(state);
+        false
+    }
+}
+
+fn notify_saved_layout_not_found(state: &mut AppState) {
+    state
+        .overlay
+        .notify("Saved layout not found", NotificationLevel::Warning);
+}
+
+fn persist_and_refresh_saved_layouts(state: &mut AppState) {
+    state.persist_saved_agent_layouts();
+    refresh_active_saved_layout(state);
+}
+
+fn open_agent_layout_picker_for_saved_index(saved_index: usize, state: &mut AppState) {
+    open_agent_layout_picker_with_selection(Some(tiling::PRESET_LIST.len() + saved_index), state);
+}
+
+fn open_find_overlay(replace: bool, state: &mut AppState) {
+    if replace {
+        state.overlay.open_find_replace();
+    } else {
+        state.overlay.open_find();
+    }
+    state.focus.focus(PanelId::CommandPalette);
+    if !state.overlay.find_replace.find_input.is_empty() {
+        update_find_search(state);
+    }
+}
+
+fn toggle_vim_mode(state: &mut AppState) {
+    state.vim_enabled = !state.vim_enabled;
+    // Keep cached settings in sync so a hot-reload doesn't immediately revert.
+    if let Some(s) = state.cached_settings.as_mut() {
+        s.editor.vim_mode = state.vim_enabled;
+    }
+    let message = if state.vim_enabled {
+        state.vim.enter_normal();
+        "Vim mode enabled"
+    } else {
+        state.vim.enter_insert();
+        "Vim mode disabled"
+    };
+    state.overlay.notify(message, NotificationLevel::Info);
+}
+
+fn begin_agent_split_second(
+    state: &mut AppState,
+    direction: super::tiling::SplitDirection,
+) -> Control<AppEvent> {
+    begin_agent_split_session(state, Some((direction, super::tiling::SplitSide::Second)))
+}
+
+fn cycle_theme(state: &mut AppState, next: bool) {
+    if next {
+        state.next_theme();
+    } else {
+        state.prev_theme();
+    }
+    let name = state.theme_registry.current_name().to_owned();
+    state
+        .overlay
+        .notify(format!("Theme: {name}"), NotificationLevel::Info);
+}
+
+fn complete_saved_layout_rename(to: &str, selected: usize, replaced: bool, state: &mut AppState) {
+    persist_and_refresh_saved_layouts(state);
+    let message = if replaced {
+        format!("Renamed layout and replaced existing: {to}")
+    } else {
+        format!("Renamed saved layout to: {to}")
+    };
+    state.overlay.notify(message, NotificationLevel::Info);
+    open_agent_layout_picker_for_saved_index(selected, state);
+}
+
+fn handle_agent_rename_saved_layout(index: usize, name: &str, state: &mut AppState) {
+    match terminal_layouts::rename_saved_layout(&mut state.saved_agent_layouts, index, name) {
+        Some(terminal_layouts::RenameLayoutOutcome::Renamed { to, .. }) => {
+            complete_saved_layout_rename(&to, index, false, state);
+        }
+        Some(terminal_layouts::RenameLayoutOutcome::ReplacedExisting {
+            index: selected,
+            to,
+            ..
+        }) => {
+            complete_saved_layout_rename(&to, selected, true, state);
+        }
+        None => notify_saved_layout_not_found(state),
+    }
+}
+
+fn handle_agent_save_layout(state: &mut AppState) {
+    if !ensure_agent_layout_to_save(state) {
+        return;
+    }
+    let active_name = current_matching_saved_layout_name(state);
+    let still_exists = active_name.as_deref().is_some_and(|name| {
+        state.saved_agent_layouts.iter().any(|layout| {
+            terminal_layouts::normalize_layout_name(&layout.name).eq_ignore_ascii_case(name)
+        })
+    });
+    if let (Some(name), true) = (active_name, still_exists) {
+        perform_save_agent_layout(state, &name);
+    } else {
+        open_save_agent_layout_dialog(state);
+    }
+}
+
+fn handle_agent_save_layout_as(state: &mut AppState) {
+    if ensure_agent_layout_to_save(state) {
+        open_save_agent_layout_dialog(state);
+    }
+}
+
+fn handle_agent_save_layout_confirmed(name: &str, state: &mut AppState) {
+    if !ensure_agent_layout_to_save(state) {
+        return;
+    }
+    let normalized = terminal_layouts::normalize_layout_name(name);
+    let collision = state.saved_agent_layouts.iter().any(|layout| {
+        terminal_layouts::normalize_layout_name(&layout.name).eq_ignore_ascii_case(&normalized)
+    });
+    if collision {
+        state.overlay.open_confirm(
+            format!("Layout \"{normalized}\" already exists. Overwrite?"),
+            AppCommand::AgentSaveLayoutOverwriteConfirmed(name.to_string()),
+        );
+    } else {
+        perform_save_agent_layout(state, name);
+    }
+}
+
+fn handle_agent_delete_saved_layout(index: usize, state: &mut AppState) {
+    if let Some(deleted) =
+        terminal_layouts::delete_saved_layout(&mut state.saved_agent_layouts, index)
+    {
+        persist_and_refresh_saved_layouts(state);
+        state.overlay.notify(
+            format!("Deleted saved layout: {}", deleted.name),
+            NotificationLevel::Info,
+        );
+        let next_selection = if state.saved_agent_layouts.is_empty() {
+            None
+        } else {
+            Some(tiling::PRESET_LIST.len() + index.min(state.saved_agent_layouts.len() - 1))
+        };
+        open_agent_layout_picker_with_selection(next_selection, state);
+    } else {
+        notify_saved_layout_not_found(state);
+    }
+}
+
 /// Handle application commands.
 #[allow(clippy::too_many_lines)]
 fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
-    if let Some(control) = handle_workspace_command(cmd, state) {
-        return control;
-    }
-    if let Some(control) = handle_ai_command(cmd, state) {
-        return control;
-    }
-    if let Some(control) = handle_git_command(cmd, state) {
+    if let Some(control) = dispatch_subcommand(cmd, state) {
         return control;
     }
 
@@ -1505,74 +1674,34 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             Control::Changed
         }
         AppCommand::ToggleVimMode => {
-            state.vim_enabled = !state.vim_enabled;
-            // Keep cached settings in sync so a hot-reload doesn't immediately revert.
-            if let Some(s) = state.cached_settings.as_mut() {
-                s.editor.vim_mode = state.vim_enabled;
-            }
-            if state.vim_enabled {
-                state.vim.enter_normal();
-                state
-                    .overlay
-                    .notify("Vim mode enabled", NotificationLevel::Info);
-            } else {
-                state.vim.enter_insert();
-                state
-                    .overlay
-                    .notify("Vim mode disabled", NotificationLevel::Info);
-            }
+            toggle_vim_mode(state);
             Control::Changed
         }
         AppCommand::Find => {
-            state.overlay.open_find();
-            state.focus.focus(PanelId::CommandPalette);
-            // Trigger initial search if there's already text in the find input.
-            if !state.overlay.find_replace.find_input.is_empty() {
-                update_find_search(state);
-            }
+            open_find_overlay(false, state);
             Control::Changed
         }
         AppCommand::Replace => {
-            state.overlay.open_find_replace();
-            state.focus.focus(PanelId::CommandPalette);
-            if !state.overlay.find_replace.find_input.is_empty() {
-                update_find_search(state);
-            }
+            open_find_overlay(true, state);
             Control::Changed
         }
         // Theme commands.
         AppCommand::NextTheme => {
-            state.next_theme();
-            let name = state.theme_registry.current_name().to_owned();
-            state
-                .overlay
-                .notify(format!("Theme: {name}"), NotificationLevel::Info);
+            cycle_theme(state, true);
             Control::Changed
         }
         AppCommand::PrevTheme => {
-            state.prev_theme();
-            let name = state.theme_registry.current_name().to_owned();
-            state
-                .overlay
-                .notify(format!("Theme: {name}"), NotificationLevel::Info);
+            cycle_theme(state, false);
             Control::Changed
         }
         // Agent pane commands.
         AppCommand::AgentSplitAuto => begin_agent_split_session(state, None),
-        AppCommand::AgentSplitVertical => begin_agent_split_session(
-            state,
-            Some((
-                super::tiling::SplitDirection::Vertical,
-                super::tiling::SplitSide::Second,
-            )),
-        ),
-        AppCommand::AgentSplitHorizontal => begin_agent_split_session(
-            state,
-            Some((
-                super::tiling::SplitDirection::Horizontal,
-                super::tiling::SplitSide::Second,
-            )),
-        ),
+        AppCommand::AgentSplitVertical => {
+            begin_agent_split_second(state, super::tiling::SplitDirection::Vertical)
+        }
+        AppCommand::AgentSplitHorizontal => {
+            begin_agent_split_second(state, super::tiling::SplitDirection::Horizontal)
+        }
         AppCommand::AgentClosePane => {
             if let Some(session_id) = state.agents_tab.close_focused() {
                 state.ai_manager.close_session(session_id);
@@ -1597,56 +1726,15 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             Control::Changed
         }
         AppCommand::AgentSaveLayout => {
-            if state.agents_tab.layout.is_none() {
-                state
-                    .overlay
-                    .notify("No agent layout to save yet", NotificationLevel::Warning);
-                return Control::Changed;
-            }
-            let active_name = current_matching_saved_layout_name(state);
-            let still_exists = active_name.as_deref().is_some_and(|name| {
-                state.saved_agent_layouts.iter().any(|layout| {
-                    terminal_layouts::normalize_layout_name(&layout.name).eq_ignore_ascii_case(name)
-                })
-            });
-            if let (Some(name), true) = (active_name, still_exists) {
-                // Overwrite silently — the user already named this layout.
-                perform_save_agent_layout(state, &name);
-            } else {
-                open_save_agent_layout_dialog(state);
-            }
+            handle_agent_save_layout(state);
             Control::Changed
         }
         AppCommand::AgentSaveLayoutAs => {
-            if state.agents_tab.layout.is_some() {
-                open_save_agent_layout_dialog(state);
-            } else {
-                state
-                    .overlay
-                    .notify("No agent layout to save yet", NotificationLevel::Warning);
-            }
+            handle_agent_save_layout_as(state);
             Control::Changed
         }
         AppCommand::AgentSaveLayoutConfirmed(name) => {
-            if state.agents_tab.layout.is_none() {
-                state
-                    .overlay
-                    .notify("No agent layout to save yet", NotificationLevel::Warning);
-                return Control::Changed;
-            }
-            let normalized = terminal_layouts::normalize_layout_name(name);
-            let collision = state.saved_agent_layouts.iter().any(|layout| {
-                terminal_layouts::normalize_layout_name(&layout.name)
-                    .eq_ignore_ascii_case(&normalized)
-            });
-            if collision {
-                state.overlay.open_confirm(
-                    format!("Layout \"{normalized}\" already exists. Overwrite?"),
-                    AppCommand::AgentSaveLayoutOverwriteConfirmed(name.clone()),
-                );
-            } else {
-                perform_save_agent_layout(state, name);
-            }
+            handle_agent_save_layout_confirmed(name, state);
             Control::Changed
         }
         AppCommand::AgentSaveLayoutOverwriteConfirmed(name) => {
@@ -1654,71 +1742,11 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             Control::Changed
         }
         AppCommand::AgentDeleteSavedLayout(index) => {
-            if let Some(deleted) =
-                terminal_layouts::delete_saved_layout(&mut state.saved_agent_layouts, *index)
-            {
-                state.persist_saved_agent_layouts();
-                refresh_active_saved_layout(state);
-                state.overlay.notify(
-                    format!("Deleted saved layout: {}", deleted.name),
-                    NotificationLevel::Info,
-                );
-                let next_selection = if state.saved_agent_layouts.is_empty() {
-                    None
-                } else {
-                    Some(
-                        tiling::PRESET_LIST.len()
-                            + (*index).min(state.saved_agent_layouts.len() - 1),
-                    )
-                };
-                open_agent_layout_picker_with_selection(next_selection, state);
-            } else {
-                state
-                    .overlay
-                    .notify("Saved layout not found", NotificationLevel::Warning);
-            }
+            handle_agent_delete_saved_layout(*index, state);
             Control::Changed
         }
         AppCommand::AgentRenameSavedLayoutConfirmed { index, name } => {
-            match terminal_layouts::rename_saved_layout(
-                &mut state.saved_agent_layouts,
-                *index,
-                name,
-            ) {
-                Some(terminal_layouts::RenameLayoutOutcome::Renamed { to, .. }) => {
-                    state.persist_saved_agent_layouts();
-                    refresh_active_saved_layout(state);
-                    state.overlay.notify(
-                        format!("Renamed saved layout to: {to}"),
-                        NotificationLevel::Info,
-                    );
-                    open_agent_layout_picker_with_selection(
-                        Some(tiling::PRESET_LIST.len() + *index),
-                        state,
-                    );
-                }
-                Some(terminal_layouts::RenameLayoutOutcome::ReplacedExisting {
-                    index: selected,
-                    to,
-                    ..
-                }) => {
-                    state.persist_saved_agent_layouts();
-                    refresh_active_saved_layout(state);
-                    state.overlay.notify(
-                        format!("Renamed layout and replaced existing: {to}"),
-                        NotificationLevel::Info,
-                    );
-                    open_agent_layout_picker_with_selection(
-                        Some(tiling::PRESET_LIST.len() + selected),
-                        state,
-                    );
-                }
-                None => {
-                    state
-                        .overlay
-                        .notify("Saved layout not found", NotificationLevel::Warning);
-                }
-            }
+            handle_agent_rename_saved_layout(*index, name, state);
             Control::Changed
         }
         AppCommand::OpenSettings
@@ -1758,7 +1786,6 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
     }
 }
 
-/// Handle save command.
 /// Handle errors from the event loop.
 #[allow(clippy::needless_pass_by_value)] // rat-salsa callback requires owned Error
 pub fn error(
