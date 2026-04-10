@@ -229,6 +229,19 @@ fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
     state.last_mouse_pos = Some((mouse.column, mouse.row));
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
+            // Root tab bar is shared across both tabs, so hit-test it before
+            // dispatching to the per-tab handlers. Otherwise a click on
+            // "Editor" while on the Agents tab would be swallowed by the
+            // agents pane-focus logic and silently do nothing.
+            if let Some(tab_area) = state.last_root_tabs_area {
+                if point_in_rect(mouse.column, mouse.row, tab_area) {
+                    if let Some(tab) = root_tab_hit_test(mouse.column, tab_area) {
+                        state.set_root_tab(tab);
+                        return Control::Changed;
+                    }
+                    return Control::Continue;
+                }
+            }
             if state.root_tab == RootTab::Agents {
                 return handle_agents_mouse_down(mouse, state);
             }
@@ -341,15 +354,9 @@ fn handle_middle_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEv
 
 #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
 fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEvent> {
+    // Root tab bar clicks are intercepted by `handle_mouse_event` before
+    // reaching this function.
     let (col, row) = (mouse.column, mouse.row);
-    if let Some(tab_area) = state.last_root_tabs_area {
-        if point_in_rect(col, row, tab_area) {
-            if let Some(tab) = root_tab_hit_test(col, tab_area) {
-                state.set_root_tab(tab);
-                return Control::Changed;
-            }
-        }
-    }
 
     if state.root_tab != RootTab::Editor {
         return Control::Continue;
@@ -764,6 +771,27 @@ mod tests {
             state.active_buf().unwrap().cursor.primary.head,
             Position::new(0, 0)
         );
+    }
+
+    #[test]
+    fn click_editor_root_tab_from_agents_tab_switches_back() {
+        // Regression: clicks on the root tab bar were being swallowed by the
+        // agents mouse handler, so "Editor" was unclickable while on Agents.
+        let mut state = AppState::new();
+        state.set_root_tab(RootTab::Agents);
+        state.last_root_tabs_area = Some(Rect::new(0, 0, 40, 1));
+
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 2, // inside the "Editor" label
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        let result = handle_mouse_event(click, &mut state);
+
+        assert!(matches!(result, Control::Changed));
+        assert_eq!(state.root_tab, RootTab::Editor);
     }
 
     #[test]

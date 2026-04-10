@@ -38,9 +38,9 @@ pub struct ViewportState {
 /// Viewport-scoped line content cache.
 ///
 /// Caches the `String` result of `rope.line(idx).to_string()` for each visible
-/// line. Invalidated when the buffer revision changes or the viewport scrolls.
-/// In the common case (cursor blink, no edit, no scroll), this eliminates
-/// ~80 `String` heap allocations per frame.
+/// line. Invalidated when the buffer identity or revision changes, or when the
+/// viewport scrolls. In the common case (cursor blink, no edit, no scroll),
+/// this eliminates ~80 `String` heap allocations per frame.
 #[derive(Clone, Debug, Default)]
 pub struct LineCache {
     /// Cached line strings, indexed by `line_idx - top_line`.
@@ -51,16 +51,25 @@ pub struct LineCache {
     count: usize,
     /// Buffer revision when the cache was built.
     revision: u64,
+    /// Identity of the buffer the cache was built from. Distinct buffers can
+    /// share a revision number (e.g. two freshly-opened files both at 0), so
+    /// revision alone is not sufficient to detect a buffer switch.
+    buffer_id: Option<BufferId>,
 }
 
 impl LineCache {
     /// Prepare the cache for a new frame with the given viewport parameters.
     ///
-    /// If the revision and viewport haven't changed, this is a no-op (O(1)).
-    /// Otherwise, re-fetches all visible lines from the buffer.
+    /// If the buffer identity, revision, and viewport haven't changed, this is
+    /// a no-op (O(1)). Otherwise, re-fetches all visible lines from the buffer.
     pub fn prepare(&mut self, top_line: usize, height: usize, buffer: &TextBuffer) {
         let revision = buffer.revision();
-        if revision == self.revision && top_line == self.top_line && height == self.count {
+        let buffer_id = buffer.id;
+        if self.buffer_id == Some(buffer_id)
+            && revision == self.revision
+            && top_line == self.top_line
+            && height == self.count
+        {
             return; // Cache is still valid.
         }
 
@@ -78,6 +87,7 @@ impl LineCache {
         self.top_line = top_line;
         self.count = height;
         self.revision = revision;
+        self.buffer_id = Some(buffer_id);
     }
 
     /// Get a cached line by absolute line index.
@@ -881,6 +891,26 @@ pub const fn click_to_position(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_cache_invalidates_on_buffer_switch() {
+        // Two distinct buffers with the same shape (revision 0, same line count)
+        // but different content. Switching between them must not serve stale
+        // lines from the previous buffer.
+        let buf_a = TextBuffer::from_text("alpha\nbeta\ngamma");
+        let buf_b = TextBuffer::from_text("delta\nepsilon\nzeta");
+        assert_ne!(buf_a.id, buf_b.id);
+        assert_eq!(buf_a.revision(), buf_b.revision());
+
+        let mut cache = LineCache::default();
+        cache.prepare(0, 3, &buf_a);
+        assert_eq!(cache.get(0).trim_end(), "alpha");
+
+        cache.prepare(0, 3, &buf_b);
+        assert_eq!(cache.get(0).trim_end(), "delta");
+        assert_eq!(cache.get(1).trim_end(), "epsilon");
+        assert_eq!(cache.get(2).trim_end(), "zeta");
+    }
 
     #[test]
     fn gutter_width_small() {
