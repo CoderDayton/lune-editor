@@ -71,8 +71,11 @@ pub fn render_status_bar(area: Rect, buf: &mut Buffer, status: &StatusLineState,
     if area.height == 0 || area.width == 0 {
         return;
     }
-    // Enforce a strict one-line bar on the terminal's true last row.
-    let y = buf.area().y + buf.area().height.saturating_sub(1);
+    // Render a single row anchored to the bottom of the allocated area. We
+    // previously pinned to `buf.area().height - 1`, which assumed the buffer
+    // area matched the layout exactly — a fragile assumption that could leave
+    // a stale strip above the actual status row when the two disagreed.
+    let y = area.y + area.height.saturating_sub(1);
     let line_area = Rect::new(area.x, y, area.width, 1);
     // Clear the full row first to avoid stale text artifacts.
     for dx in 0..line_area.width {

@@ -2732,7 +2732,8 @@ mod tests {
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(area)[0];
-        let inner = Block::default().borders(Borders::ALL).inner(content);
+        // Empty agents state is borderless — the inner rect is the content itself.
+        let inner = content;
         let total_height = 8;
         let start_y = inner.y + inner.height.saturating_sub(total_height) / 2;
         let text_block_width = [

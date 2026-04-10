@@ -43,12 +43,10 @@ pub(super) fn render_agents_tab(area: Rect, buf: &mut Buffer, state: &mut AppSta
 }
 
 fn render_empty_agents_tab(content: Rect, buf: &mut Buffer, state: &AppState) {
-    let block = Block::default()
-        .title(" Agents ")
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(state.theme.overlay_border));
-    let inner = block.inner(content);
-    block.render(content, buf);
+    // No border frame: the populated agents view is borderless, and the
+    // empty state should match so the chrome doesn't pop in and out as
+    // panes are opened and closed.
+    let inner = content;
 
     if inner.width == 0 || inner.height == 0 {
         return;
