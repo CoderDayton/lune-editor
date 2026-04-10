@@ -255,6 +255,13 @@ pub struct AppState {
     state_db: Option<StateDb>,
     /// Timestamp of the last successful state-db save (for debounce).
     last_state_save: Instant,
+
+    /// Last time a mouse-wheel scroll returned `Control::Changed`.
+    ///
+    /// Used to throttle the render rate when the terminal is streaming
+    /// a burst of scroll events so we don't render every single one —
+    /// see `handle_scroll` in `ui_interaction.rs`.
+    pub last_scroll_render: Instant,
     /// Warning message accumulated during CLI / boot-time setup, to be
     /// surfaced as a toast notification after the TUI enters its event loop.
     /// Boot-time writes to stderr are invisible when launched from a desktop
@@ -339,6 +346,7 @@ impl AppState {
             clipboard: None,
             state_db: None,
             last_state_save: Instant::now(),
+            last_scroll_render: Instant::now(),
             pending_startup_warning: None,
         }
     }

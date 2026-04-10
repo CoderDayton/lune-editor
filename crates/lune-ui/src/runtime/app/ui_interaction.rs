@@ -291,13 +291,42 @@ fn editor_scroll_step(viewport_height: usize) -> usize {
     proportional.clamp(floor, ceiling)
 }
 
+/// Minimum time between rendered scroll frames. At ~30 fps we still
+/// feel smooth but any queued scroll burst gets coalesced into few
+/// renders instead of one per event.
+const SCROLL_RENDER_INTERVAL: Duration = Duration::from_millis(33);
+
+/// Peek at the crossterm event queue to decide whether more input is
+/// already waiting behind this scroll. When a terminal sends a burst
+/// of wheel events (Ghostty / kitty / wezterm with momentum) we get
+/// dozens of events back-to-back; rendering every single one forces
+/// the event loop to stutter behind the user's physical action.
+///
+/// We short-circuit to `Control::Unchanged` when more events are
+/// pending AND we rendered recently. That mutates state but skips
+/// the re-render, so the burst drains as fast as possible. A time
+/// floor guarantees we still hit the screen at ~30 fps during long
+/// inertial scrolls, preventing a "frozen" look.
+fn scroll_control(state: &mut AppState) -> Control<AppEvent> {
+    let more_pending = ratatui_crossterm::crossterm::event::poll(Duration::ZERO).unwrap_or(false);
+    let since = state.last_scroll_render.elapsed();
+    if more_pending && since < SCROLL_RENDER_INTERVAL {
+        Control::Unchanged
+    } else {
+        state.last_scroll_render = Instant::now();
+        Control::Changed
+    }
+}
+
 /// Route a mouse-wheel scroll to the currently focused pane.
 ///
 /// Focus-driven, not hover-driven: whichever pane was last focused (by
 /// click or Tab cycling) receives the scroll. The editor branch scales
-/// the step with file length via [`editor_scroll_step`] so long files
-/// don't feel frozen and short files don't feel jerky. File tree and
-/// git panel always move one row per tick for precision.
+/// the step with viewport height via [`editor_scroll_step`]. File tree
+/// and git panel move one row per tick for precision. Every branch
+/// funnels through [`scroll_control`] so bursts of wheel events from
+/// inertial scrolling get coalesced instead of triggering one render
+/// each.
 fn handle_scroll(state: &mut AppState, dir: ScrollDir) -> Control<AppEvent> {
     match state.focus.active() {
         PanelId::FileTree => {
@@ -308,14 +337,14 @@ fn handle_scroll(state: &mut AppState, dir: ScrollDir) -> Control<AppEvent> {
                 ScrollDir::Up => state.file_tree.select_prev(1),
                 ScrollDir::Down => state.file_tree.select_next(1),
             }
-            Control::Changed
+            scroll_control(state)
         }
         PanelId::GitPanel => {
             match dir {
                 ScrollDir::Up => state.git_panel.select_prev(),
                 ScrollDir::Down => state.git_panel.select_next(),
             }
-            Control::Changed
+            scroll_control(state)
         }
         PanelId::Editor => {
             if state.root_tab != RootTab::Editor {
@@ -333,7 +362,7 @@ fn handle_scroll(state: &mut AppState, dir: ScrollDir) -> Control<AppEvent> {
                 ScrollDir::Down => state.viewport.scroll_down(step, total, height),
             }
             state.viewport_follow_cursor = false;
-            Control::Changed
+            scroll_control(state)
         }
         // Terminal / palette / status bar: no wheel scroll for now.
         _ => Control::Continue,
