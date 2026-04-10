@@ -15,6 +15,7 @@
 //! ```
 
 use crate::primitives::{Color, Modifier, Style};
+use crate::style::color::hex;
 
 // ── Border characters ─────────────────────────────────────────────────
 
@@ -186,6 +187,35 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// Dim `color` toward its own background by `amount` (`[0, 1]`).
+    ///
+    /// Uses [`crate::style::color::dynamic_shade`] so the direction is
+    /// chosen relative to the theme's background — dark themes darken
+    /// toward black, light themes lighten toward white. Good for hover
+    /// states, disabled controls, and secondary text.
+    #[must_use]
+    pub fn dim(&self, color: Color, amount: f32) -> Color {
+        crate::style::color::dynamic_shade(color, self.bg, amount)
+    }
+
+    /// Lift `color` away from its own background by `amount` (`[0, 1]`).
+    /// Inverse of [`dim`]: dark themes lighten toward white, light themes
+    /// darken toward black. Good for active / emphasized states.
+    #[must_use]
+    pub fn lift(&self, color: Color, amount: f32) -> Color {
+        // The opposite direction of dim: if bg is dark, we lighten; if bg
+        // is light, we darken. We achieve that by shading toward the
+        // complementary extreme of bg.
+        use crate::style::color::{relative_luminance, shade};
+        let Some(bg_lum) = relative_luminance(self.bg) else {
+            return color;
+        };
+        // If bg luminance > 0.5 the theme is light; shade the color
+        // darker (negative factor). Otherwise shade lighter (positive).
+        let factor = if bg_lum > 0.5 { -amount } else { amount };
+        shade(color, factor)
+    }
+
     /// The built-in dark theme.
     ///
     /// Uses a consistent RGB palette for predictable rendering across
@@ -195,19 +225,19 @@ impl Theme {
     /// in ratatui-core 0.1, so this constructor is fully const-evaluable.
     pub const fn dark() -> Self {
         // ── Palette ──────────────────────────────────────────────
-        let base = Color::Rgb(30, 30, 46); // #1e1e2e  background
-        let surface0 = Color::Rgb(49, 50, 68); // #313244  raised surfaces
-        let surface1 = Color::Rgb(69, 71, 90); // #45475a  borders, gutters
-        let surface2 = Color::Rgb(88, 91, 112); // #585b70  dimmed text
-        let subtext0 = Color::Rgb(127, 132, 156); // #7f849c  muted text
-        let text = Color::Rgb(205, 214, 244); // #cdd6f4  primary text
-        let accent = Color::Rgb(137, 180, 250); // #89b4fa  blue accent
-        let green = Color::Rgb(166, 227, 161); // #a6e3a1
-        let yellow = Color::Rgb(249, 226, 175); // #f9e2af
-        let red = Color::Rgb(243, 139, 168); // #f38ba8
-        let mauve = Color::Rgb(203, 166, 247); // #cba6f7
-        let teal = Color::Rgb(148, 226, 213); // #94e2d5
-        let mantle = Color::Rgb(24, 24, 37); // #181825  status bar bg
+        let base = hex("#1e1e2e"); // background
+        let surface0 = hex("#313244"); // raised surfaces
+        let surface1 = hex("#45475a"); // borders, gutters
+        let surface2 = hex("#585b70"); // dimmed text
+        let subtext0 = hex("#7f849c"); // muted text
+        let text = hex("#cdd6f4"); // primary text
+        let accent = hex("#89b4fa"); // blue accent
+        let green = hex("#a6e3a1");
+        let yellow = hex("#f9e2af");
+        let red = hex("#f38ba8");
+        let mauve = hex("#cba6f7");
+        let teal = hex("#94e2d5");
+        let mantle = hex("#181825"); // status bar bg
 
         Self {
             // Borders
@@ -247,9 +277,9 @@ impl Theme {
 
             // Diff view
             diff_add_fg: green,
-            diff_add_bg: Color::Rgb(26, 46, 26), // dark green tint
+            diff_add_bg: hex("#1a2e1a"), // dark green tint
             diff_del_fg: red,
-            diff_del_bg: Color::Rgb(46, 26, 30), // dark red tint
+            diff_del_bg: hex("#2e1a1e"), // dark red tint
             diff_hunk_fg: teal,
 
             // Tab bar
@@ -285,8 +315,8 @@ impl Theme {
             overlay_hint_fg: surface2,
 
             // Search highlights
-            search_current_bg: Color::Rgb(200, 150, 50),
-            search_match_bg: Color::Rgb(80, 80, 40),
+            search_current_bg: hex("#c89632"),
+            search_match_bg: hex("#505028"),
 
             // Welcome screen
             welcome_title: Style::new().fg(accent).add_modifier(Modifier::BOLD),
@@ -300,19 +330,19 @@ impl Theme {
     /// terminals with a light background.
     pub const fn light() -> Self {
         // ── Palette ──────────────────────────────────────────────
-        let base = Color::Rgb(239, 241, 245); // #eff1f5  background
-        let surface0 = Color::Rgb(204, 208, 218); // #ccd0da  raised surfaces
-        let surface1 = Color::Rgb(188, 192, 204); // #bcc0cc  borders
-        let surface2 = Color::Rgb(156, 160, 176); // #9ca0b0  dimmed text
-        let subtext0 = Color::Rgb(108, 111, 133); // #6c6f85  muted text
-        let text = Color::Rgb(76, 79, 105); // #4c4f69  primary text
-        let accent = Color::Rgb(30, 102, 245); // #1e66f5  blue accent
-        let green = Color::Rgb(64, 160, 43); // #40a02b
-        let yellow = Color::Rgb(223, 142, 29); // #df8e1d
-        let red = Color::Rgb(210, 15, 57); // #d20f39
-        let mauve = Color::Rgb(136, 57, 239); // #8839ef
-        let teal = Color::Rgb(23, 146, 153); // #179299
-        let mantle = Color::Rgb(230, 233, 239); // #e6e9ef  status bar bg
+        let base = hex("#eff1f5"); // background
+        let surface0 = hex("#ccd0da"); // raised surfaces
+        let surface1 = hex("#bcc0cc"); // borders
+        let surface2 = hex("#9ca0b0"); // dimmed text
+        let subtext0 = hex("#6c6f85"); // muted text
+        let text = hex("#4c4f69"); // primary text
+        let accent = hex("#1e66f5"); // blue accent
+        let green = hex("#40a02b");
+        let yellow = hex("#df8e1d");
+        let red = hex("#d20f39");
+        let mauve = hex("#8839ef");
+        let teal = hex("#179299");
+        let mantle = hex("#e6e9ef"); // status bar bg
 
         Self {
             // Borders
@@ -352,9 +382,9 @@ impl Theme {
 
             // Diff view
             diff_add_fg: green,
-            diff_add_bg: Color::Rgb(220, 245, 220),
+            diff_add_bg: hex("#dcf5dc"),
             diff_del_fg: red,
-            diff_del_bg: Color::Rgb(255, 225, 225),
+            diff_del_bg: hex("#ffe1e1"),
             diff_hunk_fg: teal,
 
             // Tab bar
@@ -390,8 +420,8 @@ impl Theme {
             overlay_hint_fg: surface2,
 
             // Search highlights
-            search_current_bg: Color::Rgb(255, 220, 100),
-            search_match_bg: Color::Rgb(220, 220, 150),
+            search_current_bg: hex("#ffdc64"),
+            search_match_bg: hex("#dcdc96"),
 
             // Welcome screen
             welcome_title: Style::new().fg(accent).add_modifier(Modifier::BOLD),
@@ -484,6 +514,76 @@ mod tests {
         let t = Theme::dark();
         assert_ne!(t.diff_add_fg, t.diff_del_fg);
         assert_ne!(t.diff_add_bg, t.diff_del_bg);
+    }
+
+    #[test]
+    fn dark_theme_text_meets_wcag_aa() {
+        use crate::style::color::contrast_ratio;
+        let t = Theme::dark();
+        // WCAG 2.0 AA for normal text: ≥ 4.5:1
+        let ratio = contrast_ratio(t.fg, t.bg).expect("concrete colors");
+        assert!(
+            ratio >= 4.5,
+            "dark theme body contrast {ratio:.2} is below WCAG AA (4.5)"
+        );
+        // Accent-on-bg is used for active tabs and headings, same bar.
+        let accent_ratio = contrast_ratio(t.accent, t.bg).expect("concrete colors");
+        assert!(
+            accent_ratio >= 3.0,
+            "dark theme accent contrast {accent_ratio:.2} is below WCAG AA large-text (3.0)"
+        );
+    }
+
+    #[test]
+    fn dim_on_dark_theme_darkens_toward_bg() {
+        use crate::style::color::relative_luminance;
+        let t = Theme::dark();
+        let dimmed = t.dim(t.fg, 0.3);
+        assert!(
+            relative_luminance(dimmed).unwrap() < relative_luminance(t.fg).unwrap(),
+            "dim on dark theme should reduce fg luminance"
+        );
+    }
+
+    #[test]
+    fn dim_on_light_theme_lightens_toward_bg() {
+        use crate::style::color::relative_luminance;
+        let t = Theme::light();
+        let dimmed = t.dim(t.fg, 0.3);
+        assert!(
+            relative_luminance(dimmed).unwrap() > relative_luminance(t.fg).unwrap(),
+            "dim on light theme should raise fg luminance toward white bg"
+        );
+    }
+
+    #[test]
+    fn lift_is_inverse_of_dim_direction() {
+        use crate::style::color::relative_luminance;
+        let dark = Theme::dark();
+        // On dark theme, lifting fg should brighten (away from bg).
+        let lifted = dark.lift(dark.fg, 0.2);
+        assert!(relative_luminance(lifted).unwrap() > relative_luminance(dark.fg).unwrap());
+
+        let light = Theme::light();
+        // On light theme, lifting fg should darken (away from bg).
+        let lifted = light.lift(light.fg, 0.2);
+        assert!(relative_luminance(lifted).unwrap() < relative_luminance(light.fg).unwrap());
+    }
+
+    #[test]
+    fn light_theme_text_meets_wcag_aa() {
+        use crate::style::color::contrast_ratio;
+        let t = Theme::light();
+        let ratio = contrast_ratio(t.fg, t.bg).expect("concrete colors");
+        assert!(
+            ratio >= 4.5,
+            "light theme body contrast {ratio:.2} is below WCAG AA (4.5)"
+        );
+        let accent_ratio = contrast_ratio(t.accent, t.bg).expect("concrete colors");
+        assert!(
+            accent_ratio >= 3.0,
+            "light theme accent contrast {accent_ratio:.2} is below WCAG AA large-text (3.0)"
+        );
     }
 
     #[test]

@@ -278,6 +278,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "coolor"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "980c2afde4af43d6a05c5be738f9eae595cff86dce1f38f88b95058a98c027f3"
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1371,8 +1377,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arboard",
+ "coolor",
  "crossbeam",
  "crossterm",
+ "git2",
  "insta",
  "log",
  "lune-ai",

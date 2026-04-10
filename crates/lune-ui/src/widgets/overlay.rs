@@ -15,6 +15,7 @@ use crate::event::AppCommand;
 use crate::primitives::Color;
 use crate::runtime::terminal_layouts;
 use crate::runtime::tiling::{SavedTileNode, SplitDirection};
+use crate::style::color as color_util;
 use crate::theme::Theme;
 use lune_ai::session::AiClientKind;
 use lune_core::language::LanguageId;
@@ -430,32 +431,32 @@ const KNOWN_CLIENTS: &[KnownClient] = &[
     KnownClient {
         label: "Claude Code",
         command: "claude",
-        color: Color::Rgb(215, 150, 60), // amber
+        color: color_util::hex("#d7963c"), // amber
     },
     KnownClient {
         label: "OpenCode",
         command: "opencode",
-        color: Color::Rgb(80, 180, 255), // sky blue
+        color: color_util::hex("#50b4ff"), // sky blue
     },
     KnownClient {
         label: "Gemini",
         command: "gemini",
-        color: Color::Rgb(66, 200, 140), // teal-green
+        color: color_util::hex("#42c88c"), // teal-green
     },
     KnownClient {
         label: "Kilo Code",
         command: "kilo",
-        color: Color::Rgb(255, 100, 100), // coral red
+        color: color_util::hex("#ff6464"), // coral red
     },
     KnownClient {
         label: "Cline",
         command: "cline",
-        color: Color::Rgb(160, 110, 255), // violet
+        color: color_util::hex("#a06eff"), // violet
     },
     KnownClient {
         label: "Qwen Code",
         command: "qwen",
-        color: Color::Rgb(60, 210, 200), // cyan
+        color: color_util::hex("#3cd2c8"), // cyan
     },
 ];
 
@@ -493,13 +494,16 @@ impl AiClientPickerState {
     /// Always appends a "System Shell" entry at the end.
     #[must_use]
     pub fn scan_available() -> Self {
+        // Downgrade RGB → nearest 8-bit ANSI for terminals that don't
+        // advertise truecolor via $COLORTERM. On truecolor terminals this
+        // is a pass-through and the Rgb value is preserved.
         let mut entries: Vec<AiClientEntry> = KNOWN_CLIENTS
             .iter()
             .filter(|c| is_command_available(c.command))
             .map(|c| AiClientEntry {
                 label: c.label.to_string(),
                 command: c.command.to_string(),
-                color: c.color,
+                color: color_util::downgrade_if_needed(c.color),
                 kind: if c.command == "claude" {
                     AiClientKind::ClaudeCode
                 } else {
@@ -516,7 +520,7 @@ impl AiClientPickerState {
         entries.push(AiClientEntry {
             label: "System Shell".to_string(),
             command: shell_cmd,
-            color: Color::Rgb(120, 200, 120),
+            color: color_util::downgrade_if_needed(color_util::hex("#78c878")),
             kind: AiClientKind::Shell,
         });
 
@@ -2163,36 +2167,7 @@ fn layout_picker_footer(
 /// as the notification's vitality decays. This is a one-shot per-frame
 /// blend, not an animation.
 fn blend_toward(color: Color, tr: u8, tg: u8, tb: u8, t: f32) -> Color {
-    let (sr, sg, sb) = match color {
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::Reset | Color::Black => (0, 0, 0),
-        Color::White => (255, 255, 255),
-        Color::Red => (255, 0, 0),
-        Color::Green => (0, 255, 0),
-        Color::Blue => (0, 0, 255),
-        Color::Yellow => (255, 255, 0),
-        Color::Magenta => (255, 0, 255),
-        Color::Cyan => (0, 255, 255),
-        Color::Gray => (128, 128, 128),
-        Color::DarkGray => (64, 64, 64),
-        Color::LightRed => (255, 128, 128),
-        Color::LightGreen => (128, 255, 128),
-        Color::LightBlue => (128, 128, 255),
-        Color::LightYellow => (255, 255, 128),
-        Color::LightMagenta => (255, 128, 255),
-        Color::LightCyan => (128, 255, 255),
-        Color::Indexed(_) => return color,
-    };
-
-    let lerp = |s: u8, d: u8, t: f32| -> u8 {
-        let s_f = f32::from(s);
-        let d_f = f32::from(d);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let result = (d_f - s_f).mul_add(t, s_f).clamp(0.0, 255.0) as u8;
-        result
-    };
-
-    Color::Rgb(lerp(sr, tr, t), lerp(sg, tg, t), lerp(sb, tb, t))
+    color_util::blend(color, Color::Rgb(tr, tg, tb), t)
 }
 
 fn truncate_inline_text(text: &str, max_width: usize) -> String {
@@ -2658,7 +2633,7 @@ fn render_single_toast(
     };
 
     let vitality = notif.vitality(config);
-    let (br, bg, bb) = theme_bg_rgb(theme.bg);
+    let (br, bg, bb) = color_util::to_rgb_u8(theme.bg).unwrap_or((0, 0, 0));
     let border_fg = blend_toward(base_fg, br, bg, bb, 1.0 - vitality);
     let body_fg = blend_toward(theme.fg, br, bg, bb, (1.0 - vitality) * 0.85);
 
@@ -2730,20 +2705,6 @@ fn render_single_toast(
         spans.push(Span::styled(count_suffix, count_style));
     }
     Line::from(spans).render(Rect::new(body_x, body_y, body_w, 1), buf);
-}
-
-/// Extract RGB components from a theme background color. Used so the
-/// fade-out blends toward the theme background, not hardcoded black —
-/// matters for light themes.
-const fn theme_bg_rgb(color: Color) -> (u8, u8, u8) {
-    match color {
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::White => (255, 255, 255),
-        // Fallback for everything else (named indexed colors, Reset,
-        // Black): assume dark so the fade doesn't blow out on unknown
-        // palettes.
-        _ => (0, 0, 0),
-    }
 }
 
 #[cfg(test)]

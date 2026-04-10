@@ -40,11 +40,13 @@ tree-sitter-html.workspace = true
 tree-sitter-css.workspace = true
 tree-sitter-bash.workspace = true
 regex.workspace = true
+coolor.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 proptest.workspace = true
 insta.workspace = true
+git2.workspace = true
 
 [lints]
 workspace = true

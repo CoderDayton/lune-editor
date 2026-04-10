@@ -88,6 +88,9 @@ rustc-hash = "2"
 # Stack-allocated small collections
 smallvec = "1.15"
 
+# Color conversions (ANSI / RGB / HSL) for TUI theming
+coolor = "1"
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 
