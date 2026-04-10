@@ -310,7 +310,7 @@ impl Highlighter for TreeSitterHighlighter {
 
         let total_lines = self.line_byte_offsets.len();
 
-        // Clamp range.
+        // Clamp the requested range.
         let start_line = line_range.start.min(total_lines);
         let end_line = line_range.end.min(total_lines);
 
@@ -318,29 +318,40 @@ impl Highlighter for TreeSitterHighlighter {
             return Vec::new();
         }
 
-        // Cache hit: same generation and requested range is within the cached range.
-        if self.cached_generation == self.generation
-            && start_line >= self.cached_range.start
-            && end_line <= self.cached_range.end
-        {
-            let offset = start_line - self.cached_range.start;
-            let len = end_line - start_line;
-            return self.cached_result[offset..offset + len].to_vec();
+        // The cache stores the full file's highlight result for the
+        // current generation. Any per-frame request is served by slicing
+        // from that. Invalidated only when the buffer is edited (the
+        // generation bumps via `update`), not when the viewport scrolls.
+        if self.cached_generation != self.generation {
+            self.rebuild_full_cache(total_lines);
         }
 
-        // Cache miss — recompute.
+        let end_line = end_line.min(self.cached_result.len());
+        if start_line >= end_line {
+            return Vec::new();
+        }
+        self.cached_result[start_line..end_line].to_vec()
+    }
+}
+
+impl TreeSitterHighlighter {
+    /// Re-run tree-sitter over the entire source and rebuild
+    /// `cached_result` as a per-line vector. Called at most once per
+    /// buffer edit, not per frame.
+    fn rebuild_full_cache(&mut self, total_lines: usize) {
+        let mut result: Vec<HighlightedLine> = (0..total_lines).map(HighlightedLine::new).collect();
+
         // Reuse the cached `ts_highlighter` instance to avoid re-allocating
-        // its internal buffers on every call.
+        // its internal buffers on every edit.
         let Ok(events) = self
             .ts_highlighter
             .highlight(&self.config, &self.source, None, |_| None)
         else {
-            return (start_line..end_line).map(HighlightedLine::new).collect();
+            self.cached_result = result;
+            self.cached_generation = self.generation;
+            self.cached_range = 0..total_lines;
+            return;
         };
-
-        // Convert HighlightEvents to per-line styled spans.
-        let mut result: Vec<HighlightedLine> =
-            (start_line..end_line).map(HighlightedLine::new).collect();
 
         let mut style_stack: Vec<HighlightStyle> = Vec::new();
 
@@ -359,13 +370,12 @@ impl Highlighter for TreeSitterHighlighter {
                     style_stack.pop();
                 }
                 HighlightEvent::Source { start, end } => {
-                    let current_style = style_stack.last().copied();
-                    if let Some(style) = current_style {
+                    if let Some(style) = style_stack.last().copied() {
                         add_spans_for_byte_range(
                             start..end,
                             style,
                             &self.line_byte_offsets,
-                            start_line..end_line,
+                            0..total_lines,
                             &mut result,
                         );
                     }
@@ -373,12 +383,9 @@ impl Highlighter for TreeSitterHighlighter {
             }
         }
 
-        // Store result in cache for next frame.
-        self.cached_result.clone_from(&result);
+        self.cached_result = result;
         self.cached_generation = self.generation;
-        self.cached_range = start_line..end_line;
-
-        result
+        self.cached_range = 0..total_lines;
     }
 }
 
