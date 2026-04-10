@@ -357,9 +357,24 @@ fn handle_scroll(state: &mut AppState, dir: ScrollDir) -> Control<AppEvent> {
                 .last_editor_content_area
                 .map_or(20, |a| a.height as usize);
             let step = editor_scroll_step(height);
-            match dir {
-                ScrollDir::Up => state.viewport.scroll_up(step),
-                ScrollDir::Down => state.viewport.scroll_down(step, total, height),
+
+            // Advance an ease-out animation target instead of jumping the
+            // viewport directly. The `AppEvent::Rendered` arm of `event`
+            // lerps `top_line` toward this target frame by frame (driven
+            // by `PollRendered`), which reads as subtle smoothing during
+            // the final approach of each wheel burst.
+            let max_top = total.saturating_sub(height.max(1));
+            let current_target = state
+                .viewport_scroll_target
+                .unwrap_or(state.viewport.top_line);
+            let new_target = match dir {
+                ScrollDir::Up => current_target.saturating_sub(step),
+                ScrollDir::Down => (current_target + step).min(max_top),
+            };
+            if new_target == state.viewport.top_line {
+                state.viewport_scroll_target = None;
+            } else {
+                state.viewport_scroll_target = Some(new_target);
             }
             state.viewport_follow_cursor = false;
             scroll_control(state)
@@ -1033,8 +1048,8 @@ mod tests {
     }
 
     #[test]
-    fn scroll_moves_editor_viewport_when_editor_focused() {
-        // 40-row viewport so the step is 40/5 = 8 lines per tick.
+    fn scroll_sets_ease_out_target_when_editor_focused() {
+        // 40-row viewport → step is 40/5 = 8 lines per tick.
         let text: String = (0..200)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
@@ -1052,11 +1067,14 @@ mod tests {
         };
         let result = handle_mouse_event(scroll_up, &mut state);
         assert!(matches!(result, Control::Changed));
-        assert_eq!(state.viewport.top_line, 42);
+        // Wheel events set the ease-out target but don't move top_line
+        // directly — the `Rendered` event drives the lerp.
+        assert_eq!(state.viewport.top_line, 50);
+        assert_eq!(state.viewport_scroll_target, Some(42));
 
-        // Consecutive ticks keep the step consistent.
+        // A second tick accumulates into the same target.
         let _ = handle_mouse_event(scroll_up, &mut state);
-        assert_eq!(state.viewport.top_line, 34);
+        assert_eq!(state.viewport_scroll_target, Some(34));
     }
 
     #[test]

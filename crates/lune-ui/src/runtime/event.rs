@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use crate::primitives::CtEvent;
 use lune_ai::session::AiClientKind;
 use lune_core::language::LanguageId;
+use rat_salsa::event::RenderedEvent;
 use rat_salsa::timer::TimeOut;
 
 /// Unified event type for the Lune Editor event loop.
@@ -22,6 +23,9 @@ pub enum AppEvent {
     Fs(FsEvent),
     /// AI session event.
     Ai(AiEvent),
+    /// Emitted by `PollRendered` after every frame paint. Used by the
+    /// viewport scroll animation to drive its interpolation loop.
+    Rendered,
     /// Application-level command (from keybinding, command palette, etc.).
     Command(AppCommand),
 }
@@ -37,6 +41,13 @@ impl From<CtEvent> for AppEvent {
 impl From<TimeOut> for AppEvent {
     fn from(timeout: TimeOut) -> Self {
         Self::Timer(timeout)
+    }
+}
+
+// Required by PollRendered.
+impl From<RenderedEvent> for AppEvent {
+    fn from(_: RenderedEvent) -> Self {
+        Self::Rendered
     }
 }
 

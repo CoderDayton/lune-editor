@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Error;
 use crossbeam::channel::{self, Receiver, TryRecvError};
-use rat_salsa::poll::{PollCrossterm, PollTimers};
+use rat_salsa::poll::{PollCrossterm, PollRendered, PollTimers};
 use rat_salsa::{Control, RunConfig, SalsaAppContext, SalsaContext, run_tui};
 
 use crate::primitives::{
@@ -262,6 +262,14 @@ pub struct AppState {
     /// a burst of scroll events so we don't render every single one —
     /// see `handle_scroll` in `ui_interaction.rs`.
     pub last_scroll_render: Instant,
+
+    /// Target top-line for the viewport scroll ease-out animation.
+    ///
+    /// `Some(n)` means the viewport is currently chasing line `n` via
+    /// a linear interpolation driven by `PollRendered`. Cleared when
+    /// `viewport.top_line == n`. See `lerp_to` + the `AppEvent::Rendered`
+    /// arm of `event()`.
+    pub viewport_scroll_target: Option<usize>,
     /// Warning message accumulated during CLI / boot-time setup, to be
     /// surfaced as a toast notification after the TUI enters its event loop.
     /// Boot-time writes to stderr are invisible when launched from a desktop
@@ -347,6 +355,7 @@ impl AppState {
             state_db: None,
             last_state_save: Instant::now(),
             last_scroll_render: Instant::now(),
+            viewport_scroll_target: None,
             pending_startup_warning: None,
         }
     }
@@ -1240,9 +1249,62 @@ pub fn event(
                 Ok(Control::Continue)
             }
         }
+        AppEvent::Rendered => Ok(advance_scroll_animation(state)),
         AppEvent::Command(cmd) => Ok(handle_command(cmd, state)),
         AppEvent::Fs(fs_event) => Ok(handle_fs_event(fs_event, state)),
         AppEvent::Ai(_) => Ok(handle_ai_event(state)),
+    }
+}
+
+/// Drive one step of the viewport scroll ease-out animation.
+///
+/// Called in response to every `PollRendered` tick. If a target is
+/// pending, we linearly interpolate `viewport.top_line` toward it by
+/// one step and request another render. When the target is reached
+/// we clear it and return `Control::Continue` so the loop idles.
+fn advance_scroll_animation(state: &mut AppState) -> Control<AppEvent> {
+    let Some(target) = state.viewport_scroll_target else {
+        return Control::Continue;
+    };
+    let current = state.viewport.top_line;
+    if current == target {
+        state.viewport_scroll_target = None;
+        return Control::Continue;
+    }
+    let next = lerp_to(current, target);
+    state.viewport.top_line = next;
+    if next == target {
+        state.viewport_scroll_target = None;
+    }
+    Control::Changed
+}
+
+/// One linear-interpolation step toward `target`.
+///
+/// Moves `current` 35% of the remaining distance with a minimum of one
+/// cell, so integer viewports still converge in ~8-10 steps regardless
+/// of the starting gap. On a 30 ms render budget that's ~250 ms of
+/// ease-out, which is what most users read as "slight smoothing".
+#[must_use]
+pub fn lerp_to(current: usize, target: usize) -> usize {
+    if current == target {
+        return current;
+    }
+    // Direction is kept in unsigned space to avoid any signed-cast
+    // worries for truly enormous viewports.
+    let (abs, ascending) = if target > current {
+        (target - current, true)
+    } else {
+        (current - target, false)
+    };
+    // ~33% of the distance per step, rounded up, clamped to at least
+    // one cell. Division by 3 is a clean integer stand-in for the
+    // 35% factor we really want (ceil(abs / 3)).
+    let step = abs.div_ceil(3).max(1).min(abs);
+    if ascending {
+        current + step
+    } else {
+        current - step
     }
 }
 
@@ -1999,6 +2061,7 @@ pub fn run(state: &mut AppState) -> Result<(), Error> {
         RunConfig::default()?
             .poll(PollCrossterm)
             .poll(PollTimers::default())
+            .poll(PollRendered)
             .poll(PollFileWatcher::new(watcher_rx))
             .poll(PollAiSessions::new(ai_wake_flag)),
     )?;
@@ -3751,6 +3814,64 @@ mod tests {
                 .iter()
                 .any(|entry| matches!(entry.kind, overlay::LayoutPickerEntryKind::Saved(_)))
         );
+    }
+
+    #[test]
+    fn lerp_to_converges_in_bounded_steps() {
+        // A 50-line gap with 35% lerp should reach target in <= 15 steps
+        // (ceil(log_0.65(1/50)) ≈ 10).
+        let mut current = 0usize;
+        let target = 50usize;
+        let mut steps = 0;
+        while current != target {
+            current = lerp_to(current, target);
+            steps += 1;
+            assert!(steps < 20, "lerp failed to converge in 20 steps");
+        }
+        assert_eq!(current, target);
+        assert!(steps <= 15, "lerp took {steps} steps for 50-line gap");
+    }
+
+    #[test]
+    fn lerp_to_handles_both_directions_and_identity() {
+        // Identity returns unchanged.
+        assert_eq!(lerp_to(42, 42), 42);
+        // Upward move.
+        assert!(lerp_to(0, 10) > 0);
+        assert!(lerp_to(0, 10) <= 10);
+        // Downward move.
+        assert!(lerp_to(100, 50) < 100);
+        assert!(lerp_to(100, 50) >= 50);
+        // Adjacent cells always move by exactly 1.
+        assert_eq!(lerp_to(5, 6), 6);
+        assert_eq!(lerp_to(5, 4), 4);
+    }
+
+    #[test]
+    fn advance_scroll_animation_walks_toward_target_and_clears() {
+        let mut state = AppState::new();
+        state.viewport.top_line = 10;
+        state.viewport_scroll_target = Some(30);
+
+        // First tick should move toward the target but not reach it.
+        let ctl = advance_scroll_animation(&mut state);
+        assert!(matches!(ctl, Control::Changed));
+        assert!(state.viewport.top_line > 10 && state.viewport.top_line < 30);
+        assert!(state.viewport_scroll_target.is_some());
+
+        // Keep walking until the target is reached (must converge).
+        for _ in 0..30 {
+            if state.viewport_scroll_target.is_none() {
+                break;
+            }
+            let _ = advance_scroll_animation(&mut state);
+        }
+        assert_eq!(state.viewport.top_line, 30);
+        assert!(state.viewport_scroll_target.is_none());
+
+        // With no target, subsequent ticks are Continue.
+        let ctl = advance_scroll_animation(&mut state);
+        assert!(matches!(ctl, Control::Continue));
     }
 
     #[test]
