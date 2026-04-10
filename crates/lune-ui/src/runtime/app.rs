@@ -3817,6 +3817,136 @@ mod tests {
     }
 
     #[test]
+    fn second_render_matches_first_render_highlights() {
+        // If there's a bug where the first frame is missing highlights
+        // but a second frame shows them, this test will catch it: both
+        // frames should produce identical styled-cell counts.
+        use crate::primitives::Buffer;
+        use crate::runtime::app::ui_render;
+
+        let mut state = AppState::new();
+        let tmp = tempfile::Builder::new().suffix(".rs").tempfile().unwrap();
+        std::fs::write(
+            tmp.path(),
+            "fn main() {\n    let x = 42;\n    println!(\"hello\");\n}\n",
+        )
+        .unwrap();
+        state.open_file(tmp.path()).unwrap();
+        state.set_root_tab(RootTab::Editor);
+
+        let area = Rect::new(0, 0, 80, 24);
+        let theme_fg = state.theme.fg;
+
+        let count_styled = |buf: &Buffer| -> usize {
+            let mut n = 0;
+            for y in 1..10 {
+                for x in 0..area.width {
+                    if let Some(cell) = buf.cell((x, y)) {
+                        if cell.fg != theme_fg && !cell.symbol().trim().is_empty() {
+                            n += 1;
+                        }
+                    }
+                }
+            }
+            n
+        };
+
+        let mut buf_a = Buffer::empty(area);
+        ui_render::render_editor_tab(area, &mut buf_a, &mut state);
+        let first = count_styled(&buf_a);
+
+        let mut buf_b = Buffer::empty(area);
+        ui_render::render_editor_tab(area, &mut buf_b, &mut state);
+        let second = count_styled(&buf_b);
+
+        assert!(
+            first > 0,
+            "first render should have styled cells, got {first}"
+        );
+        assert_eq!(
+            first, second,
+            "first and second renders should be identical: {first} vs {second}"
+        );
+    }
+
+    #[test]
+    fn first_render_after_open_file_paints_syntax_highlights() {
+        // End-to-end: open a .rs file, drive the real render pipeline
+        // once, and verify the editor cells got syntax-colored on the
+        // *first* frame (not only after a later scroll or click).
+        use crate::primitives::Buffer;
+        use crate::runtime::app::ui_render;
+
+        let mut state = AppState::new();
+        let tmp = tempfile::Builder::new().suffix(".rs").tempfile().unwrap();
+        std::fs::write(
+            tmp.path(),
+            "fn main() {\n    let x = 42;\n    println!(\"hello\");\n}\n",
+        )
+        .unwrap();
+        state.open_file(tmp.path()).unwrap();
+        state.set_root_tab(RootTab::Editor);
+
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        ui_render::render_editor_tab(area, &mut buf, &mut state);
+
+        // After the first render, at least one cell on the first few
+        // text lines must carry a non-default foreground — proof that
+        // the highlight slice reached the renderer.
+        let theme_fg = state.theme.fg;
+        let mut styled_cells = 0usize;
+        for y in 1..10 {
+            for x in 0..area.width {
+                if let Some(cell) = buf.cell((x, y)) {
+                    let fg = cell.fg;
+                    if fg != theme_fg && !cell.symbol().trim().is_empty() {
+                        styled_cells += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            styled_cells > 0,
+            "expected at least one syntax-highlighted cell after first render, got {styled_cells}"
+        );
+    }
+
+    #[test]
+    fn highlights_are_populated_on_first_access_after_open() {
+        // Regression: after the per-frame slice refactor, `highlight_lines`
+        // on a freshly opened file must return a non-empty, non-plain
+        // slice. Previously a latent closure-lifetime bug in ui_render
+        // caused the first frame to render an empty slice so no
+        // highlighting appeared until a scroll / click triggered a
+        // second render.
+        let mut state = AppState::new();
+        let tmp = tempfile::Builder::new().suffix(".rs").tempfile().unwrap();
+        std::fs::write(
+            tmp.path(),
+            "fn main() {\n    let x = 42;\n    println!(\"hello\");\n}\n",
+        )
+        .unwrap();
+        state.open_file(tmp.path()).unwrap();
+
+        let id = state.active_buffer.expect("active buffer after open_file");
+        let hl = state
+            .highlighters
+            .get_mut(&id)
+            .expect("highlighter must be inserted for a .rs file");
+
+        let lines = hl.highlight_lines(0..10);
+        assert!(
+            !lines.is_empty(),
+            "highlight_lines should return entries on first call"
+        );
+        assert!(
+            lines.iter().any(|line| !line.is_plain()),
+            "at least one line of rust code should have syntax highlight spans, got {lines:?}"
+        );
+    }
+
+    #[test]
     fn lerp_to_converges_in_bounded_steps() {
         // A 50-line gap with 35% lerp should reach target in <= 15 steps
         // (ceil(log_0.65(1/50)) ≈ 10).
