@@ -84,6 +84,7 @@ fn parse_args() -> Option<(CliOverrides, Vec<PathBuf>)> {
     Some((overrides, paths))
 }
 
+#[allow(clippy::too_many_lines)] // top-level bootstrap; extraction would obscure startup order
 fn main() -> Result<()> {
     // Parse CLI args.
     let Some((overrides, paths)) = parse_args() else {
@@ -200,6 +201,10 @@ fn main() -> Result<()> {
 
     // Record this workspace in recent workspaces.
     record_recent_workspace(&state, workspace_root.as_deref());
+
+    // If no file ended up open after CLI args + recovery + restore, land
+    // the user on the file tree rather than an empty editor pane.
+    state.focus_file_tree_if_no_buffer();
 
     // Verify we have a controlling terminal before entering the TUI.
     require_controlling_terminal()?;

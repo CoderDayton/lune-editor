@@ -18,13 +18,14 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         return handle_overlay_key(key, state);
     }
 
-    if state.root_tab == RootTab::Editor
-        && key.code == KeyCode::Tab
-        && key.modifiers.is_empty()
-        && !state.vim.mode.is_insert()
-    {
-        handle_focus_next_pane(state);
-        return Control::Changed;
+    if state.root_tab == RootTab::Editor && key.code == KeyCode::Tab && key.modifiers.is_empty() {
+        // Tab cycles focus when not in insert mode, or any time the editor
+        // has no buffer to indent (so Tab isn't a silent no-op on an empty
+        // editor — it pulls you to the file tree instead).
+        if !state.vim.mode.is_insert() || state.active_buffer.is_none() {
+            handle_focus_next_pane(state);
+            return Control::Changed;
+        }
     }
 
     if let Some(control) = handle_find_navigation_key(key, state) {
@@ -142,20 +143,30 @@ pub(super) fn handle_focus_next_pane(state: &mut AppState) {
         return;
     }
 
+    let has_buffer = state.active_buffer.is_some();
     let mut panes = Vec::with_capacity(3);
     if state.layout.show_file_tree {
         panes.push(PanelId::FileTree);
     }
-    panes.push(PanelId::Editor);
+    // Skip the Editor pane from the cycle when there's nothing to edit —
+    // Tab should never land on an empty editor.
+    if has_buffer {
+        panes.push(PanelId::Editor);
+    }
     if state.layout.show_git_panel {
         panes.push(PanelId::GitPanel);
     }
 
+    if panes.is_empty() {
+        return;
+    }
+
     let current = state.focus.active();
+    let fallback = *panes.first().unwrap_or(&PanelId::Editor);
     let next = panes
         .iter()
         .position(|&p| p == current)
-        .map_or(PanelId::Editor, |idx| panes[(idx + 1) % panes.len()]);
+        .map_or(fallback, |idx| panes[(idx + 1) % panes.len()]);
     state.focus.set_active(next);
 }
 
@@ -348,10 +359,6 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
         }
         if layout::is_on_right_border(splits, col) {
             state.dragging_border = Some(DragBorder::Right);
-            return Control::Continue;
-        }
-        if layout::is_on_bottom_border(splits, row) {
-            state.dragging_border = Some(DragBorder::Bottom);
             return Control::Continue;
         }
 
@@ -616,14 +623,6 @@ fn handle_mouse_drag(mouse: MouseEvent, state: &mut AppState) -> Control<AppEven
             let right_pct = 100u16.saturating_sub(pct);
             state.layout.set_right_panel_width_pct(right_pct);
         }
-        DragBorder::Bottom => {
-            let total_height = splits.status.y + splits.status.height;
-            if total_height > 0 {
-                let bottom_pct = ((u32::from(total_height.saturating_sub(mouse.row))) * 100
-                    / u32::from(total_height)) as u16;
-                state.layout.set_bottom_panel_height_pct(bottom_pct);
-            }
-        }
         DragBorder::Scrollbar => return Control::Continue,
     }
 
@@ -639,14 +638,6 @@ pub(super) fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Co
             } else {
                 state.focus.set_active(PanelId::Editor);
             }
-            Control::Changed
-        }
-        AppCommand::ToggleTerminal => {
-            state.layout.show_bottom_panel = false;
-            state.overlay.notify(
-                "PTY panel is temporarily removed from the UI",
-                NotificationLevel::Info,
-            );
             Control::Changed
         }
         AppCommand::ToggleGitPanel => {

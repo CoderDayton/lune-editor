@@ -770,7 +770,7 @@ fn render_welcome(area: Rect, buf: &mut Buffer, theme: &Theme) {
         "",
         "Ctrl+P  Command Palette",
         "Ctrl+B  Toggle File Tree",
-        "Ctrl+`  Toggle AI Panel",
+        "Ctrl+`  Toggle Agents Tab",
         "Ctrl+Q  Quit",
     ];
 

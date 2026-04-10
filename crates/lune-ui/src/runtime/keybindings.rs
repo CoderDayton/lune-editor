@@ -90,6 +90,7 @@ impl Keymap {
             (BackTab, CTRL_SHIFT, AppCommand::PrevTab),
             (Char('1'), CTRL, AppCommand::ShowEditorTab),
             (Char('2'), CTRL, AppCommand::ShowAgentsTab),
+            (Char('`'), CTRL, AppCommand::ToggleAgentsTab),
             // Panel toggles
             (Char('b'), CTRL, AppCommand::ToggleFileTree),
             (Char('g'), CTRL, AppCommand::ToggleGitPanel),
@@ -329,9 +330,9 @@ pub fn parse_command(s: &str) -> Option<AppCommand> {
         "prev_tab" => Some(AppCommand::PrevTab),
         "show_editor_tab" => Some(AppCommand::ShowEditorTab),
         "show_agents_tab" => Some(AppCommand::ShowAgentsTab),
+        "toggle_agents_tab" => Some(AppCommand::ToggleAgentsTab),
         // Panels
         "toggle_file_tree" => Some(AppCommand::ToggleFileTree),
-        "toggle_terminal" | "toggle_ai_panel" => Some(AppCommand::ToggleTerminal),
         "toggle_git_panel" => Some(AppCommand::ToggleGitPanel),
         "command_palette" | "open_command_palette" => Some(AppCommand::OpenCommandPalette),
         "toggle_hidden_files" => Some(AppCommand::ToggleHiddenFiles),
@@ -423,8 +424,10 @@ mod tests {
         let km = Keymap::default_global();
         let editor = key_event(KeyCode::Char('1'), KeyModifiers::CONTROL);
         let agents = key_event(KeyCode::Char('2'), KeyModifiers::CONTROL);
+        let toggle = key_event(KeyCode::Char('`'), KeyModifiers::CONTROL);
         assert_eq!(km.lookup(&editor), Some(&AppCommand::ShowEditorTab));
         assert_eq!(km.lookup(&agents), Some(&AppCommand::ShowAgentsTab));
+        assert_eq!(km.lookup(&toggle), Some(&AppCommand::ToggleAgentsTab));
     }
 
     #[test]
@@ -556,14 +559,6 @@ mod tests {
         assert_eq!(
             parse_command("toggle_file_tree"),
             Some(AppCommand::ToggleFileTree)
-        );
-        assert_eq!(
-            parse_command("toggle_terminal"),
-            Some(AppCommand::ToggleTerminal)
-        );
-        assert_eq!(
-            parse_command("toggle_ai_panel"),
-            Some(AppCommand::ToggleTerminal)
         );
         assert_eq!(
             parse_command("toggle_git_panel"),

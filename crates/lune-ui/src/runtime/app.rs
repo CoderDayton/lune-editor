@@ -82,8 +82,7 @@ use self::agent_tab::{
 use self::ai_commands::handle_ai_command;
 #[cfg(test)]
 use self::ai_commands::{
-    handle_ai_ask_selection, handle_ai_new_session, handle_ai_refactor_file,
-    handle_ai_summarize_changes,
+    handle_ai_new_session, handle_ai_refactor_file, handle_ai_summarize_changes,
 };
 use self::editor_actions::{apply_buf_edit, apply_motion};
 use self::editor_modes::{
@@ -256,8 +255,6 @@ pub enum DragBorder {
     Left,
     /// Dragging the editor / right panel border.
     Right,
-    /// Dragging the upper content / bottom panel border.
-    Bottom,
     /// Dragging the editor scrollbar thumb/track.
     Scrollbar,
 }
@@ -843,6 +840,20 @@ impl AppState {
         }
     }
 
+    /// Move focus to the file tree when there is no open buffer.
+    ///
+    /// Intended to be called once after startup file/workspace loading so
+    /// the user lands on the file tree (rather than an empty editor pane)
+    /// when they launched Lune without any specific file.
+    pub fn focus_file_tree_if_no_buffer(&mut self) {
+        if self.active_buffer.is_none()
+            && self.layout.show_file_tree
+            && self.focus.is_focused(PanelId::Editor)
+        {
+            self.focus.focus(PanelId::FileTree);
+        }
+    }
+
     /// Build the status line state from current app state.
     fn build_status_line(&self) -> StatusLineState {
         let (file_path, dirty, cursor_line, cursor_col, selection_chars, line_ending) = self
@@ -1084,9 +1095,6 @@ pub fn render(
     state
         .tab_mgr
         .sync_from_registry(&state.tabs, state.active_buffer, &state.registry);
-
-    // PTY UI section is temporarily disabled.
-    state.layout.show_bottom_panel = false;
 
     if area.width == 0 || area.height == 0 {
         return Ok(());
@@ -1339,6 +1347,14 @@ fn close_tab_by_id(state: &mut AppState, bid: BufferId) {
                 Some(state.tabs[idx.min(state.tabs.len() - 1)])
             };
         }
+        // If closing left nothing to edit, fall back to the file tree so the
+        // user isn't stuck focused on an empty editor pane.
+        if state.active_buffer.is_none()
+            && state.layout.show_file_tree
+            && state.focus.is_focused(PanelId::Editor)
+        {
+            state.focus.focus(PanelId::FileTree);
+        }
     }
 }
 
@@ -1382,9 +1398,16 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             state.set_root_tab(RootTab::Agents);
             Control::Changed
         }
+        AppCommand::ToggleAgentsTab => {
+            let next = match state.root_tab {
+                RootTab::Editor => RootTab::Agents,
+                RootTab::Agents => RootTab::Editor,
+            };
+            state.set_root_tab(next);
+            Control::Changed
+        }
         // Panel toggles and focus.
         AppCommand::ToggleFileTree
-        | AppCommand::ToggleTerminal
         | AppCommand::ToggleGitPanel
         | AppCommand::FocusNextPane
         | AppCommand::OpenCommandPalette
@@ -1951,9 +1974,17 @@ mod tests {
 
     // ── handle_focus_next_pane ────────────────────────────────────
 
+    fn state_with_scratch_buffer() -> AppState {
+        let mut state = AppState::new();
+        let id = state.registry.new_scratch();
+        state.active_buffer = Some(id);
+        state.tabs.push(id);
+        state
+    }
+
     #[test]
     fn focus_cycles_editor_only() {
-        let mut state = AppState::new();
+        let mut state = state_with_scratch_buffer();
         state.layout.show_file_tree = false;
         state.layout.show_git_panel = false;
         state.focus.set_active(PanelId::Editor);
@@ -1963,7 +1994,7 @@ mod tests {
 
     #[test]
     fn focus_cycles_with_file_tree() {
-        let mut state = AppState::new();
+        let mut state = state_with_scratch_buffer();
         state.layout.show_file_tree = true;
         state.layout.show_git_panel = false;
         state.focus.set_active(PanelId::Editor);
@@ -1975,7 +2006,7 @@ mod tests {
 
     #[test]
     fn focus_cycles_all_panels() {
-        let mut state = AppState::new();
+        let mut state = state_with_scratch_buffer();
         state.layout.show_file_tree = true;
         state.layout.show_git_panel = true;
         state.focus.set_active(PanelId::FileTree);
@@ -1984,6 +2015,73 @@ mod tests {
         handle_focus_next_pane(&mut state);
         assert_eq!(state.focus.active(), PanelId::GitPanel);
         handle_focus_next_pane(&mut state);
+        assert_eq!(state.focus.active(), PanelId::FileTree);
+    }
+
+    #[test]
+    fn focus_cycle_skips_editor_when_no_buffer_is_open() {
+        let mut state = AppState::new();
+        state.layout.show_file_tree = true;
+        state.layout.show_git_panel = true;
+        state.focus.set_active(PanelId::FileTree);
+
+        handle_focus_next_pane(&mut state);
+        assert_eq!(state.focus.active(), PanelId::GitPanel);
+        handle_focus_next_pane(&mut state);
+        assert_eq!(state.focus.active(), PanelId::FileTree);
+    }
+
+    #[test]
+    fn focus_next_pane_from_empty_editor_lands_on_file_tree() {
+        let mut state = AppState::new();
+        state.layout.show_file_tree = true;
+        state.layout.show_git_panel = false;
+        state.focus.set_active(PanelId::Editor);
+
+        handle_focus_next_pane(&mut state);
+        assert_eq!(state.focus.active(), PanelId::FileTree);
+    }
+
+    #[test]
+    fn focus_file_tree_if_no_buffer_moves_focus() {
+        let mut state = AppState::new();
+        state.layout.show_file_tree = true;
+        state.focus.set_active(PanelId::Editor);
+
+        state.focus_file_tree_if_no_buffer();
+        assert_eq!(state.focus.active(), PanelId::FileTree);
+    }
+
+    #[test]
+    fn focus_file_tree_if_no_buffer_is_noop_with_hidden_tree() {
+        let mut state = AppState::new();
+        state.layout.show_file_tree = false;
+        state.focus.set_active(PanelId::Editor);
+
+        state.focus_file_tree_if_no_buffer();
+        assert_eq!(state.focus.active(), PanelId::Editor);
+    }
+
+    #[test]
+    fn focus_file_tree_if_no_buffer_preserves_git_panel_focus() {
+        let mut state = AppState::new();
+        state.layout.show_file_tree = true;
+        state.layout.show_git_panel = true;
+        state.focus.set_active(PanelId::GitPanel);
+
+        state.focus_file_tree_if_no_buffer();
+        assert_eq!(state.focus.active(), PanelId::GitPanel);
+    }
+
+    #[test]
+    fn closing_last_tab_returns_focus_to_file_tree() {
+        let (mut state, _tmp) = state_with_file();
+        state.layout.show_file_tree = true;
+        state.focus.set_active(PanelId::Editor);
+
+        state.close_active_tab();
+
+        assert!(state.active_buffer.is_none());
         assert_eq!(state.focus.active(), PanelId::FileTree);
     }
 
@@ -2099,6 +2197,18 @@ mod tests {
         assert_eq!(state.root_tab, RootTab::Agents);
 
         let _ = handle_command(&AppCommand::ShowEditorTab, &mut state);
+        assert_eq!(state.root_tab, RootTab::Editor);
+    }
+
+    #[test]
+    fn toggle_agents_tab_flips_between_editor_and_agents() {
+        let mut state = AppState::new();
+        assert_eq!(state.root_tab, RootTab::Editor);
+
+        let _ = handle_command(&AppCommand::ToggleAgentsTab, &mut state);
+        assert_eq!(state.root_tab, RootTab::Agents);
+
+        let _ = handle_command(&AppCommand::ToggleAgentsTab, &mut state);
         assert_eq!(state.root_tab, RootTab::Editor);
     }
 
@@ -2252,15 +2362,6 @@ mod tests {
         assert!(matches!(r, Control::Changed));
         assert!(!state.layout.show_git_panel);
         assert!(state.focus.is_focused(PanelId::Editor));
-    }
-
-    #[test]
-    fn ai_ask_selection_does_not_open_terminal_panel() {
-        let mut state = AppState::new();
-        let result = handle_ai_ask_selection(&mut state);
-        assert!(matches!(result, Control::Changed));
-        // PTY UI section is temporarily removed.
-        assert!(!state.layout.show_bottom_panel);
     }
 
     #[test]
@@ -2675,8 +2776,7 @@ mod tests {
             .overlay
             .notifications
             .last()
-            .map(|n| n.message.as_str())
-            .unwrap_or("");
+            .map_or("", |n| n.message.as_str());
         assert!(warning.contains("too small"));
     }
 
@@ -2698,8 +2798,7 @@ mod tests {
             .overlay
             .notifications
             .last()
-            .map(|n| n.message.as_str())
-            .unwrap_or("");
+            .map_or("", |n| n.message.as_str());
         assert!(warning.contains("too small"));
     }
 
@@ -2721,8 +2820,7 @@ mod tests {
             .overlay
             .notifications
             .last()
-            .map(|n| n.message.as_str())
-            .unwrap_or("");
+            .map_or("", |n| n.message.as_str());
         assert!(warning.contains("too small"));
     }
 
@@ -2776,8 +2874,7 @@ mod tests {
             .overlay
             .notifications
             .last()
-            .map(|n| n.message.as_str())
-            .unwrap_or("");
+            .map_or("", |n| n.message.as_str());
         assert!(warning.contains("too small"));
     }
 
@@ -2829,8 +2926,7 @@ mod tests {
             .overlay
             .notifications
             .last()
-            .map(|n| n.message.as_str())
-            .unwrap_or("");
+            .map_or("", |n| n.message.as_str());
         assert!(warning.contains("too small"));
     }
 

@@ -899,7 +899,9 @@ mod tests {
     #[test]
     fn build_preset_layout_matches_preset_metadata() {
         for (idx, info) in PRESET_LIST.iter().enumerate() {
-            let ids: Vec<_> = (0..info.pane_count as u32).map(p).collect();
+            let ids: Vec<_> = (0..u32::try_from(info.pane_count).unwrap())
+                .map(p)
+                .collect();
             let tree = build_preset_layout(idx, &ids).unwrap();
             assert_eq!(tree.pane_count(), info.pane_count);
         }

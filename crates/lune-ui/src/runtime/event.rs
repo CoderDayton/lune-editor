@@ -95,12 +95,12 @@ pub enum AppCommand {
     ShowEditorTab,
     /// Show the root "Agents" tab.
     ShowAgentsTab,
+    /// Toggle between the Editor and Agents root tabs.
+    ToggleAgentsTab,
 
     // ── Panel toggles ─────────────────────────────────────────────
     /// Toggle the file tree sidebar.
     ToggleFileTree,
-    /// Toggle the bottom terminal panel.
-    ToggleTerminal,
     /// Toggle the git panel.
     ToggleGitPanel,
     /// Open the command palette overlay.

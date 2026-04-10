@@ -85,16 +85,7 @@ fn start_ai_session_with_context(state: &mut AppState) {
     let ctx = state.collect_editor_context();
     let env = ctx.to_env_vars();
     let cwd = state.workspace.as_ref().map(|ws| ws.root().to_path_buf());
-    let size = state
-        .last_splits
-        .as_ref()
-        .and_then(|s| s.bottom)
-        .map_or_else(AiTermSize::default, |r| {
-            AiTermSize::new(
-                r.height.saturating_sub(2).max(1),
-                r.width.saturating_sub(2).max(1),
-            )
-        });
+    let size = AiTermSize::default();
     let client_name = kind.display_name().to_string();
     match state
         .ai_manager
@@ -120,14 +111,6 @@ pub(super) fn handle_ai_new_session(kind: AiClientKind, state: &mut AppState) ->
     let size = state
         .agents_tab_pending_pane
         .and_then(|pane_id| agent_pane_term_size(pane_id, state))
-        .or_else(|| {
-            state.last_splits.as_ref().and_then(|s| s.bottom).map(|r| {
-                AiTermSize::new(
-                    r.height.saturating_sub(2).max(1),
-                    r.width.saturating_sub(2).max(1),
-                )
-            })
-        })
         .unwrap_or_default();
     let client_name = kind.display_name().to_string();
     match state

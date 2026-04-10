@@ -3090,7 +3090,9 @@ mod tests {
         let notif = Notification {
             message: "test".to_string(),
             level: NotificationLevel::Info,
-            created: Instant::now() - std::time::Duration::from_secs(5),
+            created: Instant::now()
+                .checked_sub(std::time::Duration::from_secs(5))
+                .unwrap(),
         };
         assert!(notif.vitality() <= 0.0);
     }
@@ -3100,7 +3102,9 @@ mod tests {
         let notif = Notification {
             message: "test".to_string(),
             level: NotificationLevel::Info,
-            created: Instant::now() - std::time::Duration::from_millis(3500),
+            created: Instant::now()
+                .checked_sub(std::time::Duration::from_millis(3500))
+                .unwrap(),
         };
         let v = notif.vitality();
         assert!(
@@ -3137,8 +3141,10 @@ mod tests {
 
     #[test]
     fn find_replace_toggle_field() {
-        let mut state = FindReplaceState::default();
-        state.show_replace = true;
+        let mut state = FindReplaceState {
+            show_replace: true,
+            ..Default::default()
+        };
         assert_eq!(state.active_field, FindReplaceField::Find);
         state.toggle_field();
         assert_eq!(state.active_field, FindReplaceField::Replace);
@@ -3148,8 +3154,10 @@ mod tests {
 
     #[test]
     fn find_replace_toggle_field_no_replace() {
-        let mut state = FindReplaceState::default();
-        state.show_replace = false;
+        let mut state = FindReplaceState {
+            show_replace: false,
+            ..Default::default()
+        };
         state.toggle_field();
         // Should stay on Find when replace is hidden.
         assert_eq!(state.active_field, FindReplaceField::Find);

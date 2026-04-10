@@ -1,6 +1,5 @@
 ---
 source: crates/lune-ui/tests/snapshot_widgets.rs
-assertion_line: 266
 expression: buffer_to_text(&buf)
 ---
 
@@ -15,5 +14,5 @@ expression: buffer_to_text(&buf)
 
                   Ctrl+P  Command Palette
                   Ctrl+B  Toggle File Tree
-                  Ctrl+`  Toggle AI Panel
+                 Ctrl+`  Toggle Agents Tab
                         Ctrl+Q  Quit
