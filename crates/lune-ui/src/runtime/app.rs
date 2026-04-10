@@ -255,6 +255,11 @@ pub struct AppState {
     state_db: Option<StateDb>,
     /// Timestamp of the last successful state-db save (for debounce).
     last_state_save: Instant,
+    /// Warning message accumulated during CLI / boot-time setup, to be
+    /// surfaced as a toast notification after the TUI enters its event loop.
+    /// Boot-time writes to stderr are invisible when launched from a desktop
+    /// launcher, so any startup issue the user should see goes here.
+    pending_startup_warning: Option<String>,
 }
 
 /// Which border is being dragged by the mouse.
@@ -334,6 +339,7 @@ impl AppState {
             clipboard: None,
             state_db: None,
             last_state_save: Instant::now(),
+            pending_startup_warning: None,
         }
     }
 
@@ -439,6 +445,44 @@ impl AppState {
     #[must_use]
     pub const fn state_db(&self) -> Option<&StateDb> {
         self.state_db.as_ref()
+    }
+
+    /// Queue a warning to be shown as a toast notification once the TUI
+    /// enters its event loop.
+    ///
+    /// Boot-time writes to stderr are invisible when launched from a
+    /// desktop launcher; anything the user should actually see about
+    /// startup-time failures goes here instead.
+    pub fn set_startup_warning(&mut self, message: impl Into<String>) {
+        self.pending_startup_warning = Some(message.into());
+    }
+
+    /// Take any deferred startup warning. Intended to be called once by
+    /// [`crate::app::run`] right before the event loop begins so the
+    /// warning surfaces as a toast on the first frame.
+    pub const fn take_pending_startup_warning(&mut self) -> Option<String> {
+        self.pending_startup_warning.take()
+    }
+
+    /// Persist all in-flight reactive state to the database.
+    ///
+    /// Writes workspace state (open files, cursor positions, layout) and
+    /// per-file undo history. Called from [`maybe_persist_state`] on a
+    /// debounced timer during the event loop and once from the exit path
+    /// as a final flush before the DB is closed.
+    ///
+    /// No-op if no state database is attached.
+    pub fn persist_full_state(&self) {
+        let Some(db) = self.state_db() else {
+            return;
+        };
+        if let Some(mut wstate) = self.collect_workspace_state() {
+            wstate.touch();
+            if let Err(e) = db.put_workspace(&wstate) {
+                log::warn!("failed to persist workspace state: {e}");
+            }
+        }
+        self.persist_undo_history();
     }
 
     fn load_saved_agent_layouts(&mut self) {
@@ -1249,19 +1293,16 @@ const STATE_SAVE_DEBOUNCE_SECS: u64 = 2;
 /// writes to sled.  Cost is ~10 μs for a typical 20-file workspace, so
 /// this runs directly on the main thread without blocking.
 fn maybe_persist_state(state: &mut AppState) {
-    let Some(ref db) = state.state_db else {
+    if state.state_db.is_none() {
         return;
-    };
+    }
     if state.last_state_save.elapsed() < Duration::from_secs(STATE_SAVE_DEBOUNCE_SECS) {
         return;
     }
-
-    if let Some(mut wstate) = state.collect_workspace_state() {
-        wstate.touch();
-        if let Err(e) = db.put_workspace(&wstate) {
-            log::error!("Failed to persist workspace state: {e}");
-        }
-    }
+    // Persists workspace state AND per-file undo history so a crash between
+    // debounced ticks loses at most ~2 s of editing instead of an entire
+    // session's undo stack.
+    state.persist_full_state();
     state.last_state_save = Instant::now();
 }
 
@@ -1909,6 +1950,13 @@ pub fn run(state: &mut AppState) -> Result<(), Error> {
     let mut global = LuneGlobal::default();
     let watcher_rx = state.watcher_receiver();
     let ai_wake_flag = state.ai_manager.wake_flag();
+
+    // Flush any warning accumulated during boot (e.g. workspace state
+    // disabled due to lock contention) so the user sees it as a toast on
+    // the first frame instead of it vanishing into stderr.
+    if let Some(msg) = state.take_pending_startup_warning() {
+        state.overlay.notify(msg, NotificationLevel::Warning);
+    }
 
     run_tui(
         init,

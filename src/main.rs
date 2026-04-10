@@ -148,14 +148,24 @@ fn main() -> Result<()> {
     // Best-effort: attach the per-workspace sled database. If another Lune
     // instance is editing the same workspace (lock contention) or the
     // directory can't be created, we keep the global DB and continue with
-    // workspace persistence disabled.
+    // workspace persistence disabled. Warnings are deferred to the TUI
+    // overlay so the user sees them regardless of how Lune was launched.
     if let (Some(db), Some(root)) = (state_db.as_mut(), workspace_root.as_deref()) {
         if let Err(e) = db.attach_workspace(root) {
-            eprintln!(
-                "Warning: workspace state disabled for {} ({e}). Another Lune instance may be editing this workspace.",
+            state.set_startup_warning(format!(
+                "Workspace state disabled for {}: {e}. Another Lune instance may be editing this workspace.",
                 root.display()
-            );
+            ));
         }
+    }
+
+    // Warn when the global state DB is unavailable (recent workspaces +
+    // agent layouts won't persist from this instance).
+    if matches!(&state_db, Some(db) if !db.has_global()) {
+        state.set_startup_warning(
+            "Global state disabled: recent workspaces and saved agent layouts will not persist from this instance."
+                .to_owned(),
+        );
     }
 
     // Attach the state database for reactive persistence.
@@ -203,7 +213,7 @@ fn main() -> Result<()> {
     check_crash_recovery(&mut state, config_paths.as_ref());
 
     // Restore saved workspace state (open files, cursors, layout).
-    restore_workspace_state(&mut state, workspace_root.as_deref());
+    restore_workspace_state(&mut state);
 
     // Record this workspace in recent workspaces.
     record_recent_workspace(&state, workspace_root.as_deref());
@@ -220,14 +230,10 @@ fn main() -> Result<()> {
 
     // ── Clean exit: persist state ──────────────────────────────────────
 
-    // Final save of workspace state to sled (complements debounced saves).
+    // Final reactive save: workspace state + undo history (complements the
+    // debounced mid-session saves). Then flush sled to disk.
+    state.persist_full_state();
     if let Some(db) = state.state_db() {
-        if let Some(mut wstate) = state.collect_workspace_state() {
-            wstate.touch();
-            if let Err(e) = db.put_workspace(&wstate) {
-                eprintln!("Warning: failed to save workspace state: {e}");
-            }
-        }
         if let Err(e) = db.flush() {
             eprintln!("Warning: failed to flush state database: {e}");
         }
@@ -366,8 +372,9 @@ fn check_crash_recovery(state: &mut lune_ui::app::AppState, config_paths: Option
     }
 }
 
-/// Restore saved workspace state (open files, cursor positions, layout).
-fn restore_workspace_state(state: &mut lune_ui::app::AppState, _workspace_root: Option<&Path>) {
+/// Restore saved workspace state (open files, cursor positions, layout)
+/// from the attached per-workspace database.
+fn restore_workspace_state(state: &mut lune_ui::app::AppState) {
     let Some(db) = state.state_db() else {
         return;
     };

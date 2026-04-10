@@ -115,6 +115,12 @@ impl StateDb {
     /// the same workspace). The caller should log the error and continue;
     /// the global DB remains usable and workspace-scoped ops silently no-op.
     pub fn attach_workspace(&mut self, workspace_root: &Path) -> anyhow::Result<()> {
+        // Retry briefly on lock contention: handles the common "I just closed
+        // the other instance" race where the previous process is still
+        // releasing its sled flock when the new one boots.
+        const ATTEMPTS: usize = 3;
+        const DELAY_MS: u64 = 50;
+
         let ws_path = self.workspace_db_path(workspace_root);
         if let Some(parent) = ws_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
@@ -124,14 +130,32 @@ impl StateDb {
                 )
             })?;
         }
-        let ws = sled::open(&ws_path).map_err(|e| {
-            anyhow::anyhow!(
-                "failed to open workspace state db at {}: {e}",
-                ws_path.display()
-            )
-        })?;
-        self.workspace = Some(ws);
-        Ok(())
+        let mut last_err = None;
+        for attempt in 0..ATTEMPTS {
+            match sled::open(&ws_path) {
+                Ok(ws) => {
+                    self.workspace = Some(ws);
+                    return Ok(());
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt + 1 < ATTEMPTS {
+                        std::thread::sleep(std::time::Duration::from_millis(DELAY_MS));
+                    }
+                }
+            }
+        }
+        Err(anyhow::anyhow!(
+            "failed to open workspace state db at {} after {ATTEMPTS} attempts: {}",
+            ws_path.display(),
+            last_err.expect("loop sets last_err on each failure")
+        ))
+    }
+
+    /// Whether the global (cross-workspace) database is currently open.
+    #[must_use]
+    pub const fn has_global(&self) -> bool {
+        self.global.is_some()
     }
 
     /// Whether a per-workspace database is currently attached.
