@@ -10,7 +10,9 @@
 //! - **Diff**: Change detection via the `similar` crate
 
 pub mod editor;
+pub mod ports;
 pub mod project;
+pub mod session;
 pub mod syntax;
 
 pub use editor::{buffer, diff, position, registry, search, undo};
@@ -30,6 +32,7 @@ pub mod prelude {
     pub use crate::recovery::RecoveryState;
     pub use crate::registry::BufferRegistry;
     pub use crate::search::SearchState;
+    pub use crate::session::SessionModel;
     pub use crate::settings::{CliOverrides, Settings};
     pub use crate::state_db::StateDb;
     pub use crate::workspace::Workspace;
