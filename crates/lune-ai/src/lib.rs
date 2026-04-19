@@ -9,8 +9,10 @@
 //! - **[`context`]**: Editor context snapshots for AI context injection
 
 pub mod context;
+pub mod port_adapter;
 pub mod runtime;
 
+pub use port_adapter::AiManagerAdapter;
 pub use runtime::{manager, pty, session};
 
 // Re-exports for convenience.

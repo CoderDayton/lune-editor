@@ -75,6 +75,13 @@ impl AiManager {
         self.active
     }
 
+    /// Snapshot of all live session IDs. Cheap allocation of one
+    /// `Vec`; used by port adapters to publish manager-level snapshots.
+    #[must_use]
+    pub fn session_ids(&self) -> Vec<AiSessionId> {
+        self.sessions.keys().copied().collect()
+    }
+
     /// Get a reference to a session by ID.
     #[must_use]
     pub fn session(&self, id: AiSessionId) -> Option<&AiSession> {

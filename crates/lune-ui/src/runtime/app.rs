@@ -42,12 +42,11 @@ use lune_ai::context::{
     EditorContext, FileContext, GitStatusSummary, SelectionContext, TabContext,
     extract_selection_text,
 };
-// `AiManager` stays as a field on `AppState` pending a real port
-// adapter (AiSession is explicitly main-thread-only, so a trivial
-// `Arc<Mutex<_>>` wrap would kill render-loop performance). Qualified
-// path inline keeps the top-level import surface focused on the
-// port-facing types.
-use lune_ai::{AiClientKind, TermSize as AiTermSize};
+// `AiManagerAdapter` owns the `AiManager` and exposes a
+// `SharedAiManagerPort` reader via `shared_port()`. The adapter field
+// lives at `AppState::ai_manager`; direct manager access goes through
+// `state.ai_manager.manager` / `state.ai_manager.manager_mut()`.
+use lune_ai::{AiClientKind, AiManagerAdapter, TermSize as AiTermSize};
 
 use arboard::Clipboard;
 
@@ -230,7 +229,7 @@ pub struct AppState {
     /// Last known mouse position within the terminal.
     last_mouse_pos: Option<(u16, u16)>,
     /// AI session manager.
-    pub ai_manager: lune_ai::AiManager,
+    pub ai_manager: AiManagerAdapter,
     /// Agents tab tiling layout state.
     pub agents_tab: super::agents::AgentsTabState,
     /// Pane ID waiting for an AI client selection (from the picker).
@@ -326,7 +325,7 @@ impl AppState {
     #[must_use]
     pub fn new() -> Self {
         let (watcher_tx, watcher_rx) = channel::unbounded();
-        Self {
+        let mut out = Self {
             session: SessionModel::new(),
             root_tab: RootTab::Editor,
             focus: FocusManager::new(),
@@ -361,7 +360,13 @@ impl AppState {
             last_click: None,
             block_select_anchor: None,
             last_mouse_pos: None,
-            ai_manager: lune_ai::AiManager::new(),
+            ai_manager: {
+                // Build the adapter *inside* the struct initializer so
+                // it can hand its snapshot reader to `ai_manager_port`
+                // below via `shared_port()`. Both fields end up rooted
+                // at the same `SnapshotCell`.
+                AiManagerAdapter::new()
+            },
             agents_tab: super::agents::AgentsTabState::new(),
             agents_tab_pending_pane: None,
             saved_agent_layouts: Vec::new(),
@@ -376,9 +381,15 @@ impl AppState {
             pending_startup_warning: None,
             port_runtime: None,
             git_port: Arc::new(NullGitPort::new()),
+            // Defaulted here; overwritten immediately after the struct
+            // is built so the port reader is rooted at the adapter's
+            // own snapshot cell rather than a throwaway null one.
             ai_manager_port: Arc::new(NullAiManagerPort::new()),
             persistence_port: Arc::new(MemoryPersistencePort::new()),
-        }
+        };
+        // Root the AI port on the adapter's real snapshot cell.
+        out.ai_manager_port = out.ai_manager.shared_port();
+        out
     }
 
     /// Install the shared port runtime. Call once at startup from the
