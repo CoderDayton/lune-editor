@@ -33,18 +33,19 @@ fn handle_git_file_op(
     let Some(file) = state.git_panel.selected_file().cloned() else {
         return Control::Continue;
     };
-    if let Some(ref git) = state.git_service {
-        match op(git, &file.path) {
-            Ok(()) => {
-                state.status_message = format!("{label}: {}", file.path.display());
-                state.refresh_git();
-            }
-            Err(e) => {
-                state.status_message = format!("{label} failed: {e}");
-                state
-                    .overlay
-                    .notify(format!("{label} failed: {e}"), NotificationLevel::Error);
-            }
+    let Some(git) = state.open_git_service() else {
+        return Control::Changed;
+    };
+    match op(&git, &file.path) {
+        Ok(()) => {
+            state.status_message = format!("{label}: {}", file.path.display());
+            state.refresh_git();
+        }
+        Err(e) => {
+            state.status_message = format!("{label} failed: {e}");
+            state
+                .overlay
+                .notify(format!("{label} failed: {e}"), NotificationLevel::Error);
         }
     }
     Control::Changed
@@ -81,7 +82,7 @@ fn handle_git_commit(state: &mut AppState) -> Control<AppEvent> {
 }
 
 fn handle_git_commit_confirmed(message: &str, state: &mut AppState) -> Control<AppEvent> {
-    let Some(git) = state.git_service.as_ref() else {
+    let Some(git) = state.open_git_service() else {
         state
             .overlay
             .notify("No git repository", NotificationLevel::Error);
@@ -121,18 +122,19 @@ fn handle_git_discard(state: &mut AppState) -> Control<AppEvent> {
 }
 
 fn handle_git_discard_confirmed(path: &Path, state: &mut AppState) -> Control<AppEvent> {
-    if let Some(ref git) = state.git_service {
-        match git.discard_file(path) {
-            Ok(()) => {
-                state.status_message = format!("Discarded: {}", path.display());
-                state.refresh_git();
-            }
-            Err(e) => {
-                state.status_message = format!("Discard failed: {e}");
-                state
-                    .overlay
-                    .notify(format!("Discard failed: {e}"), NotificationLevel::Error);
-            }
+    let Some(git) = state.open_git_service() else {
+        return Control::Changed;
+    };
+    match git.discard_file(path) {
+        Ok(()) => {
+            state.status_message = format!("Discarded: {}", path.display());
+            state.refresh_git();
+        }
+        Err(e) => {
+            state.status_message = format!("Discard failed: {e}");
+            state
+                .overlay
+                .notify(format!("Discard failed: {e}"), NotificationLevel::Error);
         }
     }
     Control::Changed
@@ -144,7 +146,7 @@ fn handle_git_hunk_op(state: &mut AppState, op: &str) -> Control<AppEvent> {
     };
     let path = path.to_path_buf();
     let hunk = hunk.clone();
-    let Some(ref git) = state.git_service else {
+    let Some(git) = state.open_git_service() else {
         return Control::Continue;
     };
     let result = match op {
@@ -157,7 +159,9 @@ fn handle_git_hunk_op(state: &mut AppState, op: &str) -> Control<AppEvent> {
         Ok(()) => {
             state.status_message = format!("{op} hunk: {}", path.display());
             state.refresh_git();
-            if let Some(ref git) = state.git_service {
+            // Re-fetch the diff through a fresh service handle so the
+            // diff panel stays in sync with the new index/workdir state.
+            if let Some(git) = state.open_git_service() {
                 match git.diff_file(&path) {
                     Ok(Some(diff)) => state.git_panel.diff_view.set_diff(diff),
                     Ok(None) => state.git_panel.diff_view.clear(),

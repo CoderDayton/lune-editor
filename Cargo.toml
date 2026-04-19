@@ -62,9 +62,6 @@ bincode = { version = "2", features = ["serde"] }
 serde_json = "1"
 base64 = "0.22"
 
-# Embedded database (reactive state persistence)
-sled = "0.34"
-
 # Clipboard
 arboard = "3"
 

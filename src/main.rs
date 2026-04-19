@@ -133,8 +133,22 @@ fn main() -> Result<()> {
     // Apply CLI overrides (highest priority).
     settings.apply_cli_overrides(&overrides);
 
+    // Spawn the shared port runtime (tokio) before building AppState so
+    // adapters can attach as the workspace opens. Startup errors here are
+    // non-fatal — we fall back to NullGitPort / NullAiPort / MemoryPersistence.
+    let port_runtime = match lune_core::ports::PortRuntime::new() {
+        Ok(rt) => Some(std::sync::Arc::new(rt)),
+        Err(e) => {
+            eprintln!("Warning: failed to start port runtime: {e}");
+            None
+        }
+    };
+
     // Create application state.
     let mut state = lune_ui::app::AppState::new();
+    if let Some(ref rt) = port_runtime {
+        state.attach_port_runtime(rt.clone());
+    }
 
     // Store config paths on state for use by settings commands and recovery.
     if let Some(ref cp) = config_paths {
@@ -145,11 +159,11 @@ fn main() -> Result<()> {
     // DB before handing ownership of state_db to AppState.
     let workspace_root = determine_workspace_root(&paths);
 
-    // Best-effort: attach the per-workspace sled database. If another Lune
-    // instance is editing the same workspace (lock contention) or the
-    // directory can't be created, we keep the global DB and continue with
-    // workspace persistence disabled. Warnings are deferred to the TUI
-    // overlay so the user sees them regardless of how Lune was launched.
+    // Best-effort: attach the per-workspace JSON state file. The JSON
+    // backend does not take file locks, so attach rarely fails — but if
+    // the parent directory cannot be created, we fall back to
+    // workspace persistence disabled and warn the user via the TUI
+    // overlay (stderr is invisible when launched from a desktop launcher).
     if let (Some(db), Some(root)) = (state_db.as_mut(), workspace_root.as_deref()) {
         if let Err(e) = db.attach_workspace(root) {
             state.set_startup_warning(format!(
@@ -216,7 +230,7 @@ fn main() -> Result<()> {
     restore_workspace_state(&mut state);
 
     // Record this workspace in recent workspaces.
-    record_recent_workspace(&state, workspace_root.as_deref());
+    record_recent_workspace(&mut state, workspace_root.as_deref());
 
     // If no file ended up open after CLI args + recovery + restore, land
     // the user on the file tree rather than an empty editor pane.
@@ -231,9 +245,9 @@ fn main() -> Result<()> {
     // ── Clean exit: persist state ──────────────────────────────────────
 
     // Final reactive save: workspace state + undo history (complements the
-    // debounced mid-session saves). Then flush sled to disk.
+    // debounced mid-session saves). Then flush the state DB to disk.
     state.persist_full_state();
-    if let Some(db) = state.state_db() {
+    if let Some(db) = state.state_db_mut() {
         if let Err(e) = db.flush() {
             eprintln!("Warning: failed to flush state database: {e}");
         }
@@ -392,8 +406,9 @@ fn restore_workspace_state(state: &mut lune_ui::app::AppState) {
 }
 
 /// Record the current workspace in the recent workspaces index.
-fn record_recent_workspace(state: &lune_ui::app::AppState, workspace_root: Option<&Path>) {
-    let (Some(db), Some(root)) = (state.state_db(), workspace_root) else {
+fn record_recent_workspace(state: &mut lune_ui::app::AppState, workspace_root: Option<&Path>) {
+    let Some(root) = workspace_root else { return };
+    let Some(db) = state.state_db_mut() else {
         return;
     };
 

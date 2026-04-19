@@ -1,4 +1,5 @@
 pub mod config;
+pub mod kv_store;
 pub mod recovery;
 pub mod settings;
 pub mod state_db;

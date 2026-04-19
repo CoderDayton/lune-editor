@@ -22,12 +22,17 @@ use crate::primitives::{
     KeyModifiers, Layout, Line, MouseButton, MouseEvent, MouseEventKind, Rect, Style, Tabs, Widget,
 };
 
+use lune_core::ports::persistence::MemoryPersistencePort;
+use lune_core::ports::{
+    NullAiManagerPort, NullGitPort, PortRuntime, SharedAiManagerPort, SharedGitPort,
+    SharedPersistencePort,
+};
 use lune_core::prelude::*;
 use lune_core::settings::Settings;
 use lune_core::watcher::{FileWatcher, WatchEvent};
 use lune_core::workspace::EntryKind;
 use lune_core::workspace_state::make_relative;
-use lune_git::{GitService, GutterMarks};
+use lune_git::{GitAdapter, GitService, GutterMarks};
 
 use lune_ai::context::{
     EditorContext, FileContext, GitStatusSummary, SelectionContext, TabContext,
@@ -206,16 +211,6 @@ pub struct AppState {
     pub theme: Theme,
     /// Theme registry — holds all loaded themes for instant switching.
     pub theme_registry: ThemeRegistry,
-    /// Git service (active when workspace is in a git repository).
-    git_service: Option<GitService>,
-    /// Per-buffer git gutter marks (cached).
-    gutter_marks: FxHashMap<BufferId, GutterMarks>,
-    /// Git branch name for the status bar.
-    pub git_branch: String,
-    /// Git ahead/behind counts.
-    pub git_ahead: usize,
-    /// Git behind count.
-    pub git_behind: usize,
     /// Git panel state.
     pub git_panel: GitPanelState,
     /// Last left-click info for editor multi-click gestures.
@@ -275,6 +270,25 @@ pub struct AppState {
     /// Boot-time writes to stderr are invisible when launched from a desktop
     /// launcher, so any startup issue the user should see goes here.
     pending_startup_warning: Option<String>,
+
+    // ── Port layer (async-first adapter wiring) ────────────────────
+    //
+    // Held alongside the legacy `git_service` / `ai_manager` fields during
+    // migration. Reads go through `port.snapshot().load()` (lock-free);
+    // writes go through `port.dispatch(cmd)` (fire-and-forget).
+    /// Shared tokio runtime for all port adapters. `None` until
+    /// [`AppState::attach_port_runtime`] is called from the binary crate.
+    port_runtime: Option<Arc<PortRuntime>>,
+    /// Git port. Defaults to [`NullGitPort`] until a workspace opens in a
+    /// real repository, at which point [`GitAdapter`] takes over.
+    git_port: SharedGitPort,
+    /// AI manager port. Defaults to [`NullAiManagerPort`] until an
+    /// adapter is attached. Per-pane `SharedAiSessionPort` handles are
+    /// looked up via `ai_manager_port.session(id)`.
+    ai_manager_port: SharedAiManagerPort,
+    /// Persistence port. Defaults to in-memory; replaced by the JSON file
+    /// adapter in a later slice.
+    persistence_port: SharedPersistencePort,
 }
 
 /// Which border is being dragged by the mouse.
@@ -335,11 +349,6 @@ impl AppState {
             syntax_theme: SyntaxTheme::dark(),
             theme: Theme::dark(),
             theme_registry: ThemeRegistry::new(),
-            git_service: None,
-            gutter_marks: FxHashMap::default(),
-            git_branch: String::new(),
-            git_ahead: 0,
-            git_behind: 0,
             git_panel: GitPanelState::new(),
             last_click: None,
             block_select_anchor: None,
@@ -357,7 +366,91 @@ impl AppState {
             last_scroll_render: Instant::now(),
             viewport_scroll_target: None,
             pending_startup_warning: None,
+            port_runtime: None,
+            git_port: Arc::new(NullGitPort::new()),
+            ai_manager_port: Arc::new(NullAiManagerPort::new()),
+            persistence_port: Arc::new(MemoryPersistencePort::new()),
         }
+    }
+
+    /// Install the shared port runtime. Call once at startup from the
+    /// binary crate, before any workspace is opened. Subsequent
+    /// [`open_workspace`](Self::open_workspace) calls will use it to spawn
+    /// real adapters (e.g. [`GitAdapter`]).
+    pub fn attach_port_runtime(&mut self, rt: Arc<PortRuntime>) {
+        self.port_runtime = Some(rt);
+    }
+
+    /// Read-only accessor for the git port. Call `.status().load()` for a
+    /// lock-free snapshot on any thread.
+    #[must_use]
+    pub fn git_port(&self) -> &SharedGitPort {
+        &self.git_port
+    }
+
+    /// Read-only accessor for the AI manager port.
+    #[must_use]
+    pub fn ai_manager_port(&self) -> &SharedAiManagerPort {
+        &self.ai_manager_port
+    }
+
+    /// Read-only accessor for the persistence port.
+    #[must_use]
+    pub fn persistence_port(&self) -> &SharedPersistencePort {
+        &self.persistence_port
+    }
+
+    /// Swap in a custom git port. Intended for tests that want to drive
+    /// the UI from a pre-seeded snapshot without spinning a runtime.
+    #[cfg(test)]
+    pub fn set_git_port_for_test(&mut self, port: SharedGitPort) {
+        self.git_port = port;
+    }
+
+    /// Open a fresh `GitService` at the current workspace root.
+    ///
+    /// Staging and commit commands use this for sync feedback: the port
+    /// is fire-and-forget and can't surface per-operation errors inline.
+    /// Open-per-op costs one `Repository::discover` syscall which is
+    /// negligible compared to libgit2's per-command overhead.
+    pub fn open_git_service(&self) -> Option<GitService> {
+        let root = self.workspace.as_ref()?.root();
+        GitService::open(root).ok().flatten()
+    }
+
+    /// Gutter marks for rendering a given buffer.
+    ///
+    /// Reads from the async git port's published snapshot. Returns `None`
+    /// if the port has no snapshot yet for this buffer (either because the
+    /// workspace isn't a git repo, or because `RecomputeGutter` hasn't
+    /// been dispatched and ticked through yet).
+    #[must_use]
+    pub fn gutter_for_render(&self, id: BufferId) -> Option<GutterMarks> {
+        use lune_git::GutterMark;
+        let reader = self.git_port.gutter(id)?;
+        let snap = reader.load();
+        let mut marks = FxHashMap::default();
+        for &line in &snap.added {
+            marks.insert(line as usize, GutterMark::Added);
+        }
+        for &line in &snap.modified {
+            marks.insert(line as usize, GutterMark::Modified);
+        }
+        for &line in &snap.deleted {
+            marks.insert(line as usize, GutterMark::Deleted);
+        }
+        Some(GutterMarks { marks })
+    }
+
+    /// Whether a buffer has any gutter marks published. Used for mouse
+    /// hit-testing of the gutter column.
+    #[must_use]
+    pub fn has_gutter(&self, id: BufferId) -> bool {
+        let Some(reader) = self.git_port.gutter(id) else {
+            return false;
+        };
+        let snap = reader.load();
+        !snap.added.is_empty() || !snap.modified.is_empty() || !snap.deleted.is_empty()
     }
 
     fn clipboard_mut(&mut self) -> Result<&mut Clipboard, arboard::Error> {
@@ -449,7 +542,7 @@ impl AppState {
         self.config_paths.as_ref()
     }
 
-    /// Store the sled-backed state database on the state.
+    /// Store the JSON-file-backed state database on the state.
     ///
     /// Once set, workspace state is persisted on a debounced timer
     /// (~2 seconds) during the event loop, plus a final flush on exit.
@@ -462,6 +555,13 @@ impl AppState {
     #[must_use]
     pub const fn state_db(&self) -> Option<&StateDb> {
         self.state_db.as_ref()
+    }
+
+    /// Mutable borrow of the state database, needed by the JSON backend
+    /// for writes. (sled used interior mutability; the new JSON store
+    /// does not.)
+    pub const fn state_db_mut(&mut self) -> Option<&mut StateDb> {
+        self.state_db.as_mut()
     }
 
     /// Queue a warning to be shown as a toast notification once the TUI
@@ -489,14 +589,16 @@ impl AppState {
     /// as a final flush before the DB is closed.
     ///
     /// No-op if no state database is attached.
-    pub fn persist_full_state(&self) {
-        let Some(db) = self.state_db() else {
+    pub fn persist_full_state(&mut self) {
+        if self.state_db.is_none() {
             return;
-        };
+        }
         if let Some(mut wstate) = self.collect_workspace_state() {
             wstate.touch();
-            if let Err(e) = db.put_workspace(&wstate) {
-                log::warn!("failed to persist workspace state: {e}");
+            if let Some(db) = self.state_db_mut() {
+                if let Err(e) = db.put_workspace(&wstate) {
+                    log::warn!("failed to persist workspace state: {e}");
+                }
             }
         }
         self.persist_undo_history();
@@ -524,14 +626,16 @@ impl AppState {
         }
     }
 
-    fn persist_saved_agent_layouts(&self) {
+    fn persist_saved_agent_layouts(&mut self) {
         const AGENT_LAYOUTS_KEY: &[u8] = b"ui:agent_layouts";
 
-        let Some(db) = self.state_db() else {
+        // Clone the payload so we can hold a `&mut StateDb` and still read
+        // the layouts list from `&self` without aliasing.
+        let layouts = self.saved_agent_layouts.clone();
+        let Some(db) = self.state_db_mut() else {
             return;
         };
-
-        if let Err(e) = db.put_raw(AGENT_LAYOUTS_KEY, &self.saved_agent_layouts) {
+        if let Err(e) = db.put_raw(AGENT_LAYOUTS_KEY, &layouts) {
             log::warn!("failed to persist saved agent layouts: {e}");
         }
     }
@@ -610,40 +714,36 @@ impl AppState {
             }
         }
 
-        // Restore active file.
+        // Restore active file via the registry's O(1) path index. The
+        // registry stores canonicalized paths (see `BufferRegistry::open_file`),
+        // so we canonicalize here too; fall back to the raw `root.join(rel)`
+        // if canonicalize fails (file removed between save and restore).
         if let Some(ref active_rel) = wstate.active_file {
             let abs = root.join(active_rel);
-            // Find the buffer ID for this path and make it active.
-            for &id in &self.tabs {
-                if self
-                    .registry
-                    .get(id)
-                    .and_then(|b| b.file_path.as_ref())
-                    .is_some_and(|p| *p == abs)
-                {
+            let key = std::fs::canonicalize(&abs).unwrap_or(abs);
+            if let Some(id) = self.registry.by_path(&key) {
+                if self.tabs.contains(&id) {
                     self.active_buffer = Some(id);
-                    break;
                 }
             }
         }
 
-        // Restore cursor positions.
+        // Restore cursor positions. O(m) where m = saved positions, each a
+        // single hash lookup — replaces the O(m·n) nested loop that used
+        // to scan every tab for every saved position.
         for (rel, &(line, col)) in &wstate.cursor_positions {
             let abs = root.join(rel);
-            for &id in &self.tabs {
-                if self
-                    .registry
-                    .get(id)
-                    .and_then(|b| b.file_path.as_ref())
-                    .is_some_and(|p| *p == abs)
-                {
-                    if let Some(buf) = self.registry.get_mut(id) {
-                        let clamped_line = line.min(buf.line_count().saturating_sub(1));
-                        let clamped_col = col.min(buf.line_len(clamped_line).saturating_sub(1));
-                        buf.cursor = CursorState::at(Position::new(clamped_line, clamped_col));
-                    }
-                    break;
-                }
+            let key = std::fs::canonicalize(&abs).unwrap_or(abs);
+            let Some(id) = self.registry.by_path(&key) else {
+                continue;
+            };
+            if !self.tabs.contains(&id) {
+                continue;
+            }
+            if let Some(buf) = self.registry.get_mut(id) {
+                let clamped_line = line.min(buf.line_count().saturating_sub(1));
+                let clamped_col = col.min(buf.line_len(clamped_line).saturating_sub(1));
+                buf.cursor = CursorState::at(Position::new(clamped_line, clamped_col));
             }
         }
 
@@ -693,15 +793,18 @@ impl AppState {
             .collect()
     }
 
-    /// Persist undo/redo history for all open buffers to sled.
+    /// Persist undo/redo history for all open buffers to the state DB.
     ///
     /// Called on clean exit. Iterates open buffers, extracts undo state
     /// (capped at 1000 transactions), and writes each to the database.
-    pub fn persist_undo_history(&self) {
-        let Some(db) = self.state_db() else {
+    pub fn persist_undo_history(&mut self) {
+        if self.state_db.is_none() {
             return;
-        };
+        }
 
+        // Collect the (path, state) pairs first so we can hold the
+        // registry's immutable borrow separately from the DB's &mut.
+        let mut pending: Vec<(std::path::PathBuf, lune_core::undo::UndoState)> = Vec::new();
         for &id in &self.tabs {
             let Some(buf) = self.registry.get(id) else {
                 continue;
@@ -713,7 +816,14 @@ impl AppState {
             if state.undo_entries.is_empty() && state.redo_entries.is_empty() {
                 continue;
             }
-            if let Err(e) = db.put_undo(file_path, &state) {
+            pending.push((file_path.clone(), state));
+        }
+
+        let Some(db) = self.state_db_mut() else {
+            return;
+        };
+        for (file_path, state) in pending {
+            if let Err(e) = db.put_undo(&file_path, &state) {
                 log::warn!("persist undo for {}: {e}", file_path.display());
             }
         }
@@ -784,17 +894,28 @@ impl AppState {
             }
         }
 
-        // Initialize git service.
-        match GitService::open(&root) {
-            Ok(Some(git)) => {
-                self.refresh_git_status(&git);
-                self.git_service = Some(git);
-            }
-            Ok(None) => {
-                log::info!("Workspace is not a git repository");
-            }
-            Err(e) => {
-                log::warn!("Failed to initialize git service: {e}");
+        // Seed the git panel + file-tree with an initial sync status.
+        // After this one call, every read goes through `self.git_port`;
+        // mutations re-open a short-lived `GitService` via
+        // [`AppState::open_git_service`] inside `git_commands.rs`.
+        if let Some(git) = self.open_git_service() {
+            self.refresh_git_status(&git);
+        } else {
+            log::info!("Workspace is not a git repository");
+        }
+
+        // Also spawn the async GitAdapter if a port runtime is attached.
+        // Publishes status snapshots on a background task; consumers can
+        // read `self.git_port().status().load()` without blocking.
+        if let Some(ref rt) = self.port_runtime {
+            match GitAdapter::spawn(&rt.handle(), &root) {
+                Ok(Some(adapter)) => {
+                    self.git_port = Arc::new(adapter);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    log::warn!("Failed to spawn GitAdapter: {e}");
+                }
             }
         }
 
@@ -813,28 +934,21 @@ impl AppState {
                 log::error!("Failed to refresh file tree: {e}");
             }
         }
-        // Re-apply git status without re-running `git status` — just reuse
-        // the last-known file list from the GitService. If the service
-        // isn't initialized yet (no repo / pre-startup), this is a no-op.
-        if let Some(git) = self.git_service.take() {
-            match git.status() {
-                Ok(status) => {
-                    self.apply_git_to_file_tree(&status.files, &git);
-                }
-                Err(e) => {
-                    log::debug!("git status after refresh_file_tree failed: {e}");
-                }
-            }
-            self.git_service = Some(git);
-        }
+        // Re-apply git status from the port's last published snapshot —
+        // no sync git call, so this is a pure hashmap scan.
+        self.apply_git_to_file_tree_from_port();
     }
 
-    /// Refresh git status from the stored `GitService`.
+    /// Force an immediate git refresh: publish a fresh status snapshot
+    /// through the port, update the file-tree markers, and push the
+    /// result into the git panel.
+    ///
+    /// Called right after user-initiated mutations (stage / commit /
+    /// discard) so the UI reflects the new state without waiting for
+    /// the port's 2-second periodic timer.
     pub fn refresh_git(&mut self) {
-        // Take the service temporarily to avoid borrow conflicts.
-        if let Some(git) = self.git_service.take() {
+        if let Some(git) = self.open_git_service() {
             self.refresh_git_status(&git);
-            self.git_service = Some(git);
         }
     }
 
@@ -842,15 +956,16 @@ impl AppState {
     fn refresh_git_status(&mut self, git: &GitService) {
         match git.status() {
             Ok(status) => {
-                self.git_branch.clone_from(&status.branch);
-                self.git_ahead = status.ahead;
-                self.git_behind = status.behind;
+                // Branch / ahead / behind are consumed directly from
+                // `self.git_port.status().load()` now; no mirroring needed.
 
-                // Update file tree git statuses via workspace cache entries.
-                self.apply_git_to_file_tree(&status.files, git);
+                // Update file tree git statuses from the port snapshot.
+                self.apply_git_to_file_tree_from_port();
 
-                // Update gutter marks for open buffers.
-                self.refresh_gutter_marks(git);
+                // Dispatch gutter recomputes for all open buffers through
+                // the port. The async worker produces snapshots that the
+                // editor reads via `state.gutter_for_render()`.
+                self.dispatch_gutter_refresh(git);
 
                 // Update git panel.
                 self.git_panel.update_status(status);
@@ -862,41 +977,58 @@ impl AppState {
     }
 
     /// Apply git file statuses to the file tree entries.
-    fn apply_git_to_file_tree(&mut self, files: &[lune_git::GitFileStatus], git: &GitService) {
-        // Set git status on matching file tree entries.
+    /// Refresh git file-status markers on every file-tree entry by
+    /// reading the latest port snapshot.
+    ///
+    /// The port publishes a `workdir_root` alongside the per-file
+    /// `FileEntry`s; entry paths are already absolute, so we resolve
+    /// relative → absolute once and linear-scan the entries. This is the
+    /// same cost as the old sync path, minus the `git status` syscall
+    /// (which now happens on the port's background thread).
+    fn apply_git_to_file_tree_from_port(&mut self) {
+        use lune_core::ports::FileState;
+        let snap = self.git_port.status().load();
+        let Some(ref root) = snap.workdir_root else {
+            return;
+        };
         for (_depth, entry) in &mut self.file_tree.entries {
-            entry.git_status = files.iter().find_map(|f| {
-                let abs_path = git.root().join(&f.path);
-                if entry.path == abs_path {
-                    Some(f.status)
-                } else {
-                    None
+            entry.git_status = snap.files.iter().find_map(|f| {
+                let abs_path = root.join(&f.path);
+                if entry.path != abs_path {
+                    return None;
                 }
+                Some(match f.state {
+                    FileState::Modified => lune_core::workspace::FileStatus::Modified,
+                    FileState::Added => lune_core::workspace::FileStatus::Added,
+                    FileState::Deleted => lune_core::workspace::FileStatus::Deleted,
+                    FileState::Untracked => lune_core::workspace::FileStatus::Untracked,
+                    FileState::Conflicted => lune_core::workspace::FileStatus::Conflicted,
+                    FileState::Clean => return None,
+                })
             });
         }
     }
 
-    /// Refresh gutter marks for all open buffers.
-    fn refresh_gutter_marks(&mut self, git: &GitService) {
+    /// Dispatch a gutter recompute for every open buffer with a path
+    /// inside the current repo. The async git worker produces snapshots
+    /// that the editor reads via `state.gutter_for_render()`.
+    fn dispatch_gutter_refresh(&self, git: &GitService) {
+        use lune_core::ports::GitCommand;
         for &id in &self.tabs {
-            if let Some(buf) = self.registry.get(id) {
-                if let Some(ref path) = buf.file_path {
-                    if let Some(rel) = git.repo_relative(path) {
-                        let content = buf.text();
-                        match git.gutter_marks(&rel, &content) {
-                            Ok(new_marks) => {
-                                self.gutter_marks.insert(id, new_marks);
-                            }
-                            Err(e) => {
-                                log::debug!(
-                                    "Failed to compute gutter marks for {}: {e}",
-                                    rel.display()
-                                );
-                            }
-                        }
-                    }
-                }
-            }
+            let Some(buf) = self.registry.get(id) else {
+                continue;
+            };
+            let Some(ref path) = buf.file_path else {
+                continue;
+            };
+            let Some(rel) = git.repo_relative(path) else {
+                continue;
+            };
+            self.git_port.dispatch(GitCommand::RecomputeGutter {
+                buffer: id,
+                path: rel,
+                content: buf.text(),
+            });
         }
     }
 
@@ -1026,17 +1158,20 @@ impl AppState {
     }
 
     /// Build the git branch display string: `branch ↑2 ↓1`.
-    fn build_git_branch_display(&self) -> String {
+    pub fn build_git_branch_display(&self) -> String {
         use std::fmt::Write;
-        if self.git_branch.is_empty() {
+
+        let snap = self.git_port.status().load();
+        let branch = snap.branch.as_deref().unwrap_or("");
+        if branch.is_empty() {
             return String::new();
         }
-        let mut s = self.git_branch.clone();
-        if self.git_ahead > 0 {
-            let _ = write!(s, " ↑{}", self.git_ahead);
+        let mut s = branch.to_string();
+        if snap.ahead > 0 {
+            let _ = write!(s, " ↑{}", snap.ahead);
         }
-        if self.git_behind > 0 {
-            let _ = write!(s, " ↓{}", self.git_behind);
+        if snap.behind > 0 {
+            let _ = write!(s, " ↓{}", snap.behind);
         }
         s
     }
@@ -1144,17 +1279,18 @@ impl AppState {
             })
         });
 
-        let git_status = self.git_service.as_ref().and_then(|git| {
-            git.status().ok().map(|status| GitStatusSummary {
-                branch: status.branch,
-                modified_files: status
+        let git_status = {
+            let snap = self.git_port.status().load();
+            snap.branch.clone().map(|branch| GitStatusSummary {
+                branch,
+                modified_files: snap
                     .files
                     .iter()
                     .filter(|f| !f.staged)
                     .map(|f| f.path.clone())
                     .collect(),
             })
-        });
+        };
 
         EditorContext {
             workspace_root,
@@ -2408,6 +2544,23 @@ mod tests {
 
     // ── build_git_branch_display ──────────────────────────────────
 
+    fn make_state_with_git_snapshot(branch: &str, ahead: u32, behind: u32) -> AppState {
+        use lune_core::ports::{StaticGitPort, StatusSnapshot};
+        let mut state = AppState::new();
+        let port = StaticGitPort::new();
+        port.publish_status(StatusSnapshot {
+            branch: Some(branch.to_string()),
+            head_short: None,
+            workdir_root: None,
+            files: Vec::new(),
+            ahead,
+            behind,
+            revision: 1,
+        });
+        state.set_git_port_for_test(Arc::new(port));
+        state
+    }
+
     #[test]
     fn git_branch_empty() {
         let state = AppState::new();
@@ -2416,10 +2569,7 @@ mod tests {
 
     #[test]
     fn git_branch_with_ahead_behind() {
-        let mut state = AppState::new();
-        state.git_branch = "main".to_string();
-        state.git_ahead = 2;
-        state.git_behind = 1;
+        let state = make_state_with_git_snapshot("main", 2, 1);
         let display = state.build_git_branch_display();
         assert!(display.contains("main"));
         assert!(display.contains("↑2"));
@@ -2428,8 +2578,7 @@ mod tests {
 
     #[test]
     fn git_branch_no_ahead_behind() {
-        let mut state = AppState::new();
-        state.git_branch = "feature".to_string();
+        let state = make_state_with_git_snapshot("feature", 0, 0);
         assert_eq!(state.build_git_branch_display(), "feature");
     }
 
@@ -3641,7 +3790,7 @@ mod tests {
     #[test]
     fn set_state_db_loads_saved_agent_layouts() {
         let dir = tempfile::tempdir().unwrap();
-        let db = lune_core::state_db::StateDb::open(dir.path());
+        let mut db = lune_core::state_db::StateDb::open(dir.path());
         let saved = vec![tiling::SavedAgentLayout {
             name: "Persisted".to_string(),
             root: tiling::SavedTileNode::Leaf,
@@ -3658,7 +3807,7 @@ mod tests {
     #[test]
     fn set_state_db_surfaces_saved_agent_layout_decode_failures() {
         let dir = tempfile::tempdir().unwrap();
-        let db = lune_core::state_db::StateDb::open(dir.path());
+        let mut db = lune_core::state_db::StateDb::open(dir.path());
         db.put_raw(b"ui:agent_layouts", &123_u32).unwrap();
 
         let mut state = AppState::new();
@@ -4038,7 +4187,21 @@ mod tests {
         fs::write(dir.path().join("new.txt"), "fresh\n").unwrap();
 
         let mut state = AppState::new();
+        let rt = std::sync::Arc::new(lune_core::ports::PortRuntime::new().expect("runtime"));
+        state.attach_port_runtime(rt);
         state.open_workspace(dir.path()).expect("open_workspace");
+
+        // Wait for the async GitAdapter to publish the first snapshot so
+        // the file-tree status markers are populated before we assert.
+        let reader = state.git_port().status();
+        let start = std::time::Instant::now();
+        while reader.load().revision == 0 {
+            assert!(
+                start.elapsed() <= std::time::Duration::from_secs(5),
+                "git port never published"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
         state.refresh_git();
 
         // Sanity check: both files are marked before refresh.

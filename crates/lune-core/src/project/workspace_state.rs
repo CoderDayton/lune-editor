@@ -2,9 +2,9 @@
 //!
 //! Defines the data structures for workspace session state — open files,
 //! cursor positions, and layout.  Actual persistence is handled by
-//! [`crate::state_db::StateDb`] (sled-backed).
+//! [`crate::state_db::StateDb`] (JSON-file-backed).
 //!
-//! The structs derive `Serialize`/`Deserialize` for both bincode (sled)
+//! The structs derive `Serialize`/`Deserialize` for both bincode (`StateDb`)
 //! and TOML (migration from legacy format).
 
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 /// Persistent workspace session state.
 ///
-/// Stored in the sled database keyed by workspace root path hash.
+/// Stored in the JSON-file-backed state database keyed by workspace root path hash.
 /// Use [`StateDb::put_workspace`] / [`StateDb::get_workspace`] for I/O.
 ///
 /// [`StateDb::put_workspace`]: crate::state_db::StateDb::put_workspace
@@ -75,7 +75,7 @@ impl WorkspaceState {
 
     /// Compute the deterministic state filename for a workspace root.
     ///
-    /// Used by the TOML-to-sled migration path.  New code should use
+    /// Used by the TOML-to-StateDb migration path.  New code should use
     /// [`StateDb`] directly.
     ///
     /// [`StateDb`]: crate::state_db::StateDb
@@ -113,7 +113,7 @@ impl WorkspaceState {
 
 /// Recently opened workspaces index.
 ///
-/// Stored in the sled database under the `recent:workspaces` key.
+/// Stored in the state database under the `recent:workspaces` key.
 /// Use [`StateDb::put_recent`] / [`StateDb::get_recent`] for I/O.
 ///
 /// [`StateDb::put_recent`]: crate::state_db::StateDb::put_recent

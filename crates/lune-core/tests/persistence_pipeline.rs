@@ -5,7 +5,7 @@
 //! 1. Open global DB.
 //! 2. Attach a per-workspace DB.
 //! 3. Write workspace state + undo history.
-//! 4. Drop the handle (cleanly — sled releases the flock on Drop).
+//! 4. Drop the handle (cleanly — `KvStore::Drop` flushes pending writes).
 //! 5. Reopen, attach the same workspace, verify everything round-trips.
 //!
 //! Plus the multi-instance scenario: two concurrent handles on the same
@@ -58,7 +58,7 @@ fn full_pipeline_round_trip_across_restarts() {
         db.put_recent(&recent).unwrap();
 
         db.flush().unwrap();
-        // Drop releases the sled flocks.
+        // Drop flushes pending writes via `KvStore::Drop`.
     }
 
     // ── Session 2: reopen, verify every persisted piece survives ────────
@@ -97,36 +97,20 @@ fn two_instances_on_different_workspaces_persist_independently() {
     std::fs::create_dir_all(&proj_a).unwrap();
     std::fs::create_dir_all(&proj_b).unwrap();
 
-    // First instance: owns the global lock + workspaces/<proj-a>.sled.
     let mut first = StateDb::open(state_dir);
-    assert!(first.has_global(), "first instance should hold global");
-    first
-        .attach_workspace(&proj_a)
-        .expect("first workspace attach should succeed");
+    first.attach_workspace(&proj_a).unwrap();
     first
         .put_workspace(&make_workspace(&proj_a, "main.rs", (1, 1)))
         .unwrap();
     first.flush().unwrap();
 
-    // Second instance: global is locked by `first`, so it degrades to
-    // global-disabled. It can still attach to a *different* workspace
-    // directory and persist per-workspace state independently.
     let mut second = StateDb::open(state_dir);
-    assert!(
-        !second.has_global(),
-        "second instance should not hold the global lock"
-    );
-    second
-        .attach_workspace(&proj_b)
-        .expect("second instance can attach a disjoint workspace");
-    assert!(second.has_workspace());
-
+    second.attach_workspace(&proj_b).unwrap();
     second
         .put_workspace(&make_workspace(&proj_b, "lib.rs", (9, 9)))
         .unwrap();
     second.flush().unwrap();
 
-    // Both see their own workspace data.
     let a = first.get_workspace().unwrap().unwrap();
     assert_eq!(a.root, proj_a);
     assert_eq!(
@@ -140,13 +124,14 @@ fn two_instances_on_different_workspaces_persist_independently() {
         b.cursor_positions.get(&PathBuf::from("lib.rs")),
         Some(&(9, 9))
     );
-
-    // Global reads from the degraded instance return defaults, not errors.
-    assert!(second.get_recent().unwrap().entries.is_empty());
 }
 
 #[test]
-fn same_workspace_in_two_instances_degrades_gracefully() {
+fn same_workspace_in_two_instances_last_writer_wins() {
+    // With the JSON backend, there is no file lock; two instances
+    // writing the same file overwrite each other. This test pins the
+    // new semantics so a future regression (e.g. re-adding locking)
+    // forces an explicit design decision.
     let dir = tempfile::tempdir().expect("tempdir");
     let state_dir = dir.path();
     let project = state_dir.join("shared-project");
@@ -159,19 +144,24 @@ fn same_workspace_in_two_instances_degrades_gracefully() {
         .unwrap();
     first.flush().unwrap();
 
-    // Second instance: same workspace path. attach_workspace should fail
-    // (sled flock on the per-workspace db is held by first), but the
-    // StateDb itself stays usable — just with workspace ops no-oping.
     let mut second = StateDb::open(state_dir);
-    assert!(
-        second.attach_workspace(&project).is_err(),
-        "same-workspace attach must fail while first holds the lock"
-    );
-    assert!(!second.has_workspace());
+    second
+        .attach_workspace(&project)
+        .expect("attach no longer fails — last-writer-wins");
+    assert!(second.has_workspace());
 
-    // No-op semantics: writes succeed silently, reads return None.
     second
         .put_workspace(&make_workspace(&project, "b.rs", (2, 2)))
         .unwrap();
-    assert!(second.get_workspace().unwrap().is_none());
+    second.flush().unwrap();
+
+    // A third, independent reader sees the last-written state.
+    let mut third = StateDb::open(state_dir);
+    third.attach_workspace(&project).unwrap();
+    let seen = third.get_workspace().unwrap().unwrap();
+    assert_eq!(
+        seen.cursor_positions.get(&PathBuf::from("b.rs")),
+        Some(&(2, 2)),
+        "expected second's write to have overwritten first"
+    );
 }

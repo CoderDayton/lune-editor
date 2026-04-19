@@ -203,8 +203,9 @@ fn handle_git_panel_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEven
         KeyCode::Char('r') => Control::Event(AppEvent::Command(AppCommand::GitRefresh)),
         KeyCode::Enter => {
             if let Some(file) = state.git_panel.selected_file().cloned() {
-                if let Some(git) = &state.git_service {
-                    let abs_path = git.root().join(&file.path);
+                let snap = state.git_port().status().load();
+                if let Some(ref root) = snap.workdir_root {
+                    let abs_path = root.join(&file.path);
                     return Control::Event(AppEvent::Command(AppCommand::OpenFile(abs_path)));
                 }
             }
@@ -426,9 +427,7 @@ fn handle_middle_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEv
         return Control::Continue;
     };
     let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
-    let has_git = state
-        .active_buffer
-        .is_some_and(|id| state.gutter_marks.contains_key(&id));
+    let has_git = state.active_buffer.is_some_and(|id| state.has_gutter(id));
     let Some(pos) = editor_pane::click_to_position(
         mouse.column,
         mouse.row,
@@ -456,9 +455,7 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
 
     if let Some(content_area) = state.last_editor_content_area {
         let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
-        let has_git = state
-            .active_buffer
-            .is_some_and(|id| state.gutter_marks.contains_key(&id));
+        let has_git = state.active_buffer.is_some_and(|id| state.has_gutter(id));
         if editor_pane::is_on_scrollbar(col, row, content_area, total_lines, has_git) {
             set_viewport_from_scrollbar_row(state, row, content_area, total_lines);
             state.focus.set_active(PanelId::Editor);
@@ -518,9 +515,7 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
 
     if let Some(content_area) = state.last_editor_content_area {
         let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
-        let has_git = state
-            .active_buffer
-            .is_some_and(|id| state.gutter_marks.contains_key(&id));
+        let has_git = state.active_buffer.is_some_and(|id| state.has_gutter(id));
         if let Some(pos) = editor_pane::click_to_position(
             col,
             row,
@@ -612,9 +607,7 @@ fn select_full_line(buf: &mut TextBuffer, line: usize) {
 fn drag_target_position(mouse: MouseEvent, state: &mut AppState) -> Option<Position> {
     let content_area = state.last_editor_content_area?;
     let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
-    let has_git = state
-        .active_buffer
-        .is_some_and(|id| state.gutter_marks.contains_key(&id));
+    let has_git = state.active_buffer.is_some_and(|id| state.has_gutter(id));
 
     if mouse.row < content_area.y {
         state.viewport.scroll_up(1);

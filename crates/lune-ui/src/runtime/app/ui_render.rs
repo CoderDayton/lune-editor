@@ -74,6 +74,15 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
     // closure-returning-a-borrowed-slice-from-captured-mutable-state
     // pattern sometimes yields subtle lifetime oddities — this avoids
     // that entire class of footgun).
+    // Compute the gutter snapshot BEFORE taking the &mut borrow on
+    // `state.highlighters` below — the borrow checker can't prove that
+    // `gutter_for_render` doesn't alias `highlighters`, even though it
+    // only reads disjoint fields.
+    let active_gutter_owned = state
+        .active_buffer
+        .and_then(|id| state.gutter_for_render(id));
+    let active_gutter = active_gutter_owned.as_ref();
+
     let highlighted: Option<&[HighlightedLine]> = if let Some(id) = state.active_buffer {
         let viewport_height = content_area.height as usize;
         let top = state.viewport.top_line.saturating_sub(50);
@@ -87,9 +96,6 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
     };
 
     let text_buf = state.active_buffer.and_then(|id| state.registry.get(id));
-    let active_gutter = state
-        .active_buffer
-        .and_then(|id| state.gutter_marks.get(&id));
 
     let search_state = if matches!(
         state.overlay.active,
