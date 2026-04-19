@@ -7,8 +7,11 @@
 //! - **[`GutterMarks`]**: Line-level change indicators (added/modified/deleted)
 //! - **Diff**: Unified diff generation for the panel ([`FileDiff`], [`DiffHunk`])
 
+pub mod port_adapter;
 pub mod repo;
 pub mod status;
+
+pub use port_adapter::GitAdapter;
 
 pub use repo::service;
 pub use status::{diff, gutter, staging};
