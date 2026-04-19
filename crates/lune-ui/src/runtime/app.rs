@@ -381,6 +381,13 @@ impl AppState {
         self.port_runtime = Some(rt);
     }
 
+    /// Install a custom persistence port (swaps out the default
+    /// [`MemoryPersistencePort`]). Call from the binary crate after
+    /// resolving the on-disk state path.
+    pub fn attach_persistence_port(&mut self, port: SharedPersistencePort) {
+        self.persistence_port = port;
+    }
+
     /// Read-only accessor for the git port. Call `.status().load()` for a
     /// lock-free snapshot on any thread.
     #[must_use]

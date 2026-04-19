@@ -155,6 +155,21 @@ fn main() -> Result<()> {
         state.set_config_paths(cp.clone());
     }
 
+    // Swap the default in-memory persistence port for the JSON-file one
+    // if we have both a runtime and a resolved state directory. Path:
+    // `<state_dir>/port-store.json` (separate from the StateDb file).
+    if let (Some(rt), Some(cp)) = (port_runtime.as_ref(), config_paths.as_ref()) {
+        let path = cp.state_dir().join("port-store.json");
+        let port = lune_core::ports::JsonFilePersistencePort::shared(
+            &rt.handle(),
+            lune_core::ports::JsonFilePortConfig {
+                path,
+                debounce_ms: 200,
+            },
+        );
+        state.attach_persistence_port(port);
+    }
+
     // Determine the workspace root early so we can attach the per-workspace
     // DB before handing ownership of state_db to AppState.
     let workspace_root = determine_workspace_root(&paths);
