@@ -79,11 +79,12 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
     // `gutter_for_render` doesn't alias `highlighters`, even though it
     // only reads disjoint fields.
     let active_gutter_owned = state
+        .session
         .active_buffer
         .and_then(|id| state.gutter_for_render(id));
     let active_gutter = active_gutter_owned.as_ref();
 
-    let highlighted: Option<&[HighlightedLine]> = if let Some(id) = state.active_buffer {
+    let highlighted: Option<&[HighlightedLine]> = if let Some(id) = state.session.active_buffer {
         let viewport_height = content_area.height as usize;
         let top = state.viewport.top_line.saturating_sub(50);
         let end = state.viewport.top_line + viewport_height + 50;
@@ -95,7 +96,10 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         None
     };
 
-    let text_buf = state.active_buffer.and_then(|id| state.registry.get(id));
+    let text_buf = state
+        .session
+        .active_buffer
+        .and_then(|id| state.session.registry.get(id));
 
     let search_state = if matches!(
         state.overlay.active,

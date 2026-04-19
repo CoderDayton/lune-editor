@@ -115,8 +115,9 @@ pub(super) fn handle_normal_mode(key: &KeyEvent, state: &mut AppState) -> Contro
         }
         let dummy = TextBuffer::new();
         let buf = state
+            .session
             .active_buffer
-            .and_then(|id| state.registry.get(id))
+            .and_then(|id| state.session.registry.get(id))
             .unwrap_or(&dummy);
         let action = state.vim.handle_normal(ch, buf);
         apply_vim_action(&action, state)
@@ -129,8 +130,9 @@ pub(super) fn handle_visual_mode(key: &KeyEvent, state: &mut AppState) -> Contro
     if let KeyCode::Char(ch) = key.code {
         let dummy = TextBuffer::new();
         let buf = state
+            .session
             .active_buffer
-            .and_then(|id| state.registry.get(id))
+            .and_then(|id| state.session.registry.get(id))
             .unwrap_or(&dummy);
         let action = state.vim.handle_normal(ch, buf);
         apply_vim_action_visual(&action, state)
@@ -232,12 +234,12 @@ mod tests {
 
     fn state_with_text(text: &str) -> AppState {
         let mut state = AppState::new();
-        let id = state.registry.new_scratch();
-        let buf = state.registry.get_mut(id).unwrap();
+        let id = state.session.registry.new_scratch();
+        let buf = state.session.registry.get_mut(id).unwrap();
         buf.insert(Position::new(0, 0), text);
         buf.cursor = CursorState::at(Position::new(0, 0));
-        state.active_buffer = Some(id);
-        state.tabs.push(id);
+        state.session.active_buffer = Some(id);
+        state.session.tabs.push(id);
         state.vim.enter_insert();
         state
     }

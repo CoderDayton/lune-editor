@@ -19,11 +19,15 @@ use crate::buffer::{BufferId, TextBuffer};
 use crate::registry::BufferRegistry;
 
 /// The active editor session.
+///
+/// Fields are `pub` to support in-place migration from the legacy
+/// `(registry, tabs, active_buffer)` trio on `AppState`. Future passes
+/// can re-encapsulate once call sites are stable.
 #[derive(Debug, Default)]
 pub struct SessionModel {
-    registry: BufferRegistry,
-    tabs: Vec<BufferId>,
-    active: Option<BufferId>,
+    pub registry: BufferRegistry,
+    pub tabs: Vec<BufferId>,
+    pub active_buffer: Option<BufferId>,
 }
 
 impl SessionModel {
@@ -50,21 +54,21 @@ impl SessionModel {
     }
 
     pub const fn active_id(&self) -> Option<BufferId> {
-        self.active
+        self.active_buffer
     }
 
     pub fn active_buf(&self) -> Option<&TextBuffer> {
-        self.registry.get(self.active?)
+        self.registry.get(self.active_buffer?)
     }
 
     pub fn active_buf_mut(&mut self) -> Option<&mut TextBuffer> {
-        let id = self.active?;
+        let id = self.active_buffer?;
         self.registry.get_mut(id)
     }
 
     pub fn set_active(&mut self, id: Option<BufferId>) {
         // Invariant: active must be in the tab list, or None.
-        self.active = id.filter(|i| self.tabs.contains(i));
+        self.active_buffer = id.filter(|i| self.tabs.contains(i));
     }
 
     // ── Tab list ───────────────────────────────────────────────────
@@ -103,14 +107,14 @@ impl SessionModel {
         self.tabs.remove(idx);
         self.registry.close(id);
 
-        if self.active == Some(id) {
-            self.active = self
+        if self.active_buffer == Some(id) {
+            self.active_buffer = self
                 .tabs
                 .get(idx)
                 .or_else(|| self.tabs.get(idx.saturating_sub(1)))
                 .copied();
         }
-        self.active
+        self.active_buffer
     }
 
     // ── Open helpers ───────────────────────────────────────────────
@@ -120,7 +124,7 @@ impl SessionModel {
     pub fn open_file(&mut self, path: &Path) -> Result<BufferId> {
         let id = self.registry.open_file(path)?;
         self.add_tab(id);
-        self.active = Some(id);
+        self.active_buffer = Some(id);
         Ok(id)
     }
 
@@ -128,7 +132,7 @@ impl SessionModel {
     pub fn new_scratch(&mut self) -> BufferId {
         let id = self.registry.new_scratch();
         self.add_tab(id);
-        self.active = Some(id);
+        self.active_buffer = Some(id);
         id
     }
 

@@ -142,12 +142,13 @@ impl RootTab {
 
 /// Application state — holds all mutable application data.
 pub struct AppState {
-    /// Buffer registry (all open buffers).
-    pub registry: BufferRegistry,
-    /// Active buffer ID (the one displayed in the editor pane).
-    pub active_buffer: Option<BufferId>,
-    /// Tab order (list of open buffer IDs).
-    pub tabs: Vec<BufferId>,
+    /// Editor session: buffer registry, tab order, active buffer.
+    ///
+    /// Previously three separate fields on `AppState`; now owned as one
+    /// `SessionModel`. Call sites still access the underlying fields
+    /// via `state.session.registry`, `state.session.tabs`,
+    /// `state.session.active_buffer` (pub fields for migration).
+    pub session: SessionModel,
     /// Active top-level UI tab.
     pub root_tab: RootTab,
     /// Focus manager.
@@ -317,9 +318,7 @@ impl AppState {
     pub fn new() -> Self {
         let (watcher_tx, watcher_rx) = channel::unbounded();
         Self {
-            registry: BufferRegistry::new(),
-            active_buffer: None,
-            tabs: Vec::new(),
+            session: SessionModel::new(),
             root_tab: RootTab::Editor,
             focus: FocusManager::new(),
             keymap: Keymap::default_global(),
@@ -659,10 +658,11 @@ impl AppState {
 
         // Open files (relative paths).
         wstate.open_files = self
+            .session
             .tabs
             .iter()
             .filter_map(|&id| {
-                let buf = self.registry.get(id)?;
+                let buf = self.session.registry.get(id)?;
                 let path = buf.file_path.as_ref()?;
                 Some(make_relative(path, &root))
             })
@@ -675,8 +675,8 @@ impl AppState {
         });
 
         // Cursor positions keyed by relative path.
-        for &id in &self.tabs {
-            if let Some(buf) = self.registry.get(id) {
+        for &id in &self.session.tabs {
+            if let Some(buf) = self.session.registry.get(id) {
                 if let Some(ref path) = buf.file_path {
                     let rel = make_relative(path, &root);
                     let pos = &buf.cursor.primary.head;
@@ -728,9 +728,9 @@ impl AppState {
         if let Some(ref active_rel) = wstate.active_file {
             let abs = root.join(active_rel);
             let key = std::fs::canonicalize(&abs).unwrap_or(abs);
-            if let Some(id) = self.registry.by_path(&key) {
-                if self.tabs.contains(&id) {
-                    self.active_buffer = Some(id);
+            if let Some(id) = self.session.registry.by_path(&key) {
+                if self.session.tabs.contains(&id) {
+                    self.session.active_buffer = Some(id);
                 }
             }
         }
@@ -741,13 +741,13 @@ impl AppState {
         for (rel, &(line, col)) in &wstate.cursor_positions {
             let abs = root.join(rel);
             let key = std::fs::canonicalize(&abs).unwrap_or(abs);
-            let Some(id) = self.registry.by_path(&key) else {
+            let Some(id) = self.session.registry.by_path(&key) else {
                 continue;
             };
-            if !self.tabs.contains(&id) {
+            if !self.session.tabs.contains(&id) {
                 continue;
             }
-            if let Some(buf) = self.registry.get_mut(id) {
+            if let Some(buf) = self.session.registry.get_mut(id) {
                 let clamped_line = line.min(buf.line_count().saturating_sub(1));
                 let clamped_col = col.min(buf.line_len(clamped_line).saturating_sub(1));
                 buf.cursor = CursorState::at(Position::new(clamped_line, clamped_col));
@@ -756,14 +756,18 @@ impl AppState {
 
         // Restore undo/redo history per buffer.
         if let Some(db) = &self.state_db {
-            for &id in &self.tabs {
-                let file_path = self.registry.get(id).and_then(|b| b.file_path.clone());
+            for &id in &self.session.tabs {
+                let file_path = self
+                    .session
+                    .registry
+                    .get(id)
+                    .and_then(|b| b.file_path.clone());
                 let Some(file_path) = file_path else {
                     continue;
                 };
                 match db.get_undo(&file_path) {
                     Ok(Some(undo_state)) => {
-                        if let Some(buf) = self.registry.get_mut(id) {
+                        if let Some(buf) = self.session.registry.get_mut(id) {
                             if !buf.restore_undo_state(undo_state) {
                                 log::debug!(
                                     "undo state hash mismatch for {}, discarding",
@@ -787,10 +791,11 @@ impl AppState {
     /// that have a file path.
     #[must_use]
     pub fn collect_dirty_buffers(&self) -> Vec<(PathBuf, String)> {
-        self.tabs
+        self.session
+            .tabs
             .iter()
             .filter_map(|&id| {
-                let buf = self.registry.get(id)?;
+                let buf = self.session.registry.get(id)?;
                 if !buf.is_dirty() {
                     return None;
                 }
@@ -812,8 +817,8 @@ impl AppState {
         // Collect the (path, state) pairs first so we can hold the
         // registry's immutable borrow separately from the DB's &mut.
         let mut pending: Vec<(std::path::PathBuf, lune_core::undo::UndoState)> = Vec::new();
-        for &id in &self.tabs {
-            let Some(buf) = self.registry.get(id) else {
+        for &id in &self.session.tabs {
+            let Some(buf) = self.session.registry.get(id) else {
                 continue;
             };
             let Some(ref file_path) = buf.file_path else {
@@ -841,15 +846,15 @@ impl AppState {
     /// # Errors
     /// Returns an error if the file cannot be read.
     pub fn open_file(&mut self, path: &std::path::Path) -> anyhow::Result<BufferId> {
-        let id = self.registry.open_file(path)?;
-        if !self.tabs.contains(&id) {
-            self.tabs.push(id);
+        let id = self.session.registry.open_file(path)?;
+        if !self.session.tabs.contains(&id) {
+            self.session.tabs.push(id);
         }
-        self.active_buffer = Some(id);
+        self.session.active_buffer = Some(id);
 
         // Assign a syntax highlighter if we don't already have one for this buffer.
         if !self.highlighters.contains_key(&id) {
-            if let Some(buf) = self.registry.get(id) {
+            if let Some(buf) = self.session.registry.get(id) {
                 let first_line = buf.line(0);
                 let lang_id = self.lang_registry.detect(path, first_line.as_deref());
                 if let Some(lid) = lang_id {
@@ -1021,8 +1026,8 @@ impl AppState {
     /// that the editor reads via `state.gutter_for_render()`.
     fn dispatch_gutter_refresh(&self, git: &GitService) {
         use lune_core::ports::GitCommand;
-        for &id in &self.tabs {
-            let Some(buf) = self.registry.get(id) else {
+        for &id in &self.session.tabs {
+            let Some(buf) = self.session.registry.get(id) else {
                 continue;
             };
             let Some(ref path) = buf.file_path else {
@@ -1048,33 +1053,38 @@ impl AppState {
     /// Get a reference to the active buffer.
     #[must_use]
     pub fn active_buf(&self) -> Option<&TextBuffer> {
-        self.active_buffer.and_then(|id| self.registry.get(id))
+        self.session
+            .active_buffer
+            .and_then(|id| self.session.registry.get(id))
     }
 
     /// Get a mutable reference to the active buffer.
     pub fn active_buf_mut(&mut self) -> Option<&mut TextBuffer> {
-        self.active_buffer.and_then(|id| self.registry.get_mut(id))
+        self.session
+            .active_buffer
+            .and_then(|id| self.session.registry.get_mut(id))
     }
 
     /// Switch to an adjacent tab by signed offset (+1 = next, -1 = prev).
     #[allow(clippy::cast_possible_wrap)]
     pub fn cycle_tab(&mut self, delta: isize) {
-        let len = self.tabs.len();
+        let len = self.session.tabs.len();
         if len == 0 {
             return;
         }
         if let Some(idx) = self
+            .session
             .active_buffer
-            .and_then(|id| self.tabs.iter().position(|&t| t == id))
+            .and_then(|id| self.session.tabs.iter().position(|&t| t == id))
         {
             let next = (idx as isize + delta).rem_euclid(len as isize) as usize;
-            self.active_buffer = Some(self.tabs[next]);
+            self.session.active_buffer = Some(self.session.tabs[next]);
         }
     }
 
     /// Close the active tab.
     pub fn close_active_tab(&mut self) {
-        if let Some(id) = self.active_buffer {
+        if let Some(id) = self.session.active_buffer {
             close_tab_by_id(self, id);
         }
     }
@@ -1085,7 +1095,7 @@ impl AppState {
     /// the user lands on the file tree (rather than an empty editor pane)
     /// when they launched Lune without any specific file.
     pub fn focus_file_tree_if_no_buffer(&mut self) {
-        if self.active_buffer.is_none()
+        if self.session.active_buffer.is_none()
             && self.layout.show_file_tree
             && self.focus.is_focused(PanelId::Editor)
         {
@@ -1224,10 +1234,13 @@ impl AppState {
 
     /// Re-run the highlighter for the active buffer after a text change.
     fn update_active_highlighter(&mut self) {
-        if let Some(id) = self.active_buffer {
+        if let Some(id) = self.session.active_buffer {
             // We need to borrow both the buffer (immutable) and the highlighter
             // (mutable) simultaneously, which requires splitting the borrows.
-            if let (Some(buf), Some(hl)) = (self.registry.get(id), self.highlighters.get_mut(&id)) {
+            if let (Some(buf), Some(hl)) = (
+                self.session.registry.get(id),
+                self.highlighters.get_mut(&id),
+            ) {
                 hl.update(buf, None);
             }
         }
@@ -1260,10 +1273,11 @@ impl AppState {
         });
 
         let open_tabs: Vec<TabContext> = self
+            .session
             .tabs
             .iter()
             .filter_map(|&id| {
-                self.registry.get(id).map(|buf| TabContext {
+                self.session.registry.get(id).map(|buf| TabContext {
                     path: buf.file_path.clone(),
                     dirty: buf.is_dirty(),
                 })
@@ -1335,9 +1349,11 @@ pub fn render(
     state.overlay.prune_notifications();
 
     // Sync tab manager from registry.
-    state
-        .tab_mgr
-        .sync_from_registry(&state.tabs, state.active_buffer, &state.registry);
+    state.tab_mgr.sync_from_registry(
+        &state.session.tabs,
+        state.session.active_buffer,
+        &state.session.registry,
+    );
 
     if area.width == 0 || area.height == 0 {
         return Ok(());
@@ -1633,20 +1649,20 @@ const fn point_in_rect(col: u16, row: u16, r: Rect) -> bool {
 
 /// Close a specific tab by buffer ID (used by mouse click and keyboard).
 fn close_tab_by_id(state: &mut AppState, bid: BufferId) {
-    if let Some(idx) = state.tabs.iter().position(|&id| id == bid) {
-        state.tabs.remove(idx);
-        state.registry.close(bid);
+    if let Some(idx) = state.session.tabs.iter().position(|&id| id == bid) {
+        state.session.tabs.remove(idx);
+        state.session.registry.close(bid);
         state.highlighters.remove(&bid);
-        if state.active_buffer == Some(bid) {
-            state.active_buffer = if state.tabs.is_empty() {
+        if state.session.active_buffer == Some(bid) {
+            state.session.active_buffer = if state.session.tabs.is_empty() {
                 None
             } else {
-                Some(state.tabs[idx.min(state.tabs.len() - 1)])
+                Some(state.session.tabs[idx.min(state.session.tabs.len() - 1)])
             };
         }
         // If closing left nothing to edit, fall back to the file tree so the
         // user isn't stuck focused on an empty editor pane.
-        if state.active_buffer.is_none()
+        if state.session.active_buffer.is_none()
             && state.layout.show_file_tree
             && state.focus.is_focused(PanelId::Editor)
         {
@@ -2253,9 +2269,9 @@ mod tests {
 
         for h in [10_u16, 20, 40, 80] {
             let mut state = AppState::new();
-            let id = state.registry.new_scratch();
-            state.tabs.push(id);
-            state.active_buffer = Some(id);
+            let id = state.session.registry.new_scratch();
+            state.session.tabs.push(id);
+            state.session.active_buffer = Some(id);
 
             let area = Rect::new(0, 0, 120, h);
             let mut buf = Buffer::empty(area);
@@ -2282,8 +2298,8 @@ mod tests {
     #[test]
     fn new_state_has_no_active_buffer() {
         let state = AppState::new();
-        assert!(state.active_buffer.is_none());
-        assert!(state.tabs.is_empty());
+        assert!(state.session.active_buffer.is_none());
+        assert!(state.session.tabs.is_empty());
         assert!(state.active_buf().is_none());
     }
 
@@ -2291,8 +2307,8 @@ mod tests {
     fn default_equals_new() {
         let a = AppState::new();
         let b = AppState::default();
-        assert_eq!(a.tabs.len(), b.tabs.len());
-        assert_eq!(a.active_buffer, b.active_buffer);
+        assert_eq!(a.session.tabs.len(), b.session.tabs.len());
+        assert_eq!(a.session.active_buffer, b.session.active_buffer);
     }
 
     // ── open_file ─────────────────────────────────────────────────
@@ -2300,8 +2316,8 @@ mod tests {
     #[test]
     fn open_file_sets_active() {
         let (state, _tmp) = state_with_file();
-        assert!(state.active_buffer.is_some());
-        assert_eq!(state.tabs.len(), 1);
+        assert!(state.session.active_buffer.is_some());
+        assert_eq!(state.session.tabs.len(), 1);
         assert!(state.active_buf().is_some());
     }
 
@@ -2313,7 +2329,7 @@ mod tests {
         let id1 = state.open_file(tmp.path()).unwrap();
         let id2 = state.open_file(tmp.path()).unwrap();
         assert_eq!(id1, id2);
-        assert_eq!(state.tabs.len(), 1);
+        assert_eq!(state.session.tabs.len(), 1);
     }
 
     #[test]
@@ -2328,36 +2344,36 @@ mod tests {
     #[test]
     fn cycle_tab_forward() {
         let (mut state, _files) = state_with_tabs(3);
-        let tabs = state.tabs.clone();
-        assert_eq!(state.active_buffer, Some(tabs[2]));
+        let tabs = state.session.tabs.clone();
+        assert_eq!(state.session.active_buffer, Some(tabs[2]));
         state.cycle_tab(1);
-        assert_eq!(state.active_buffer, Some(tabs[0]));
+        assert_eq!(state.session.active_buffer, Some(tabs[0]));
     }
 
     #[test]
     fn cycle_tab_backward() {
         let (mut state, _files) = state_with_tabs(3);
-        let tabs = state.tabs.clone();
-        state.active_buffer = Some(tabs[0]);
+        let tabs = state.session.tabs.clone();
+        state.session.active_buffer = Some(tabs[0]);
         state.cycle_tab(-1);
-        assert_eq!(state.active_buffer, Some(tabs[2]));
+        assert_eq!(state.session.active_buffer, Some(tabs[2]));
     }
 
     #[test]
     fn cycle_tab_empty_noop() {
         let mut state = AppState::new();
         state.cycle_tab(1);
-        assert!(state.active_buffer.is_none());
+        assert!(state.session.active_buffer.is_none());
     }
 
     #[test]
     fn cycle_tab_single_stays() {
         let (mut state, _tmp) = state_with_file();
-        let active = state.active_buffer;
+        let active = state.session.active_buffer;
         state.cycle_tab(1);
-        assert_eq!(state.active_buffer, active);
+        assert_eq!(state.session.active_buffer, active);
         state.cycle_tab(-1);
-        assert_eq!(state.active_buffer, active);
+        assert_eq!(state.session.active_buffer, active);
     }
 
     // ── close_active_tab / close_tab_by_id ────────────────────────
@@ -2365,29 +2381,29 @@ mod tests {
     #[test]
     fn close_active_tab_removes_tab() {
         let (mut state, _files) = state_with_tabs(3);
-        let tabs = state.tabs.clone();
-        state.active_buffer = Some(tabs[1]);
+        let tabs = state.session.tabs.clone();
+        state.session.active_buffer = Some(tabs[1]);
         state.close_active_tab();
-        assert_eq!(state.tabs.len(), 2);
-        assert!(!state.tabs.contains(&tabs[1]));
-        assert!(state.active_buffer.is_some());
+        assert_eq!(state.session.tabs.len(), 2);
+        assert!(!state.session.tabs.contains(&tabs[1]));
+        assert!(state.session.active_buffer.is_some());
     }
 
     #[test]
     fn close_last_tab_sets_none() {
         let (mut state, _tmp) = state_with_file();
         state.close_active_tab();
-        assert!(state.active_buffer.is_none());
-        assert!(state.tabs.is_empty());
+        assert!(state.session.active_buffer.is_none());
+        assert!(state.session.tabs.is_empty());
     }
 
     #[test]
     fn close_tab_by_id_specific() {
         let (mut state, _files) = state_with_tabs(3);
-        let tabs = state.tabs.clone();
+        let tabs = state.session.tabs.clone();
         close_tab_by_id(&mut state, tabs[0]);
-        assert_eq!(state.tabs.len(), 2);
-        assert!(!state.tabs.contains(&tabs[0]));
+        assert_eq!(state.session.tabs.len(), 2);
+        assert!(!state.session.tabs.contains(&tabs[0]));
     }
 
     // ── point_in_rect ─────────────────────────────────────────────
@@ -2419,9 +2435,9 @@ mod tests {
 
     fn state_with_scratch_buffer() -> AppState {
         let mut state = AppState::new();
-        let id = state.registry.new_scratch();
-        state.active_buffer = Some(id);
-        state.tabs.push(id);
+        let id = state.session.registry.new_scratch();
+        state.session.active_buffer = Some(id);
+        state.session.tabs.push(id);
         state
     }
 
@@ -2524,7 +2540,7 @@ mod tests {
 
         state.close_active_tab();
 
-        assert!(state.active_buffer.is_none());
+        assert!(state.session.active_buffer.is_none());
         assert_eq!(state.focus.active(), PanelId::FileTree);
     }
 
@@ -2630,18 +2646,18 @@ mod tests {
     fn command_close_tab() {
         let (mut state, _files) = state_with_tabs(2);
         let _ = handle_command(&AppCommand::CloseTab, &mut state);
-        assert_eq!(state.tabs.len(), 1);
+        assert_eq!(state.session.tabs.len(), 1);
     }
 
     #[test]
     fn command_next_prev_tab() {
         let (mut state, _files) = state_with_tabs(3);
-        let tabs = state.tabs.clone();
-        state.active_buffer = Some(tabs[0]);
+        let tabs = state.session.tabs.clone();
+        state.session.active_buffer = Some(tabs[0]);
         let _ = handle_command(&AppCommand::NextTab, &mut state);
-        assert_eq!(state.active_buffer, Some(tabs[1]));
+        assert_eq!(state.session.active_buffer, Some(tabs[1]));
         let _ = handle_command(&AppCommand::PrevTab, &mut state);
-        assert_eq!(state.active_buffer, Some(tabs[0]));
+        assert_eq!(state.session.active_buffer, Some(tabs[0]));
     }
 
     #[test]
@@ -4085,7 +4101,10 @@ mod tests {
         .unwrap();
         state.open_file(tmp.path()).unwrap();
 
-        let id = state.active_buffer.expect("active buffer after open_file");
+        let id = state
+            .session
+            .active_buffer
+            .expect("active buffer after open_file");
         let hl = state
             .highlighters
             .get_mut(&id)

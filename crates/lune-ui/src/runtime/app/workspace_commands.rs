@@ -49,11 +49,11 @@ pub(super) fn handle_save(state: &mut AppState) -> Control<AppEvent> {
 }
 
 pub(super) fn handle_save_all(state: &mut AppState) -> Control<AppEvent> {
-    let ids: Vec<_> = state.tabs.clone();
+    let ids: Vec<_> = state.session.tabs.clone();
     let mut saved = 0;
     let mut errors = 0;
     for id in ids {
-        if let Some(buf) = state.registry.get_mut(id) {
+        if let Some(buf) = state.session.registry.get_mut(id) {
             if buf.is_dirty() {
                 match buf.save() {
                     Ok(()) => saved += 1,
@@ -235,8 +235,8 @@ fn handle_rename(from: &Path, to: &Path, state: &mut AppState) -> Control<AppEve
         }) {
             Ok(()) => {
                 refreshed = true;
-                for &id in &state.tabs {
-                    if let Some(buf) = state.registry.get_mut(id) {
+                for &id in &state.session.tabs {
+                    if let Some(buf) = state.session.registry.get_mut(id) {
                         if buf.file_path.as_deref() == Some(from) {
                             buf.file_path = Some(to.to_path_buf());
                         }
@@ -267,11 +267,13 @@ fn handle_delete(path: &Path, state: &mut AppState) -> Control<AppEvent> {
             Ok(()) => {
                 refreshed = true;
                 let to_close: Vec<_> = state
+                    .session
                     .tabs
                     .iter()
                     .copied()
                     .filter(|&id| {
                         state
+                            .session
                             .registry
                             .get(id)
                             .is_some_and(|b| b.file_path.as_deref() == Some(path))
@@ -364,12 +366,12 @@ fn handle_open_config_file(cmd: &AppCommand, state: &mut AppState) -> Control<Ap
 }
 
 fn handle_change_language(lang_id: LanguageId, state: &mut AppState) -> Control<AppEvent> {
-    let Some(id) = state.active_buffer else {
+    let Some(id) = state.session.active_buffer else {
         return Control::Continue;
     };
 
     let mut hl = highlight::create_highlighter(lang_id);
-    if let Some(buf) = state.registry.get(id) {
+    if let Some(buf) = state.session.registry.get(id) {
         hl.update(buf, None);
     }
     state.highlighters.insert(id, hl);

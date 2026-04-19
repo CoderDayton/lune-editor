@@ -22,7 +22,7 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         // Tab cycles focus when not in insert mode, or any time the editor
         // has no buffer to indent (so Tab isn't a silent no-op on an empty
         // editor — it pulls you to the file tree instead).
-        if !state.vim.mode.is_insert() || state.active_buffer.is_none() {
+        if !state.vim.mode.is_insert() || state.session.active_buffer.is_none() {
             handle_focus_next_pane(state);
             return Control::Changed;
         }
@@ -159,7 +159,7 @@ pub(super) fn handle_focus_next_pane(state: &mut AppState) {
         return;
     }
 
-    let has_buffer = state.active_buffer.is_some();
+    let has_buffer = state.session.active_buffer.is_some();
     let mut panes = Vec::with_capacity(3);
     if state.layout.show_file_tree {
         panes.push(PanelId::FileTree);
@@ -427,7 +427,10 @@ fn handle_middle_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEv
         return Control::Continue;
     };
     let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
-    let has_git = state.active_buffer.is_some_and(|id| state.has_gutter(id));
+    let has_git = state
+        .session
+        .active_buffer
+        .is_some_and(|id| state.has_gutter(id));
     let Some(pos) = editor_pane::click_to_position(
         mouse.column,
         mouse.row,
@@ -455,7 +458,10 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
 
     if let Some(content_area) = state.last_editor_content_area {
         let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
-        let has_git = state.active_buffer.is_some_and(|id| state.has_gutter(id));
+        let has_git = state
+            .session
+            .active_buffer
+            .is_some_and(|id| state.has_gutter(id));
         if editor_pane::is_on_scrollbar(col, row, content_area, total_lines, has_git) {
             set_viewport_from_scrollbar_row(state, row, content_area, total_lines);
             state.focus.set_active(PanelId::Editor);
@@ -506,7 +512,7 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
                         close_tab_by_id(state, bid);
                     }
                 } else if let Some(bid) = state.tab_mgr.buffer_at(idx) {
-                    state.active_buffer = Some(bid);
+                    state.session.active_buffer = Some(bid);
                 }
                 return Control::Changed;
             }
@@ -515,7 +521,10 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
 
     if let Some(content_area) = state.last_editor_content_area {
         let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
-        let has_git = state.active_buffer.is_some_and(|id| state.has_gutter(id));
+        let has_git = state
+            .session
+            .active_buffer
+            .is_some_and(|id| state.has_gutter(id));
         if let Some(pos) = editor_pane::click_to_position(
             col,
             row,
@@ -607,7 +616,10 @@ fn select_full_line(buf: &mut TextBuffer, line: usize) {
 fn drag_target_position(mouse: MouseEvent, state: &mut AppState) -> Option<Position> {
     let content_area = state.last_editor_content_area?;
     let total_lines = state.active_buf().map_or(0, TextBuffer::line_count);
-    let has_git = state.active_buffer.is_some_and(|id| state.has_gutter(id));
+    let has_git = state
+        .session
+        .active_buffer
+        .is_some_and(|id| state.has_gutter(id));
 
     if mouse.row < content_area.y {
         state.viewport.scroll_up(1);
@@ -804,12 +816,12 @@ mod tests {
 
     fn state_with_text(text: &str) -> AppState {
         let mut state = AppState::new();
-        let id = state.registry.new_scratch();
-        let buf = state.registry.get_mut(id).unwrap();
+        let id = state.session.registry.new_scratch();
+        let buf = state.session.registry.get_mut(id).unwrap();
         buf.insert(Position::new(0, 0), text);
         buf.cursor = CursorState::at(Position::new(0, 0));
-        state.active_buffer = Some(id);
-        state.tabs.push(id);
+        state.session.active_buffer = Some(id);
+        state.session.tabs.push(id);
         state.focus.set_active(PanelId::Editor);
         state
     }

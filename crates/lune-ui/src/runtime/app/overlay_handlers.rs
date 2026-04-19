@@ -427,12 +427,12 @@ mod tests {
 
     fn state_with_text(text: &str) -> AppState {
         let mut state = AppState::new();
-        let id = state.registry.new_scratch();
-        let buf = state.registry.get_mut(id).unwrap();
+        let id = state.session.registry.new_scratch();
+        let buf = state.session.registry.get_mut(id).unwrap();
         buf.insert(Position::new(0, 0), text);
         buf.cursor = CursorState::at(Position::new(0, 0));
-        state.active_buffer = Some(id);
-        state.tabs.push(id);
+        state.session.active_buffer = Some(id);
+        state.session.tabs.push(id);
         state
     }
 
