@@ -7,8 +7,10 @@ pub(super) fn handle_git_command(
     state: &mut AppState,
 ) -> Option<Control<AppEvent>> {
     let control = match cmd {
-        AppCommand::GitStage => handle_git_file_op(state, GitService::stage, "Staged"),
-        AppCommand::GitUnstage => handle_git_file_op(state, GitService::unstage, "Unstaged"),
+        AppCommand::GitStage => handle_git_file_op(state, lune_git::GitService::stage, "Staged"),
+        AppCommand::GitUnstage => {
+            handle_git_file_op(state, lune_git::GitService::unstage, "Unstaged")
+        }
         AppCommand::GitCommit => handle_git_commit(state),
         AppCommand::GitDiscard => handle_git_discard(state),
         AppCommand::GitRefresh => {
@@ -27,7 +29,7 @@ pub(super) fn handle_git_command(
 
 fn handle_git_file_op(
     state: &mut AppState,
-    op: fn(&GitService, &Path) -> anyhow::Result<()>,
+    op: fn(&lune_git::GitService, &Path) -> anyhow::Result<()>,
     label: &str,
 ) -> Control<AppEvent> {
     let Some(file) = state.git_panel.selected_file().cloned() else {

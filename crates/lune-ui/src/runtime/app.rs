@@ -32,7 +32,11 @@ use lune_core::settings::Settings;
 use lune_core::watcher::{FileWatcher, WatchEvent};
 use lune_core::workspace::EntryKind;
 use lune_core::workspace_state::make_relative;
-use lune_git::{GitAdapter, GitService, GutterMarks};
+// `GitAdapter` is the async port adapter installed on `open_workspace`.
+// `GitService` and `GutterMarks` appear in return types / method
+// signatures — referenced via qualified paths below to keep the top-
+// level import surface focused on the port, not the legacy types.
+use lune_git::GitAdapter;
 
 use lune_ai::context::{
     EditorContext, FileContext, GitStatusSummary, SelectionContext, TabContext,
@@ -419,9 +423,9 @@ impl AppState {
     /// is fire-and-forget and can't surface per-operation errors inline.
     /// Open-per-op costs one `Repository::discover` syscall which is
     /// negligible compared to libgit2's per-command overhead.
-    pub fn open_git_service(&self) -> Option<GitService> {
+    pub fn open_git_service(&self) -> Option<lune_git::GitService> {
         let root = self.workspace.as_ref()?.root();
-        GitService::open(root).ok().flatten()
+        lune_git::GitService::open(root).ok().flatten()
     }
 
     /// Gutter marks for rendering a given buffer.
@@ -431,7 +435,7 @@ impl AppState {
     /// workspace isn't a git repo, or because `RecomputeGutter` hasn't
     /// been dispatched and ticked through yet).
     #[must_use]
-    pub fn gutter_for_render(&self, id: BufferId) -> Option<GutterMarks> {
+    pub fn gutter_for_render(&self, id: BufferId) -> Option<lune_git::GutterMarks> {
         use lune_git::GutterMark;
         let reader = self.git_port.gutter(id)?;
         let snap = reader.load();
@@ -445,7 +449,7 @@ impl AppState {
         for &line in &snap.deleted {
             marks.insert(line as usize, GutterMark::Deleted);
         }
-        Some(GutterMarks { marks })
+        Some(lune_git::GutterMarks { marks })
     }
 
     /// Whether a buffer has any gutter marks published. Used for mouse
@@ -965,7 +969,7 @@ impl AppState {
     }
 
     /// Refresh git-derived state from a `GitService` reference.
-    fn refresh_git_status(&mut self, git: &GitService) {
+    fn refresh_git_status(&mut self, git: &lune_git::GitService) {
         match git.status() {
             Ok(status) => {
                 // Branch / ahead / behind are consumed directly from
@@ -1024,7 +1028,7 @@ impl AppState {
     /// Dispatch a gutter recompute for every open buffer with a path
     /// inside the current repo. The async git worker produces snapshots
     /// that the editor reads via `state.gutter_for_render()`.
-    fn dispatch_gutter_refresh(&self, git: &GitService) {
+    fn dispatch_gutter_refresh(&self, git: &lune_git::GitService) {
         use lune_core::ports::GitCommand;
         for &id in &self.session.tabs {
             let Some(buf) = self.session.registry.get(id) else {
