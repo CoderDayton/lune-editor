@@ -42,7 +42,12 @@ use lune_ai::context::{
     EditorContext, FileContext, GitStatusSummary, SelectionContext, TabContext,
     extract_selection_text,
 };
-use lune_ai::{AiClientKind, AiManager, TermSize as AiTermSize};
+// `AiManager` stays as a field on `AppState` pending a real port
+// adapter (AiSession is explicitly main-thread-only, so a trivial
+// `Arc<Mutex<_>>` wrap would kill render-loop performance). Qualified
+// path inline keeps the top-level import surface focused on the
+// port-facing types.
+use lune_ai::{AiClientKind, TermSize as AiTermSize};
 
 use arboard::Clipboard;
 
@@ -225,7 +230,7 @@ pub struct AppState {
     /// Last known mouse position within the terminal.
     last_mouse_pos: Option<(u16, u16)>,
     /// AI session manager.
-    pub ai_manager: AiManager,
+    pub ai_manager: lune_ai::AiManager,
     /// Agents tab tiling layout state.
     pub agents_tab: super::agents::AgentsTabState,
     /// Pane ID waiting for an AI client selection (from the picker).
@@ -356,7 +361,7 @@ impl AppState {
             last_click: None,
             block_select_anchor: None,
             last_mouse_pos: None,
-            ai_manager: AiManager::new(),
+            ai_manager: lune_ai::AiManager::new(),
             agents_tab: super::agents::AgentsTabState::new(),
             agents_tab_pending_pane: None,
             saved_agent_layouts: Vec::new(),

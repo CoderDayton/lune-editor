@@ -3346,7 +3346,10 @@ mod tests {
             );
             let known = known.unwrap();
             assert_eq!(entry.label, known.label);
-            assert_eq!(entry.color, known.color);
+            // `scan_available` applies `downgrade_if_needed` to colors so
+            // they render correctly on low-color terminals; apply the
+            // same transform to the source-of-truth before comparing.
+            assert_eq!(entry.color, color_util::downgrade_if_needed(known.color));
         }
     }
 
