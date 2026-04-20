@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use lune_core::buffer::BufferId;
 use lune_core::ports::{
-    FileEntry, FileState, GitCommand, GitPort, GutterSnapshot, RuntimeHandle, Snapshot,
-    SnapshotCell, StatusSnapshot,
+    CommitInfo, FileEntry, FileState, GitCommand, GitPort, GutterSnapshot, PatchLocation,
+    RuntimeHandle, Snapshot, SnapshotCell, StatusSnapshot,
 };
 use lune_core::workspace::FileStatus;
 use rustc_hash::FxHashMap;
@@ -98,13 +98,19 @@ impl GitAdapter {
         }
     }
 
-    /// Build a [`StatusSnapshot`] from a `GitService::status()` result.
-    pub(crate) fn build_snapshot(
+    /// Build a snapshot, attaching the most recent `last_error` /
+    /// `last_commit` from the worker's mutation path. UI clears these
+    /// on the next snapshot by virtue of `Option::take` on the worker
+    /// side.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build_snapshot_full(
         files: Vec<GitFileStatus>,
         branch: String,
         workdir_root: std::path::PathBuf,
         ahead: usize,
         behind: usize,
+        last_error: Option<String>,
+        last_commit: Option<CommitInfo>,
         revision: u64,
     ) -> StatusSnapshot {
         let files = files
@@ -122,6 +128,8 @@ impl GitAdapter {
             files,
             ahead: u32::try_from(ahead).unwrap_or(u32::MAX),
             behind: u32::try_from(behind).unwrap_or(u32::MAX),
+            last_error,
+            last_commit,
             revision,
         }
     }
@@ -152,6 +160,8 @@ fn worker_loop(
 ) {
     let mut revision: u64 = 0;
     let mut pending_refresh = false;
+    let mut pending_error: Option<String> = None;
+    let mut pending_commit: Option<CommitInfo> = None;
     let mut gutter_producers: FxHashMap<BufferId, SnapshotCell<GutterSnapshot>> =
         FxHashMap::default();
     let mut gutter_revision: FxHashMap<BufferId, u64> = FxHashMap::default();
@@ -165,8 +175,38 @@ fn worker_loop(
         for c in cmds {
             match c {
                 GitCommand::RefreshStatus => pending_refresh = true,
-                GitCommand::Stage(_) | GitCommand::Unstage(_) | GitCommand::Discard(_) => {
-                    // TODO(slice-6): wire through to GitService staging API.
+                GitCommand::Stage(path) => {
+                    apply_mut_op(&service.stage(&path), "stage", &mut pending_error);
+                    pending_refresh = true;
+                }
+                GitCommand::Unstage(path) => {
+                    apply_mut_op(&service.unstage(&path), "unstage", &mut pending_error);
+                    pending_refresh = true;
+                }
+                GitCommand::Discard(path) => {
+                    apply_mut_op(&service.discard_file(&path), "discard", &mut pending_error);
+                    pending_refresh = true;
+                }
+                GitCommand::Commit { message } => {
+                    match service.commit(&message) {
+                        Ok(oid) => {
+                            let hex = oid.to_string();
+                            let short = hex.get(..7).unwrap_or(&hex).to_string();
+                            pending_commit = Some(CommitInfo {
+                                short_oid: short,
+                                message,
+                            });
+                        }
+                        Err(e) => pending_error = Some(format!("commit failed: {e}")),
+                    }
+                    pending_refresh = true;
+                }
+                GitCommand::ApplyPatch { patch, location } => {
+                    apply_mut_op(
+                        &apply_patch(&service, &patch, location),
+                        "apply patch",
+                        &mut pending_error,
+                    );
                     pending_refresh = true;
                 }
                 GitCommand::RecomputeGutter {
@@ -192,22 +232,45 @@ fn worker_loop(
             match service.status() {
                 Ok(st) => {
                     revision = revision.wrapping_add(1);
-                    let snap = GitAdapter::build_snapshot(
+                    let snap = GitAdapter::build_snapshot_full(
                         st.files,
                         st.branch,
                         service.root().to_path_buf(),
                         st.ahead,
                         st.behind,
+                        pending_error.take(),
+                        pending_commit.take(),
                         revision,
                     );
                     cell.publish(snap);
                 }
-                Err(e) => {
-                    log::warn!("git status refresh failed: {e}");
-                }
+                Err(e) => log::warn!("git status refresh failed: {e}"),
             }
         }
     }
+}
+
+/// Route a libgit2 result to either the published snapshot's
+/// `last_error` field or a debug log on success.
+fn apply_mut_op<T>(result: &anyhow::Result<T>, label: &str, sink: &mut Option<String>) {
+    if let Err(e) = result {
+        *sink = Some(format!("{label} failed: {e}"));
+    }
+}
+
+/// Dispatch a unified-diff patch to either the index or the workdir.
+fn apply_patch(service: &GitService, patch: &str, location: PatchLocation) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let diff = git2::Diff::from_buffer(patch.as_bytes()).context("failed to parse hunk patch")?;
+    let loc = match location {
+        PatchLocation::Index => git2::ApplyLocation::Index,
+        PatchLocation::Workdir => git2::ApplyLocation::WorkDir,
+    };
+    service
+        .repo()
+        .apply(&diff, loc, None)
+        .context("failed to apply patch")?;
+    Ok(())
 }
 
 fn handle_gutter(
@@ -319,12 +382,14 @@ mod tests {
             status: FileStatus::Modified,
             staged: false,
         }];
-        let snap = GitAdapter::build_snapshot(
+        let snap = GitAdapter::build_snapshot_full(
             files,
             "main".into(),
             std::path::PathBuf::from("/repo"),
             2,
             1,
+            None,
+            None,
             7,
         );
         assert_eq!(snap.revision, 7);

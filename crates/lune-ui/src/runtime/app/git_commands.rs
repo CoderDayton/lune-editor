@@ -1,4 +1,11 @@
 #![allow(clippy::wildcard_imports)]
+//! Git command handlers — all dispatches now flow through the async
+//! [`GitPort`]. Synchronous feedback (status messages, OID display,
+//! error toasts) comes from the next published `StatusSnapshot`,
+//! which the render path observes via
+//! `AppState::sync_git_panel_from_port`.
+
+use lune_core::ports::{GitCommand, PatchLocation};
 
 use super::*;
 
@@ -7,71 +14,65 @@ pub(super) fn handle_git_command(
     state: &mut AppState,
 ) -> Option<Control<AppEvent>> {
     let control = match cmd {
-        AppCommand::GitStage => handle_git_file_op(state, lune_git::GitService::stage, "Staged"),
-        AppCommand::GitUnstage => {
-            handle_git_file_op(state, lune_git::GitService::unstage, "Unstaged")
-        }
-        AppCommand::GitCommit => handle_git_commit(state),
-        AppCommand::GitDiscard => handle_git_discard(state),
+        AppCommand::GitStage => dispatch_file_op(state, "stage"),
+        AppCommand::GitUnstage => dispatch_file_op(state, "unstage"),
+        AppCommand::GitCommit => handle_git_commit_prompt(state),
+        AppCommand::GitDiscard => handle_git_discard_prompt(state),
         AppCommand::GitRefresh => {
             state.refresh_git();
             Control::Changed
         }
-        AppCommand::GitDiscardConfirmed(path) => handle_git_discard_confirmed(path, state),
-        AppCommand::GitCommitConfirmed(msg) => handle_git_commit_confirmed(msg, state),
-        AppCommand::GitStageHunk => handle_git_hunk_op(state, "stage"),
-        AppCommand::GitUnstageHunk => handle_git_hunk_op(state, "unstage"),
-        AppCommand::GitDiscardHunk => handle_git_hunk_op(state, "discard"),
+        AppCommand::GitDiscardConfirmed(path) => {
+            state.git_port().dispatch(GitCommand::Discard(path.clone()));
+            state.status_message = format!("Discarded: {}", path.display());
+            Control::Changed
+        }
+        AppCommand::GitCommitConfirmed(msg) => {
+            state.git_port().dispatch(GitCommand::Commit {
+                message: msg.clone(),
+            });
+            state.status_message = "Commit dispatched…".to_string();
+            Control::Changed
+        }
+        AppCommand::GitStageHunk => dispatch_hunk(state, "stage", PatchLocation::Index, false),
+        AppCommand::GitUnstageHunk => dispatch_hunk(state, "unstage", PatchLocation::Index, true),
+        AppCommand::GitDiscardHunk => dispatch_hunk(state, "discard", PatchLocation::Workdir, true),
         _ => return None,
     };
     Some(control)
 }
 
-fn handle_git_file_op(
-    state: &mut AppState,
-    op: fn(&lune_git::GitService, &Path) -> anyhow::Result<()>,
-    label: &str,
-) -> Control<AppEvent> {
+// ── File-level ops (stage / unstage) ────────────────────────────────
+
+fn dispatch_file_op(state: &mut AppState, kind: &str) -> Control<AppEvent> {
     let Some(file) = state.git_panel.selected_file().cloned() else {
         return Control::Continue;
     };
-    let Some(git) = state.open_git_service() else {
-        return Control::Changed;
+    let cmd = match kind {
+        "stage" => GitCommand::Stage(file.path.clone()),
+        "unstage" => GitCommand::Unstage(file.path.clone()),
+        _ => return Control::Continue,
     };
-    match op(&git, &file.path) {
-        Ok(()) => {
-            state.status_message = format!("{label}: {}", file.path.display());
-            state.refresh_git();
-        }
-        Err(e) => {
-            state.status_message = format!("{label} failed: {e}");
-            state
-                .overlay
-                .notify(format!("{label} failed: {e}"), NotificationLevel::Error);
-        }
-    }
+    state.git_port().dispatch(cmd);
+    let label = match kind {
+        "stage" => "Staging",
+        _ => "Unstaging",
+    };
+    state.status_message = format!("{label}: {}", file.path.display());
     Control::Changed
 }
 
-fn handle_git_commit(state: &mut AppState) -> Control<AppEvent> {
-    let has_staged = state
-        .git_panel
-        .status
-        .as_ref()
-        .is_some_and(|s| s.files.iter().any(|f| f.staged));
+// ── Commit / discard prompts ────────────────────────────────────────
 
-    if !has_staged {
+fn handle_git_commit_prompt(state: &mut AppState) -> Control<AppEvent> {
+    let status = state.git_port().status().load();
+    let staged_count = status.files.iter().filter(|f| f.staged).count();
+    if staged_count == 0 {
         state
             .overlay
             .notify("Nothing staged to commit", NotificationLevel::Info);
         return Control::Changed;
     }
-
-    let staged_count = state
-        .git_panel
-        .status
-        .as_ref()
-        .map_or(0, |s| s.files.iter().filter(|f| f.staged).count());
 
     let dialog = overlay::InputDialogState::new(
         format!("Commit ({staged_count} staged)"),
@@ -83,34 +84,7 @@ fn handle_git_commit(state: &mut AppState) -> Control<AppEvent> {
     Control::Changed
 }
 
-fn handle_git_commit_confirmed(message: &str, state: &mut AppState) -> Control<AppEvent> {
-    let Some(git) = state.open_git_service() else {
-        state
-            .overlay
-            .notify("No git repository", NotificationLevel::Error);
-        return Control::Changed;
-    };
-    match git.commit(message) {
-        Ok(oid) => {
-            let hex = oid.to_string();
-            let short = hex.get(..7).unwrap_or(&hex);
-            state.status_message = format!("Committed {short}");
-            state
-                .overlay
-                .notify(format!("[{short}] {message}"), NotificationLevel::Info);
-            state.refresh_git();
-        }
-        Err(e) => {
-            state.status_message = format!("Commit failed: {e}");
-            state
-                .overlay
-                .notify(format!("Commit failed: {e}"), NotificationLevel::Error);
-        }
-    }
-    Control::Changed
-}
-
-fn handle_git_discard(state: &mut AppState) -> Control<AppEvent> {
+fn handle_git_discard_prompt(state: &mut AppState) -> Control<AppEvent> {
     let Some(file) = state.git_panel.selected_file().cloned() else {
         return Control::Continue;
     };
@@ -123,60 +97,27 @@ fn handle_git_discard(state: &mut AppState) -> Control<AppEvent> {
     Control::Changed
 }
 
-fn handle_git_discard_confirmed(path: &Path, state: &mut AppState) -> Control<AppEvent> {
-    let Some(git) = state.open_git_service() else {
-        return Control::Changed;
-    };
-    match git.discard_file(path) {
-        Ok(()) => {
-            state.status_message = format!("Discarded: {}", path.display());
-            state.refresh_git();
-        }
-        Err(e) => {
-            state.status_message = format!("Discard failed: {e}");
-            state
-                .overlay
-                .notify(format!("Discard failed: {e}"), NotificationLevel::Error);
-        }
-    }
-    Control::Changed
-}
+// ── Hunk-level ops (stage_hunk / unstage_hunk / discard_hunk) ───────
 
-fn handle_git_hunk_op(state: &mut AppState, op: &str) -> Control<AppEvent> {
+fn dispatch_hunk(
+    state: &mut AppState,
+    label: &str,
+    location: PatchLocation,
+    reverse: bool,
+) -> Control<AppEvent> {
     let Some((path, hunk)) = state.git_panel.diff_view.current_hunk_data() else {
         return Control::Continue;
     };
     let path = path.to_path_buf();
-    let hunk = hunk.clone();
-    let Some(git) = state.open_git_service() else {
-        return Control::Continue;
+    let diff_patch = if reverse {
+        hunk.to_reverse_patch(&path)
+    } else {
+        hunk.to_patch(&path)
     };
-    let result = match op {
-        "stage" => git.stage_hunk(&path, &hunk),
-        "unstage" => git.unstage_hunk(&path, &hunk),
-        "discard" => git.discard_hunk(&path, &hunk),
-        _ => return Control::Continue,
-    };
-    match result {
-        Ok(()) => {
-            state.status_message = format!("{op} hunk: {}", path.display());
-            state.refresh_git();
-            // Re-fetch the diff through a fresh service handle so the
-            // diff panel stays in sync with the new index/workdir state.
-            if let Some(git) = state.open_git_service() {
-                match git.diff_file(&path) {
-                    Ok(Some(diff)) => state.git_panel.diff_view.set_diff(diff),
-                    Ok(None) => state.git_panel.diff_view.clear(),
-                    Err(e) => log::error!("Failed to re-fetch diff: {e}"),
-                }
-            }
-        }
-        Err(e) => {
-            state.status_message = format!("{op} hunk failed: {e}");
-            state
-                .overlay
-                .notify(format!("{op} hunk failed: {e}"), NotificationLevel::Error);
-        }
-    }
+    state.git_port().dispatch(GitCommand::ApplyPatch {
+        patch: diff_patch,
+        location,
+    });
+    state.status_message = format!("{label} hunk: {}", path.display());
     Control::Changed
 }

@@ -8,8 +8,9 @@ use crate::primitives::{
     Block, BorderType, Borders, Buffer, Color, Line, Modifier, Rect, Span, Style, Stylize, Widget,
 };
 
-use lune_core::workspace::FileStatus;
-use lune_git::{GitFileStatus, GitStatus};
+use std::sync::Arc;
+
+use lune_core::ports::{FileEntry, FileState, StatusSnapshot};
 
 use crate::theme::Theme;
 use crate::widgets::diff_view::DiffViewState;
@@ -17,8 +18,8 @@ use crate::widgets::diff_view::DiffViewState;
 /// State of the git panel widget.
 #[derive(Clone, Debug)]
 pub struct GitPanelState {
-    /// Cached git status snapshot.
-    pub status: Option<GitStatus>,
+    /// Most recently published git status snapshot (shared, Arc-cloned).
+    pub status: Option<Arc<StatusSnapshot>>,
     /// Flattened list of entries for rendering/navigation.
     entries: Vec<PanelEntry>,
     /// Currently selected index in the entries list.
@@ -36,7 +37,7 @@ enum PanelEntry {
     Header(String),
     /// A file entry.
     File {
-        file: GitFileStatus,
+        file: FileEntry,
         /// Index into `status.files` for the original entry.
         _file_index: usize,
     },
@@ -61,7 +62,7 @@ impl GitPanelState {
     }
 
     /// Update the panel with a new git status snapshot.
-    pub fn update_status(&mut self, status: GitStatus) {
+    pub fn update_status(&mut self, status: Arc<StatusSnapshot>) {
         self.entries = build_entries(&status);
         self.status = Some(status);
 
@@ -96,7 +97,7 @@ impl GitPanelState {
     }
 
     /// Get the currently selected file entry (if any).
-    pub fn selected_file(&self) -> Option<&GitFileStatus> {
+    pub fn selected_file(&self) -> Option<&FileEntry> {
         self.entries.get(self.selected).and_then(|e| match e {
             PanelEntry::File { file, .. } => Some(file),
             PanelEntry::Header(_) => None,
@@ -140,22 +141,22 @@ impl GitPanelState {
     }
 }
 
-/// Build the flattened entry list from a `GitStatus`.
-fn build_entries(status: &GitStatus) -> Vec<PanelEntry> {
+/// Build the flattened entry list from a `StatusSnapshot`.
+fn build_entries(status: &StatusSnapshot) -> Vec<PanelEntry> {
     let mut entries = Vec::new();
 
-    let staged: Vec<(usize, &GitFileStatus)> = status
+    let staged: Vec<(usize, &FileEntry)> = status
         .files
         .iter()
         .enumerate()
         .filter(|(_, f)| f.staged)
         .collect();
 
-    let unstaged: Vec<(usize, &GitFileStatus)> = status
+    let unstaged: Vec<(usize, &FileEntry)> = status
         .files
         .iter()
         .enumerate()
-        .filter(|(_, f)| !f.staged && f.status != FileStatus::Ignored)
+        .filter(|(_, f)| !f.staged)
         .collect();
 
     if !staged.is_empty() {
@@ -268,12 +269,12 @@ fn render_file_entry(
     x: u16,
     y: u16,
     width: u16,
-    file: &GitFileStatus,
+    file: &FileEntry,
     is_selected: bool,
     buf: &mut Buffer,
     theme: &Theme,
 ) {
-    let (icon, color) = status_icon_color(file.status, theme);
+    let (icon, color) = status_icon_color(file.state, theme);
     let path_str = file.path.to_string_lossy();
 
     // Format: " M path/to/file.rs"
@@ -291,16 +292,15 @@ fn render_file_entry(
     line.render(Rect::new(x, y, width, 1), buf);
 }
 
-/// Get the status icon character and color for a `FileStatus`.
-const fn status_icon_color(status: FileStatus, theme: &Theme) -> (char, Color) {
-    match status {
-        FileStatus::Modified => ('M', theme.git_modified),
-        FileStatus::Added => ('A', theme.git_added),
-        FileStatus::Deleted => ('D', theme.git_deleted),
-        FileStatus::Renamed => ('R', theme.git_renamed),
-        FileStatus::Untracked => ('U', theme.git_untracked),
-        FileStatus::Conflicted => ('C', theme.git_conflicted),
-        FileStatus::Ignored => ('I', theme.git_ignored),
+/// Get the status icon character and color for a port [`FileState`].
+const fn status_icon_color(state: FileState, theme: &Theme) -> (char, Color) {
+    match state {
+        FileState::Modified => ('M', theme.git_modified),
+        FileState::Added => ('A', theme.git_added),
+        FileState::Deleted => ('D', theme.git_deleted),
+        FileState::Untracked => ('U', theme.git_untracked),
+        FileState::Conflicted => ('C', theme.git_conflicted),
+        FileState::Clean => ('·', theme.git_ignored),
     }
 }
 
@@ -311,29 +311,28 @@ mod tests {
 
     use crate::theme::Theme;
 
-    fn make_status() -> GitStatus {
-        GitStatus {
-            branch: "main".to_owned(),
-            ahead: 0,
-            behind: 0,
+    fn make_status() -> Arc<StatusSnapshot> {
+        Arc::new(StatusSnapshot {
+            branch: Some("main".to_owned()),
             files: vec![
-                GitFileStatus {
+                FileEntry {
                     path: PathBuf::from("staged.rs"),
-                    status: FileStatus::Modified,
+                    state: FileState::Modified,
                     staged: true,
                 },
-                GitFileStatus {
+                FileEntry {
                     path: PathBuf::from("unstaged.rs"),
-                    status: FileStatus::Modified,
+                    state: FileState::Modified,
                     staged: false,
                 },
-                GitFileStatus {
+                FileEntry {
                     path: PathBuf::from("new_file.rs"),
-                    status: FileStatus::Untracked,
+                    state: FileState::Untracked,
                     staged: false,
                 },
             ],
-        }
+            ..Default::default()
+        })
     }
 
     #[test]
@@ -420,11 +419,11 @@ mod tests {
     #[test]
     fn status_icon_colors() {
         let theme = Theme::dark();
-        let (icon, _) = status_icon_color(FileStatus::Modified, &theme);
+        let (icon, _) = status_icon_color(FileState::Modified, &theme);
         assert_eq!(icon, 'M');
-        let (icon, _) = status_icon_color(FileStatus::Added, &theme);
+        let (icon, _) = status_icon_color(FileState::Added, &theme);
         assert_eq!(icon, 'A');
-        let (icon, _) = status_icon_color(FileStatus::Deleted, &theme);
+        let (icon, _) = status_icon_color(FileState::Deleted, &theme);
         assert_eq!(icon, 'D');
     }
 }

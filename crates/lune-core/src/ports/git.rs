@@ -46,9 +46,32 @@ pub struct StatusSnapshot {
     pub ahead: u32,
     /// Commits behind upstream.
     pub behind: u32,
+    /// Error text from the most recent failed command, if any. Cleared
+    /// on the next successful op's snapshot. UI renders this as a
+    /// notification.
+    pub last_error: Option<String>,
+    /// Metadata from the most recent successful commit, if any. UI
+    /// renders this as a success notification ("[abc1234] msg").
+    pub last_commit: Option<CommitInfo>,
     /// Monotonic counter — bumps on every publish. UI uses it to detect
     /// changes without deep-comparing the file list.
     pub revision: u64,
+}
+
+/// Subset of commit metadata the UI needs for the status notification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitInfo {
+    pub short_oid: String,
+    pub message: String,
+}
+
+/// Where to apply a hunk patch. Mirrors `git2::ApplyLocation`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PatchLocation {
+    /// Apply to the index (stage/unstage hunk).
+    Index,
+    /// Apply to the working directory (discard hunk).
+    Workdir,
 }
 
 /// Per-line gutter annotations for a single buffer.
@@ -68,6 +91,18 @@ pub enum GitCommand {
     Stage(PathBuf),
     Unstage(PathBuf),
     Discard(PathBuf),
+    /// Create a commit from the currently staged changes.
+    Commit {
+        message: String,
+    },
+    /// Apply a pre-computed unified-diff patch. UI uses this for
+    /// hunk-level stage / unstage / discard — it serializes the
+    /// `DiffHunk` to a patch string and the worker hands it to
+    /// `Repository::apply`.
+    ApplyPatch {
+        patch: String,
+        location: PatchLocation,
+    },
     /// Recompute the gutter snapshot for a buffer against its HEAD blob.
     ///
     /// `content` is a snapshot of the current buffer text at dispatch

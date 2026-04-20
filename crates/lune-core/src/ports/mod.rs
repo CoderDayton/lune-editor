@@ -40,8 +40,8 @@ pub use ai::{
     SharedAiManagerPort, SharedAiSessionPort,
 };
 pub use git::{
-    FileEntry, FileState, GitCommand, GitPort, GutterSnapshot, NullGitPort, SharedGitPort,
-    StaticGitPort, StatusSnapshot,
+    CommitInfo, FileEntry, FileState, GitCommand, GitPort, GutterSnapshot, NullGitPort,
+    PatchLocation, SharedGitPort, StaticGitPort, StatusSnapshot,
 };
 pub use json_persistence::JsonFilePersistencePort;
 pub use persistence::{

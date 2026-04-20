@@ -9,9 +9,9 @@
 use std::path::PathBuf;
 
 use lune_core::buffer::TextBuffer;
+use lune_core::ports::{FileEntry, FileState, StatusSnapshot};
 use lune_core::workspace::{DirEntry, EntryKind, FileStatus};
 use lune_git::diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
-use lune_git::{GitFileStatus, GitStatus};
 
 use lune_ui::highlight::theme::SyntaxTheme;
 use lune_ui::primitives::{Buffer, Rect};
@@ -526,34 +526,33 @@ fn snapshot_diff_view_empty() {
 
 // ── Git panel snapshots ──────────────────────────────────────────────
 
-fn make_git_status() -> GitStatus {
-    GitStatus {
-        branch: "main".to_owned(),
-        ahead: 0,
-        behind: 0,
+fn make_git_status() -> std::sync::Arc<StatusSnapshot> {
+    std::sync::Arc::new(StatusSnapshot {
+        branch: Some("main".to_owned()),
         files: vec![
-            GitFileStatus {
+            FileEntry {
                 path: PathBuf::from("src/main.rs"),
-                status: FileStatus::Modified,
+                state: FileState::Modified,
                 staged: true,
             },
-            GitFileStatus {
+            FileEntry {
                 path: PathBuf::from("src/new_file.rs"),
-                status: FileStatus::Added,
+                state: FileState::Added,
                 staged: true,
             },
-            GitFileStatus {
+            FileEntry {
                 path: PathBuf::from("src/lib.rs"),
-                status: FileStatus::Modified,
+                state: FileState::Modified,
                 staged: false,
             },
-            GitFileStatus {
+            FileEntry {
                 path: PathBuf::from("temp.txt"),
-                status: FileStatus::Untracked,
+                state: FileState::Untracked,
                 staged: false,
             },
         ],
-    }
+        ..Default::default()
+    })
 }
 
 #[test]

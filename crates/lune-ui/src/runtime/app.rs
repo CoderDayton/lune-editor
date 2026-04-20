@@ -32,10 +32,11 @@ use lune_core::settings::Settings;
 use lune_core::watcher::{FileWatcher, WatchEvent};
 use lune_core::workspace::EntryKind;
 use lune_core::workspace_state::make_relative;
-// `GitAdapter` is the async port adapter installed on `open_workspace`.
-// `GitService` and `GutterMarks` appear in return types / method
-// signatures — referenced via qualified paths below to keep the top-
-// level import surface focused on the port, not the legacy types.
+// The only surviving coupling to `lune_git` from `AppState` is the
+// `GitAdapter` installed on `open_workspace` and the `GutterMarks`
+// shape consumed by `editor_pane` for rendering. Both are referenced
+// via qualified paths so the top-level import surface only names the
+// async port adapter.
 use lune_git::GitAdapter;
 
 use lune_ai::context::{
@@ -433,15 +434,28 @@ impl AppState {
         self.git_port = port;
     }
 
-    /// Open a fresh `GitService` at the current workspace root.
-    ///
-    /// Staging and commit commands use this for sync feedback: the port
-    /// is fire-and-forget and can't surface per-operation errors inline.
-    /// Open-per-op costs one `Repository::discover` syscall which is
-    /// negligible compared to libgit2's per-command overhead.
-    pub fn open_git_service(&self) -> Option<lune_git::GitService> {
-        let root = self.workspace.as_ref()?.root();
-        lune_git::GitService::open(root).ok().flatten()
+    /// Pull the latest git status through the port and push it into the
+    /// file-tree + git panel. No blocking I/O — the adapter's worker
+    /// thread has already done the libgit2 work; this is pure
+    /// hashmap + vec shuffling.
+    pub fn sync_git_panel_from_port(&mut self) {
+        let snap = self.git_port.status().load();
+        if snap.revision == 0 {
+            return;
+        }
+        // Surface last-op outcomes as notifications. `take` semantics
+        // inside the worker mean each snapshot carries at most one
+        // error or commit at a time.
+        if let Some(ref err) = snap.last_error {
+            self.status_message.clone_from(err);
+            self.overlay.notify(err.clone(), NotificationLevel::Error);
+        }
+        if let Some(ref commit) = snap.last_commit {
+            let msg = format!("[{}] {}", commit.short_oid, commit.message);
+            self.status_message = format!("Committed {}", commit.short_oid);
+            self.overlay.notify(msg, NotificationLevel::Info);
+        }
+        self.git_panel.update_status(snap);
     }
 
     /// Gutter marks for rendering a given buffer.
@@ -926,15 +940,11 @@ impl AppState {
             }
         }
 
-        // Seed the git panel + file-tree with an initial sync status.
-        // After this one call, every read goes through `self.git_port`;
-        // mutations re-open a short-lived `GitService` via
-        // [`AppState::open_git_service`] inside `git_commands.rs`.
-        if let Some(git) = self.open_git_service() {
-            self.refresh_git_status(&git);
-        } else {
-            log::info!("Workspace is not a git repository");
-        }
+        // The async `GitAdapter` (spawned below) will publish an
+        // initial status snapshot within a few milliseconds. Any file-
+        // tree / git-panel data rendered before that lands will be
+        // seed-empty; the next frame's `sync_git_panel_from_port` picks
+        // up the first real snapshot.
 
         // Also spawn the async GitAdapter if a port runtime is attached.
         // Publishes status snapshots on a background task; consumers can
@@ -959,7 +969,7 @@ impl AppState {
     /// Also re-applies the current git file statuses to the new entries
     /// so the status markers don't disappear after a rebuild (toggling
     /// a directory, reacting to a watcher event, etc). This is cheap —
-    /// we reuse the cached `GitService` and its last status query.
+    /// we reuse the cached port status snapshot.
     pub fn refresh_file_tree(&mut self) {
         if let Some(ref mut ws) = self.workspace {
             if let Err(e) = self.file_tree.refresh(ws) {
@@ -971,41 +981,18 @@ impl AppState {
         self.apply_git_to_file_tree_from_port();
     }
 
-    /// Force an immediate git refresh: publish a fresh status snapshot
-    /// through the port, update the file-tree markers, and push the
-    /// result into the git panel.
+    /// Force an immediate git refresh: fire `RefreshStatus` at the
+    /// port worker and pull the latest snapshot into UI state.
     ///
-    /// Called right after user-initiated mutations (stage / commit /
-    /// discard) so the UI reflects the new state without waiting for
-    /// the port's 2-second periodic timer.
+    /// The dispatch is fire-and-forget, so the worker's new snapshot
+    /// may not land on this frame — but its periodic 2s timer covers
+    /// steady state, and the next render picks up any new data.
     pub fn refresh_git(&mut self) {
-        if let Some(git) = self.open_git_service() {
-            self.refresh_git_status(&git);
-        }
-    }
-
-    /// Refresh git-derived state from a `GitService` reference.
-    fn refresh_git_status(&mut self, git: &lune_git::GitService) {
-        match git.status() {
-            Ok(status) => {
-                // Branch / ahead / behind are consumed directly from
-                // `self.git_port.status().load()` now; no mirroring needed.
-
-                // Update file tree git statuses from the port snapshot.
-                self.apply_git_to_file_tree_from_port();
-
-                // Dispatch gutter recomputes for all open buffers through
-                // the port. The async worker produces snapshots that the
-                // editor reads via `state.gutter_for_render()`.
-                self.dispatch_gutter_refresh(git);
-
-                // Update git panel.
-                self.git_panel.update_status(status);
-            }
-            Err(e) => {
-                log::error!("Failed to query git status: {e}");
-            }
-        }
+        self.git_port
+            .dispatch(lune_core::ports::GitCommand::RefreshStatus);
+        self.dispatch_gutter_refresh();
+        self.apply_git_to_file_tree_from_port();
+        self.sync_git_panel_from_port();
     }
 
     /// Apply git file statuses to the file tree entries.
@@ -1044,8 +1031,12 @@ impl AppState {
     /// Dispatch a gutter recompute for every open buffer with a path
     /// inside the current repo. The async git worker produces snapshots
     /// that the editor reads via `state.gutter_for_render()`.
-    fn dispatch_gutter_refresh(&self, git: &lune_git::GitService) {
+    fn dispatch_gutter_refresh(&self) {
         use lune_core::ports::GitCommand;
+        let snap = self.git_port.status().load();
+        let Some(root) = snap.workdir_root.clone() else {
+            return;
+        };
         for &id in &self.session.tabs {
             let Some(buf) = self.session.registry.get(id) else {
                 continue;
@@ -1053,12 +1044,12 @@ impl AppState {
             let Some(ref path) = buf.file_path else {
                 continue;
             };
-            let Some(rel) = git.repo_relative(path) else {
+            let Ok(rel) = path.strip_prefix(&root) else {
                 continue;
             };
             self.git_port.dispatch(GitCommand::RecomputeGutter {
                 buffer: id,
-                path: rel,
+                path: rel.to_path_buf(),
                 content: buf.text(),
             });
         }
@@ -2598,6 +2589,8 @@ mod tests {
             files: Vec::new(),
             ahead,
             behind,
+            last_error: None,
+            last_commit: None,
             revision: 1,
         });
         state.set_git_port_for_test(Arc::new(port));
