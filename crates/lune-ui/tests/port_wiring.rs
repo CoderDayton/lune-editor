@@ -125,7 +125,7 @@ fn gutter_for_render_reads_from_port_snapshot() {
     }
 
     let marks = state.gutter_for_render(id).expect("marks available");
-    assert!(!marks.marks.is_empty());
+    assert!(!marks.added.is_empty() || !marks.modified.is_empty() || !marks.deleted.is_empty());
 }
 
 #[test]

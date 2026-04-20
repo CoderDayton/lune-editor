@@ -82,7 +82,7 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         .session
         .active_buffer
         .and_then(|id| state.gutter_for_render(id));
-    let active_gutter = active_gutter_owned.as_ref();
+    let active_gutter = active_gutter_owned.as_deref();
 
     let highlighted: Option<&[HighlightedLine]> = if let Some(id) = state.session.active_buffer {
         let viewport_height = content_area.height as usize;

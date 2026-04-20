@@ -15,8 +15,8 @@ use crate::primitives::{
 use smallvec::SmallVec;
 
 use lune_core::highlight::{HighlightedLine, StyledSpan};
+use lune_core::ports::GutterSnapshot;
 use lune_core::prelude::*;
-use lune_git::GutterMarks;
 
 use crate::highlight::theme::SyntaxTheme;
 use crate::theme::Theme;
@@ -191,7 +191,7 @@ pub fn render_editor_pane(
     vim_mode: VimMode,
     highlighted: Option<&[HighlightedLine]>,
     syntax_theme: &SyntaxTheme,
-    gutter_marks: Option<&GutterMarks>,
+    gutter_marks: Option<&GutterSnapshot>,
     search_matches: Option<&lune_core::search::SearchState>,
     theme: &Theme,
 ) {
@@ -378,19 +378,27 @@ fn render_git_gutter(
     x: u16,
     y: u16,
     line_idx: usize,
-    marks: &GutterMarks,
+    marks: &GutterSnapshot,
     buf: &mut Buffer,
     theme: &Theme,
 ) {
-    if let Some(mark) = marks.get(line_idx) {
-        let (ch, color) = match mark {
-            lune_git::GutterMark::Added => ("│", theme.git_added),
-            lune_git::GutterMark::Modified => ("│", theme.git_modified),
-            lune_git::GutterMark::Deleted => ("▾", theme.git_deleted),
-        };
-        let span = Span::styled(ch, Style::new().fg(color));
-        Line::from(span).render(Rect::new(x, y, GIT_GUTTER_WIDTH, 1), buf);
-    }
+    // `added` / `modified` / `deleted` are sorted `Vec<u32>` on the
+    // port snapshot. Three `O(log n)` binary searches per visible line
+    // — well under the cost of building a hashmap per frame.
+    let Ok(line) = u32::try_from(line_idx) else {
+        return;
+    };
+    let (ch, color) = if marks.added.binary_search(&line).is_ok() {
+        ("│", theme.git_added)
+    } else if marks.modified.binary_search(&line).is_ok() {
+        ("│", theme.git_modified)
+    } else if marks.deleted.binary_search(&line).is_ok() {
+        ("▾", theme.git_deleted)
+    } else {
+        return;
+    };
+    let span = Span::styled(ch, Style::new().fg(color));
+    Line::from(span).render(Rect::new(x, y, GIT_GUTTER_WIDTH, 1), buf);
 }
 
 /// Render the editor's vertical scrollbar.

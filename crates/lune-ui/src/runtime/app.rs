@@ -32,11 +32,12 @@ use lune_core::settings::Settings;
 use lune_core::watcher::{FileWatcher, WatchEvent};
 use lune_core::workspace::EntryKind;
 use lune_core::workspace_state::make_relative;
-// The only surviving coupling to `lune_git` from `AppState` is the
-// `GitAdapter` installed on `open_workspace` and the `GutterMarks`
-// shape consumed by `editor_pane` for rendering. Both are referenced
-// via qualified paths so the top-level import surface only names the
-// async port adapter.
+// `GitAdapter` is the async port adapter installed on `open_workspace`.
+// All other reads now flow through `lune_core::ports`:
+// - status, branch, ahead/behind → `StatusSnapshot`
+// - gutter marks → `Arc<GutterSnapshot>` via `gutter_for_render`
+// - file-tree markers → `apply_git_to_file_tree_from_port`
+// Staging mutations → `GitCommand` dispatches on `git_port`.
 use lune_git::GitAdapter;
 
 use lune_ai::context::{
@@ -458,28 +459,23 @@ impl AppState {
         self.git_panel.update_status(snap);
     }
 
-    /// Gutter marks for rendering a given buffer.
+    /// Gutter snapshot for rendering a given buffer.
     ///
     /// Reads from the async git port's published snapshot. Returns `None`
     /// if the port has no snapshot yet for this buffer (either because the
     /// workspace isn't a git repo, or because `RecomputeGutter` hasn't
     /// been dispatched and ticked through yet).
+    ///
+    /// Returns `Arc<GutterSnapshot>` — a lock-free clone of the latest
+    /// published cell, so the UI can hold it for the render pass without
+    /// copying the underlying line-number vectors.
     #[must_use]
-    pub fn gutter_for_render(&self, id: BufferId) -> Option<lune_git::GutterMarks> {
-        use lune_git::GutterMark;
+    pub fn gutter_for_render(
+        &self,
+        id: BufferId,
+    ) -> Option<std::sync::Arc<lune_core::ports::GutterSnapshot>> {
         let reader = self.git_port.gutter(id)?;
-        let snap = reader.load();
-        let mut marks = FxHashMap::default();
-        for &line in &snap.added {
-            marks.insert(line as usize, GutterMark::Added);
-        }
-        for &line in &snap.modified {
-            marks.insert(line as usize, GutterMark::Modified);
-        }
-        for &line in &snap.deleted {
-            marks.insert(line as usize, GutterMark::Deleted);
-        }
-        Some(lune_git::GutterMarks { marks })
+        Some(reader.load())
     }
 
     /// Whether a buffer has any gutter marks published. Used for mouse
