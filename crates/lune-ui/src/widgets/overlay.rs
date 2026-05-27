@@ -19,6 +19,22 @@ use crate::style::color as color_util;
 use crate::theme::Theme;
 use lune_ai::session::AiClientKind;
 use lune_core::language::LanguageId;
+use unicode_segmentation::UnicodeSegmentation;
+
+/// Remove the last grapheme cluster from `s` in place.
+///
+/// Falls back to a single-codepoint pop when no graphemes are found,
+/// which would only happen for an already-empty string.
+fn pop_grapheme(s: &mut String) {
+    if s.is_empty() {
+        return;
+    }
+    if let Some((idx, _)) = s.grapheme_indices(true).next_back() {
+        s.truncate(idx);
+    } else {
+        s.pop();
+    }
+}
 
 // ── Overlay kinds ─────────────────────────────────────────────────────
 
@@ -1135,16 +1151,18 @@ impl FindReplaceState {
         }
     }
 
-    /// Delete the last character from the active field.
+    /// Delete the last *grapheme cluster* from the active field.
+    ///
+    /// `String::pop` removes one codepoint, which peels composite emoji
+    /// (👨‍👩‍👧‍👦, 🧑‍🚀) apart one ZWJ/modifier at a time and leaves
+    /// orphan code-points behind.  Popping a whole grapheme keeps the
+    /// visible cluster intact.
     pub fn backspace(&mut self) {
-        match self.active_field {
-            FindReplaceField::Find => {
-                self.find_input.pop();
-            }
-            FindReplaceField::Replace => {
-                self.replace_input.pop();
-            }
-        }
+        let buf = match self.active_field {
+            FindReplaceField::Find => &mut self.find_input,
+            FindReplaceField::Replace => &mut self.replace_input,
+        };
+        pop_grapheme(buf);
     }
 
     /// Toggle between find and replace fields.

@@ -1421,6 +1421,8 @@ dependencies = [
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-typescript",
+ "unicode-segmentation",
+ "unicode-width",
  "vt100",
 ]
 

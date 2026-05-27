@@ -102,9 +102,65 @@ impl Drop for KvStore {
     }
 }
 
+/// Pick a non-colliding quarantine filename for a corrupt store.
+///
+/// `path.with_extension("corrupt-<nanos>-<pid>")` is enough to avoid
+/// collisions across processes and across same-process loads more than
+/// one nanosecond apart.  A counter handles the pathological case where
+/// the nanosecond clock + pid still collide (clock skew across mounts,
+/// frozen-clock VM snapshots, etc.); we bound the retry loop so a
+/// hostile filesystem can never spin us forever.
+fn next_quarantine_path(orig: &Path) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let pid = std::process::id();
+    for counter in 0..=64u32 {
+        let suffix = if counter == 0 {
+            format!("corrupt-{nanos}-{pid}")
+        } else {
+            format!("corrupt-{nanos}-{pid}-{counter}")
+        };
+        let candidate = orig.with_extension(&suffix);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    // Give up disambiguating; clobber rather than leave the corrupt
+    // file in place to be overwritten on next flush.
+    orig.with_extension(format!("corrupt-{nanos}-{pid}-overflow"))
+}
+
 fn load(path: &Path) -> Option<FxHashMap<Vec<u8>, Vec<u8>>> {
-    let raw = std::fs::read(path).ok()?;
-    let parsed: FxHashMap<String, String> = serde_json::from_slice(&raw).ok()?;
+    let raw = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            log::warn!("kv-store: read failed for {}: {e}", path.display());
+            return None;
+        }
+    };
+    let parsed: FxHashMap<String, String> = match serde_json::from_slice(&raw) {
+        Ok(p) => p,
+        Err(e) => {
+            // Parse failure means the file is corrupt. Without quarantine,
+            // the next `flush` would overwrite it — destroying any
+            // recoverable bytes.  Move the corrupt file aside under a
+            // unique suffix so an operator can inspect it later.
+            log::warn!(
+                "kv-store: parse failed for {}: {e}; quarantining",
+                path.display()
+            );
+            let quarantine = next_quarantine_path(path);
+            if let Err(rename_err) = std::fs::rename(path, &quarantine) {
+                log::warn!(
+                    "kv-store: rename to {} failed: {rename_err}",
+                    quarantine.display()
+                );
+            }
+            return None;
+        }
+    };
     let engine = base64::engine::general_purpose::STANDARD;
     let mut out = FxHashMap::default();
     for (k_hex, v_b64) in parsed {
@@ -235,5 +291,36 @@ mod tests {
             let decoded = decode_hex(&hex).unwrap();
             assert_eq!(decoded, bytes);
         }
+    }
+
+    #[test]
+    fn corrupt_file_is_quarantined_without_collision() {
+        // Two corrupt loads in rapid succession must produce two distinct
+        // quarantine files — the previous second-resolution suffix could
+        // silently overwrite the earlier quarantine on a fast machine.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kv.json");
+
+        std::fs::write(&path, b"not-json").unwrap();
+        let _ = KvStore::open(path.clone()); // triggers quarantine
+
+        std::fs::write(&path, b"also-not-json").unwrap();
+        let _ = KvStore::open(path); // triggers quarantine again
+
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains("corrupt-"))
+            .collect();
+        assert_eq!(
+            entries.len(),
+            2,
+            "expected two distinct quarantine files, found {}: {:?}",
+            entries.len(),
+            entries
+                .iter()
+                .map(std::fs::DirEntry::file_name)
+                .collect::<Vec<_>>()
+        );
     }
 }

@@ -39,6 +39,13 @@ struct Inner {
     status_reader: Snapshot<StatusSnapshot>,
     gutter_readers: GutterReaders,
     tx: mpsc::UnboundedSender<GitCommand>,
+    /// Held until the adapter is dropped.  Dropping this oneshot sender
+    /// signals the periodic-refresh timer to exit, which in turn drops
+    /// its clone of `tx`.  Once both sender handles are gone, the
+    /// blocking worker's `rx.blocking_recv()` returns `None` and the
+    /// worker exits — preventing the timer + worker leak that would
+    /// otherwise outlive a workspace switch or graceful shutdown.
+    _shutdown_tx: tokio::sync::oneshot::Sender<()>,
 }
 
 impl GitAdapter {
@@ -59,15 +66,26 @@ impl GitAdapter {
         let readers_for_worker = gutter_readers.clone();
         rt.spawn_blocking(move || worker_loop(service, rx, status_cell, readers_for_worker));
 
-        // Periodic refresh.
+        // Periodic refresh.  The timer holds a clone of `tx` and a
+        // oneshot receiver paired with `_shutdown_tx` below.  When the
+        // adapter is dropped, the sender drops too, the receiver
+        // resolves (with Err), the `select!` exits, and the timer's
+        // `tx_timer` clone is dropped — letting the blocking worker
+        // see all senders gone and exit cleanly.
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let tx_timer = tx.clone();
         rt.spawn(async move {
             let mut ticker = tokio::time::interval(Duration::from_secs(2));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            tokio::pin!(shutdown_rx);
             loop {
-                ticker.tick().await;
-                if tx_timer.send(GitCommand::RefreshStatus).is_err() {
-                    break;
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        if tx_timer.send(GitCommand::RefreshStatus).is_err() {
+                            break;
+                        }
+                    }
+                    _ = &mut shutdown_rx => break,
                 }
             }
         });
@@ -80,6 +98,7 @@ impl GitAdapter {
                 status_reader,
                 gutter_readers,
                 tx,
+                _shutdown_tx: shutdown_tx,
             }),
         }))
     }

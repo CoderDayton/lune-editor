@@ -41,17 +41,9 @@ pub enum AiClientKind {
 }
 
 impl AiClientKind {
-    /// Resolve the executable command for this client kind.
-    #[must_use]
-    pub fn command(&self) -> &str {
-        match self {
-            Self::Shell => std::env::var("SHELL").ok().map_or("/bin/sh", |_| "/bin/sh"), // fallback handled below
-            Self::ClaudeCode => "claude",
-            Self::Custom { command, .. } => command,
-        }
-    }
-
-    /// Resolve the actual shell path (checks `$SHELL` env var).
+    /// Resolve the actual command path.  For [`Self::Shell`] this honors
+    /// the `$SHELL` environment variable when set, otherwise falls back
+    /// to `/bin/sh`.
     #[must_use]
     pub fn resolved_command(&self) -> String {
         match self {
@@ -246,7 +238,7 @@ impl AiSession {
                     // Check exit code.
                     let exit_code = self
                         .pty
-                        .wait()
+                        .try_wait()
                         .ok()
                         .flatten()
                         .map_or(-1, |code| code as i32);
@@ -266,7 +258,7 @@ impl AiSession {
                     if self.state == SessionState::Running {
                         let exit_code = self
                             .pty
-                            .wait()
+                            .try_wait()
                             .ok()
                             .flatten()
                             .map_or(-1, |code| code as i32);
@@ -315,6 +307,18 @@ impl AiSession {
     #[must_use]
     pub fn event_receiver(&self) -> Receiver<SessionEvent> {
         self.event_rx.clone()
+    }
+}
+
+/// Ensure the child process and reader thread are torn down whenever
+/// the session is dropped — whether through an explicit
+/// [`AiSession::stop`] call or because the owning manager was itself
+/// dropped on app exit.  `PtyHandle::Drop` does the actual `kill + wait`;
+/// this impl is the seam that makes sure that destructor runs even when
+/// the session is moved/dropped without an explicit stop.
+impl Drop for AiSession {
+    fn drop(&mut self) {
+        let _ = self.pty.kill();
     }
 }
 

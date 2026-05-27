@@ -212,8 +212,17 @@ pub struct AppState {
     watcher_rx: Receiver<WatchEvent>,
     /// Sender for watcher events (passed to `FileWatcher` forwarding thread).
     watcher_tx: channel::Sender<WatchEvent>,
+    /// Join handle for the background thread that forwards events from
+    /// the watcher into `watcher_rx`.  Tracked so that workspace switches
+    /// (which drop the old `FileWatcher`) can deterministically reap the
+    /// previous forwarder before spawning the next one.
+    watcher_fwd_thread: Option<std::thread::JoinHandle<()>>,
     /// Per-buffer syntax highlighters.
     highlighters: FxHashMap<BufferId, Box<dyn Highlighter>>,
+    /// Set of buffers whose highlighter has already been primed via the
+    /// deferred first-time `update()`.  Used by `ensure_highlighter_primed`
+    /// to skip the per-frame cost after the initial parse.
+    primed_highlighters: rustc_hash::FxHashSet<BufferId>,
     /// Language detection registry.
     lang_registry: LanguageRegistry,
     /// Syntax color theme (copied from active theme in registry for fast access).
@@ -353,7 +362,9 @@ impl AppState {
             watcher: None,
             watcher_rx,
             watcher_tx,
+            watcher_fwd_thread: None,
             highlighters: FxHashMap::default(),
+            primed_highlighters: rustc_hash::FxHashSet::default(),
             lang_registry: LanguageRegistry::new(),
             syntax_theme: SyntaxTheme::dark(),
             theme: Theme::dark(),
@@ -873,6 +884,13 @@ impl AppState {
 
     /// Open a file and make it the active tab.
     ///
+    /// The syntax highlighter is created eagerly but its first
+    /// whole-buffer `update()` is deferred to the render path — large
+    /// files used to block here on tree-sitter parsing, which made
+    /// `--open <big-file>` perceptibly slow on the very first frame.
+    /// The lazy `ensure_highlighter_primed` call below tops it up just
+    /// before the buffer is rendered.
+    ///
     /// # Errors
     /// Returns an error if the file cannot be read.
     pub fn open_file(&mut self, path: &std::path::Path) -> anyhow::Result<BufferId> {
@@ -882,20 +900,41 @@ impl AppState {
         }
         self.session.active_buffer = Some(id);
 
-        // Assign a syntax highlighter if we don't already have one for this buffer.
+        // Assign a syntax highlighter if we don't already have one for
+        // this buffer.  Skip the eager full-buffer `update()` — it runs
+        // lazily on first render via `ensure_highlighter_primed`.
         if !self.highlighters.contains_key(&id) {
             if let Some(buf) = self.session.registry.get(id) {
                 let first_line = buf.line(0);
                 let lang_id = self.lang_registry.detect(path, first_line.as_deref());
                 if let Some(lid) = lang_id {
-                    let mut hl = highlight::create_highlighter(lid);
-                    hl.update(buf, None);
+                    let hl = highlight::create_highlighter(lid);
                     self.highlighters.insert(id, hl);
                 }
             }
         }
 
         Ok(id)
+    }
+
+    /// Run the deferred first-time `Highlighter::update` for a buffer if
+    /// it hasn't been primed yet.  Idempotent — `Highlighter::update`
+    /// short-circuits on an unchanged revision.
+    ///
+    /// Called from the render path so the cost of the initial tree-sitter
+    /// parse is paid on the first frame after opening, not in the
+    /// synchronous `open_file` call.
+    pub fn ensure_highlighter_primed(&mut self, id: BufferId) {
+        if self.primed_highlighters.contains(&id) {
+            return;
+        }
+        let Some(hl) = self.highlighters.get_mut(&id) else {
+            return;
+        };
+        if let Some(buf) = self.session.registry.get(id) {
+            hl.update(buf, None);
+            self.primed_highlighters.insert(id);
+        }
     }
 
     /// Open a workspace directory.
@@ -915,11 +954,25 @@ impl AppState {
         self.layout.show_file_tree = true;
 
         // Start file watcher — forward WatchEvents to our shared channel.
+        //
+        // The previous watcher (if any) is dropped first; that closes its
+        // sender, the old forwarding thread's `rx.recv()` returns Err, and
+        // the thread exits.  We then join it so the workspace switch
+        // doesn't leave background threads behind even momentarily.
+        let old_watcher = self.watcher.take();
+        drop(old_watcher);
+        if let Some(handle) = self.watcher_fwd_thread.take() {
+            // Join is best-effort — if the prior thread panicked we log
+            // and continue rather than propagating into workspace open.
+            if let Err(e) = handle.join() {
+                log::warn!("prior watcher forwarder panicked: {e:?}");
+            }
+        }
         match FileWatcher::new(&root, Duration::from_millis(200)) {
             Ok(fw) => {
                 let tx = self.watcher_tx.clone();
                 let rx = fw.receiver().clone();
-                std::thread::Builder::new()
+                let handle = std::thread::Builder::new()
                     .name("lune-watcher-fwd".into())
                     .spawn(move || {
                         while let Ok(event) = rx.recv() {
@@ -930,6 +983,7 @@ impl AppState {
                     })
                     .ok();
                 self.watcher = Some(fw);
+                self.watcher_fwd_thread = handle;
             }
             Err(e) => {
                 log::warn!("Failed to start file watcher: {e}");
@@ -1249,6 +1303,10 @@ impl AppState {
                 self.highlighters.get_mut(&id),
             ) {
                 hl.update(buf, None);
+                // A real edit just hit the buffer — it's now primed for
+                // sure, so ensure_highlighter_primed won't redundantly
+                // re-parse on the next render.
+                self.primed_highlighters.insert(id);
             }
         }
     }
@@ -1660,6 +1718,9 @@ fn close_tab_by_id(state: &mut AppState, bid: BufferId) {
         state.session.tabs.remove(idx);
         state.session.registry.close(bid);
         state.highlighters.remove(&bid);
+        // Keep the priming-state set in sync with the highlighter map so
+        // it doesn't accumulate dead `BufferId`s over the session.
+        state.primed_highlighters.remove(&bid);
         if state.session.active_buffer == Some(bid) {
             state.session.active_buffer = if state.session.tabs.is_empty() {
                 None
@@ -4094,13 +4155,14 @@ mod tests {
     }
 
     #[test]
-    fn highlights_are_populated_on_first_access_after_open() {
-        // Regression: after the per-frame slice refactor, `highlight_lines`
-        // on a freshly opened file must return a non-empty, non-plain
-        // slice. Previously a latent closure-lifetime bug in ui_render
-        // caused the first frame to render an empty slice so no
-        // highlighting appeared until a scroll / click triggered a
-        // second render.
+    fn highlights_are_populated_after_ensure_primed_post_open() {
+        // After the lazy-init refactor, `open_file` no longer pays the
+        // tree-sitter full-buffer parse cost up front — that cost moves
+        // to the first render via `ensure_highlighter_primed`.  This
+        // test pins the new contract: as long as the render path is
+        // exercised (via `ensure_highlighter_primed`, which is what
+        // `render_editor_tab` calls on every frame), highlighting must
+        // come out non-empty on the very first access.
         let mut state = AppState::new();
         let tmp = tempfile::Builder::new().suffix(".rs").tempfile().unwrap();
         std::fs::write(
@@ -4114,6 +4176,10 @@ mod tests {
             .session
             .active_buffer
             .expect("active buffer after open_file");
+
+        // Simulate what the render path does on the first frame.
+        state.ensure_highlighter_primed(id);
+
         let hl = state
             .highlighters
             .get_mut(&id)
@@ -4122,7 +4188,7 @@ mod tests {
         let lines = hl.highlight_lines(0..10);
         assert!(
             !lines.is_empty(),
-            "highlight_lines should return entries on first call"
+            "highlight_lines should return entries after first render-style prime"
         );
         assert!(
             lines.iter().any(|line| !line.is_plain()),

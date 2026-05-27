@@ -85,6 +85,11 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
     let active_gutter = active_gutter_owned.as_deref();
 
     let highlighted: Option<&[HighlightedLine]> = if let Some(id) = state.session.active_buffer {
+        // Lazy initial parse: `open_file` defers the whole-buffer
+        // `Highlighter::update` to the first render so that opening a
+        // large file doesn't block the UI thread.  Subsequent renders
+        // hit the `primed_highlighters` fast path and return early.
+        state.ensure_highlighter_primed(id);
         let viewport_height = content_area.height as usize;
         let top = state.viewport.top_line.saturating_sub(50);
         let end = state.viewport.top_line + viewport_height + 50;

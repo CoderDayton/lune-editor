@@ -114,6 +114,13 @@ fn dispatch_hunk(
     } else {
         hunk.to_patch(&path)
     };
+    let diff_patch = match diff_patch {
+        Ok(p) => p,
+        Err(e) => {
+            state.status_message = format!("{label} hunk failed: {e}");
+            return Control::Changed;
+        }
+    };
     state.git_port().dispatch(GitCommand::ApplyPatch {
         patch: diff_patch,
         location,

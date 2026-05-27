@@ -22,6 +22,46 @@ use crate::highlight::theme::SyntaxTheme;
 use crate::theme::Theme;
 use crate::vim::VimMode;
 
+use unicode_width::UnicodeWidthChar;
+
+// ── Unicode display-width helpers ─────────────────────────────────────
+//
+// `Position::col` / `ViewportState::left_col` are character columns —
+// the unit the buffer's edit and cursor math is built on.  Terminals
+// render in display *cells*, so wide chars (CJK, emoji) advance two
+// cells per char and combining marks advance zero.  These helpers
+// translate between the two coordinate systems at the render boundary,
+// keeping the wider editor's char-based positions correct while making
+// the screen output align to actual cell widths.
+
+/// Display width of a single character.  Combining marks contribute 0,
+/// wide CJK / emoji contribute 2, everything else 1.  Control chars
+/// (which would otherwise return `None`) are mapped to 0 so they don't
+/// throw off cell counts when they sneak through editor input.
+#[inline]
+fn char_cell_width(ch: char) -> usize {
+    UnicodeWidthChar::width(ch).unwrap_or(0)
+}
+
+/// Sum of display widths for the first `char_col` characters of `s`.
+///
+/// When `char_col` exceeds the number of chars in `s`, the chars beyond
+/// the end contribute width 1 each — matching the buffer's convention
+/// that the cursor can rest one column past the last char of a line.
+fn chars_to_display_cols(s: &str, char_col: usize) -> usize {
+    let mut cells = 0usize;
+    let mut chars_seen = 0usize;
+    for ch in s.chars() {
+        if chars_seen == char_col {
+            return cells;
+        }
+        cells += char_cell_width(ch);
+        chars_seen += 1;
+    }
+    // `char_col` past EOL — pad with single-cell virtual columns.
+    cells + (char_col - chars_seen)
+}
+
 // ── Viewport state ────────────────────────────────────────────────────
 
 /// Tracks the visible viewport of the editor pane.
@@ -92,14 +132,16 @@ impl LineCache {
 
     /// Get a cached line by absolute line index.
     /// Must be called after `prepare()`.
+    ///
+    /// Returns `""` when `line_idx` is outside the cached window —
+    /// including below `top_line`, where naive subtraction would
+    /// underflow in debug builds.
     #[inline]
     pub fn get(&self, line_idx: usize) -> &str {
-        let idx = line_idx - self.top_line;
-        if idx < self.lines.len() {
-            &self.lines[idx]
-        } else {
-            ""
-        }
+        line_idx
+            .checked_sub(self.top_line)
+            .and_then(|i| self.lines.get(i))
+            .map_or("", String::as_str)
     }
 }
 
@@ -112,13 +154,15 @@ impl ViewportState {
         height: usize,
         width: usize,
     ) {
-        // Vertical scrolling.
+        // Vertical scrolling — use saturating math throughout so that
+        // panes with `height < 4` (or `width < 6` below) don't underflow.
         let scroll_margin = 3.min(height / 4);
 
         if cursor_line < self.top_line + scroll_margin {
             self.top_line = cursor_line.saturating_sub(scroll_margin);
-        } else if cursor_line >= self.top_line + height - scroll_margin {
-            self.top_line = cursor_line.saturating_sub(height - scroll_margin - 1);
+        } else if cursor_line >= self.top_line + height.saturating_sub(scroll_margin) {
+            self.top_line =
+                cursor_line.saturating_sub(height.saturating_sub(scroll_margin).saturating_sub(1));
         }
 
         // Horizontal scrolling.
@@ -126,8 +170,9 @@ impl ViewportState {
 
         if cursor_col < self.left_col + h_margin {
             self.left_col = cursor_col.saturating_sub(h_margin);
-        } else if cursor_col >= self.left_col + width - h_margin {
-            self.left_col = cursor_col.saturating_sub(width - h_margin - 1);
+        } else if cursor_col >= self.left_col + width.saturating_sub(h_margin) {
+            self.left_col =
+                cursor_col.saturating_sub(width.saturating_sub(h_margin).saturating_sub(1));
         }
     }
 
@@ -436,35 +481,50 @@ fn render_vertical_scrollbar(
     StatefulWidget::render(scrollbar, area, buf, &mut state);
 }
 
-/// Extract a `&str` window into `s` starting at char offset `start` for `width` chars.
+/// Extract a `&str` window into `s` starting at char column `start` whose
+/// total display width does not exceed `width_cells`.
 ///
-/// Zero-allocation ASCII fast-path (O(1) pointer arithmetic); correct UTF-8 fallback.
+/// `start` is the leftmost *char* column (the unit the buffer uses); the
+/// returned substring renders within `width_cells` terminal cells.  ASCII
+/// retains its zero-walk fast path because `char == cell` everywhere.
+///
+/// Trailing chars whose remaining cell width would overflow the window
+/// are dropped — the line renderer will pad with default-styled gap fill
+/// rather than splitting a wide char across the viewport edge.
 #[inline]
-fn char_window(s: &str, start: usize, width: usize) -> &str {
+fn char_window(s: &str, start: usize, width_cells: usize) -> &str {
     if s.is_ascii() {
-        // ASCII: every byte is a char boundary — direct byte slice.
         let a = start.min(s.len());
-        let b = (start + width).min(s.len());
-        &s[a..b]
-    } else {
-        // UTF-8: walk char_indices to find byte boundaries.
-        let mut start_byte = s.len();
-        let mut end_byte = s.len();
-        for (col, (byte_idx, _)) in s.char_indices().enumerate() {
-            if col == start {
-                start_byte = byte_idx;
-            }
-            if col == start + width {
-                end_byte = byte_idx;
-                break;
-            }
-        }
-        if start_byte <= end_byte {
-            &s[start_byte..end_byte]
-        } else {
-            ""
+        let b = (start + width_cells).min(s.len());
+        return &s[a..b];
+    }
+
+    // Two-pass on the UTF-8 path: find the starting byte for char column
+    // `start`, then walk widths from there until the cell budget runs out.
+    let mut byte_start = s.len();
+    let mut found_start = false;
+    for (char_idx, (byte_idx, _)) in s.char_indices().enumerate() {
+        if char_idx == start {
+            byte_start = byte_idx;
+            found_start = true;
+            break;
         }
     }
+    if !found_start {
+        return "";
+    }
+
+    let mut acc = 0usize;
+    let mut byte_end = byte_start;
+    for (rel_byte_idx, ch) in s[byte_start..].char_indices() {
+        let w = char_cell_width(ch);
+        if acc + w > width_cells {
+            break;
+        }
+        acc += w;
+        byte_end = byte_start + rel_byte_idx + ch.len_utf8();
+    }
+    &s[byte_start..byte_end]
 }
 
 /// Render the text content of a single line with cursor, selection, and syntax highlighting.
@@ -510,7 +570,9 @@ fn render_line_content(
 
     // Apply search match highlighting.
     if let Some(search) = search_matches {
-        apply_search_highlight(x, y, width, line_idx, left_col, search, buf, ui_theme);
+        apply_search_highlight(
+            x, y, width, line_idx, left_col, search, buf, ui_theme, line_text,
+        );
     }
 
     // Apply selection highlighting.
@@ -527,12 +589,16 @@ fn render_line_content(
 
     // Render cursor.
     if cursor.line == line_idx {
-        render_cursor(x, y, width, cursor, left_col, vim_mode, buf, ui_theme);
+        render_cursor(
+            x, y, width, cursor, left_col, vim_mode, buf, ui_theme, line_text,
+        );
     }
 
     for secondary in secondary_cursors {
         if secondary.line == line_idx {
-            render_secondary_cursor(x, y, width, secondary, left_col, vim_mode, buf, ui_theme);
+            render_secondary_cursor(
+                x, y, width, secondary, left_col, vim_mode, buf, ui_theme, line_text,
+            );
         }
     }
 }
@@ -623,6 +689,21 @@ fn build_styled_line<'a>(
     result
 }
 
+/// Convert a char-based cursor column to its on-screen display column,
+/// relative to the viewport's left edge.
+///
+/// Returns `None` when the cursor sits left of the viewport (positions
+/// where chars `0..left_col` cannot all be measured because the char
+/// column is left of the viewport entirely).
+fn cursor_screen_col(line_text: &str, cursor_col: usize, left_col: usize) -> Option<usize> {
+    if cursor_col < left_col {
+        return None;
+    }
+    let cursor_display = chars_to_display_cols(line_text, cursor_col);
+    let left_display = chars_to_display_cols(line_text, left_col);
+    cursor_display.checked_sub(left_display)
+}
+
 /// Render the cursor on a line cell.
 #[allow(clippy::cast_possible_truncation)]
 #[allow(clippy::too_many_arguments)]
@@ -635,10 +716,13 @@ fn render_cursor(
     vim_mode: VimMode,
     buf: &mut Buffer,
     theme: &Theme,
+    line_text: &str,
 ) {
-    let cursor_screen_col = cursor.col.saturating_sub(left_col);
-    if cursor_screen_col < width {
-        let cx = x + cursor_screen_col as u16;
+    let Some(screen_col) = cursor_screen_col(line_text, cursor.col, left_col) else {
+        return;
+    };
+    if screen_col < width {
+        let cx = x + screen_col as u16;
         let cell = &mut buf[(cx, y)];
 
         match vim_mode {
@@ -666,13 +750,16 @@ fn render_secondary_cursor(
     vim_mode: VimMode,
     buf: &mut Buffer,
     theme: &Theme,
+    line_text: &str,
 ) {
-    let cursor_screen_col = cursor.col.saturating_sub(left_col);
-    if cursor_screen_col >= width {
+    let Some(screen_col) = cursor_screen_col(line_text, cursor.col, left_col) else {
+        return;
+    };
+    if screen_col >= width {
         return;
     }
 
-    let cx = x + cursor_screen_col as u16;
+    let cx = x + screen_col as u16;
     let cell = &mut buf[(cx, y)];
     let style = match vim_mode {
         VimMode::Normal | VimMode::Visual | VimMode::VisualLine | VimMode::Command => Style::new()
@@ -684,6 +771,95 @@ fn render_secondary_cursor(
             .add_modifier(Modifier::UNDERLINED | Modifier::BOLD),
     };
     cell.set_style(style);
+}
+
+/// Paint background-only style onto every screen cell whose underlying
+/// *char column* falls in `range_start_char..range_end_char`.
+///
+/// Single forward walk of `line_text` — accumulates display column and
+/// resolves `left_col`'s display offset along the way, so the cost is
+/// `O(line_chars + range_width)` regardless of how many ranges the
+/// caller paints in succession.  Replaces the previous `O(N²)`
+/// implementation that called `chars_to_display_cols` (`O(n)`) and
+/// `chars().nth()` (`O(n)`) per visited column.
+///
+/// `apply_cell` is invoked once per cell that should be painted; the
+/// caller chooses whether to `set_style`, `set_bg`, etc.
+///
+/// Trailing virtual columns past EOL are treated as single-cell — the
+/// same convention `chars_to_display_cols` uses — so a selection that
+/// extends past the last char still paints the empty-line padding.
+#[inline]
+#[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
+fn paint_char_range<F>(
+    line_text: &str,
+    range_start_char: usize,
+    range_end_char: usize,
+    left_col: usize,
+    width: usize,
+    x: u16,
+    y: u16,
+    buf: &mut Buffer,
+    mut apply_cell: F,
+) where
+    F: FnMut(&mut Buffer, u16, u16),
+{
+    if range_end_char <= range_start_char || width == 0 {
+        return;
+    }
+
+    let mut chars_seen: usize = 0;
+    let mut display_col: usize = 0;
+    let mut left_display: usize = 0;
+    let mut left_known = left_col == 0;
+
+    for ch in line_text.chars() {
+        if !left_known && chars_seen == left_col {
+            left_display = display_col;
+            left_known = true;
+        }
+        if chars_seen >= range_end_char {
+            return;
+        }
+        let w = char_cell_width(ch);
+        if left_known && chars_seen >= range_start_char {
+            let screen_col = display_col - left_display;
+            if screen_col >= width {
+                return;
+            }
+            let paint_w = w.max(1);
+            for offset in 0..paint_w {
+                let sc = screen_col + offset;
+                if sc >= width {
+                    break;
+                }
+                apply_cell(buf, x + sc as u16, y);
+            }
+        }
+        display_col += w;
+        chars_seen += 1;
+    }
+
+    // Past EOL — pad with single-cell virtual columns so highlights that
+    // extend beyond the last char (multi-line selection, search match
+    // covering a trailing newline) still paint the empty cells.
+    if !left_known {
+        // `left_col` is itself past EOL; map it onto the virtual columns.
+        // `left_known` doesn't need updating — the past-EOL loop below
+        // doesn't read it.
+        left_display = display_col + (left_col - chars_seen);
+    }
+    while chars_seen < range_end_char {
+        if chars_seen >= range_start_char && display_col >= left_display {
+            let screen_col = display_col - left_display;
+            if screen_col >= width {
+                return;
+            }
+            apply_cell(buf, x + screen_col as u16, y);
+        }
+        display_col += 1;
+        chars_seen += 1;
+    }
 }
 
 /// Apply selection highlighting to a line.
@@ -714,21 +890,27 @@ fn apply_selection_highlight(
     };
 
     let sel_style = Style::new().bg(theme.selection_bg);
-
-    for col in line_sel_start..line_sel_end {
-        if col < left_col {
-            continue;
-        }
-        let screen_col = col - left_col;
-        if screen_col >= width {
-            break;
-        }
-        let cx = x + screen_col as u16;
-        buf[(cx, y)].set_style(sel_style);
-    }
+    paint_char_range(
+        line_text,
+        line_sel_start,
+        line_sel_end,
+        left_col,
+        width,
+        x,
+        y,
+        buf,
+        |buf, cx, cy| {
+            buf[(cx, cy)].set_style(sel_style);
+        },
+    );
 }
 
 /// Apply search match highlighting to a line.
+///
+/// Like [`apply_selection_highlight`], we iterate the char columns of the
+/// match and paint every display cell those chars occupy — so wide CJK /
+/// emoji glyphs get their full 2-cell highlight, and combining marks
+/// don't smear the highlight to the wrong cell.
 #[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
 fn apply_search_highlight(
     x: u16,
@@ -739,42 +921,47 @@ fn apply_search_highlight(
     search: &lune_core::search::SearchState,
     buf: &mut Buffer,
     theme: &Theme,
+    line_text: &str,
 ) {
     let current_idx = search.current_match;
+    // Cache once per line — `chars().count()` would be O(n) per match
+    // otherwise, and a single line can hold many matches.
+    let mut line_char_count: Option<usize> = None;
 
     for (i, &(start, end)) in search.matches.iter().enumerate() {
-        // Only highlight matches that touch this line.
         if end.line < line_idx || start.line > line_idx {
             continue;
         }
 
-        let col_start = if start.line == line_idx {
-            start.col.saturating_sub(left_col)
+        let line_start_col = if start.line == line_idx { start.col } else { 0 };
+        let line_end_col = if end.line == line_idx {
+            end.col
         } else {
-            0
-        };
-        let col_end = if end.line == line_idx {
-            end.col.saturating_sub(left_col)
-        } else {
-            width
+            *line_char_count.get_or_insert_with(|| line_text.chars().count())
         };
 
-        if col_start >= width || col_end == 0 || col_start >= col_end {
+        if line_end_col <= line_start_col {
             continue;
         }
 
-        let is_current = current_idx == Some(i);
-        let bg = if is_current {
+        let bg = if current_idx == Some(i) {
             theme.search_current_bg
         } else {
             theme.search_match_bg
         };
-
-        for col in col_start..col_end.min(width) {
-            let cell_x = x + col as u16;
-            let cell = &mut buf[(cell_x, y)];
-            cell.set_bg(bg);
-        }
+        paint_char_range(
+            line_text,
+            line_start_col,
+            line_end_col,
+            left_col,
+            width,
+            x,
+            y,
+            buf,
+            |buf, cx, cy| {
+                buf[(cx, cy)].set_bg(bg);
+            },
+        );
     }
 }
 
@@ -918,6 +1105,172 @@ mod tests {
         assert_eq!(cache.get(0).trim_end(), "delta");
         assert_eq!(cache.get(1).trim_end(), "epsilon");
         assert_eq!(cache.get(2).trim_end(), "zeta");
+    }
+
+    #[test]
+    fn chars_to_display_cols_ascii() {
+        assert_eq!(chars_to_display_cols("hello", 0), 0);
+        assert_eq!(chars_to_display_cols("hello", 3), 3);
+        assert_eq!(chars_to_display_cols("hello", 5), 5);
+        // Past end of string: each phantom column counts as 1 cell.
+        assert_eq!(chars_to_display_cols("hello", 7), 7);
+    }
+
+    #[test]
+    fn chars_to_display_cols_cjk() {
+        // Three wide CJK chars: 6 cells total.
+        let s = "你好世";
+        assert_eq!(s.chars().count(), 3);
+        assert_eq!(chars_to_display_cols(s, 0), 0);
+        assert_eq!(chars_to_display_cols(s, 1), 2);
+        assert_eq!(chars_to_display_cols(s, 2), 4);
+        assert_eq!(chars_to_display_cols(s, 3), 6);
+    }
+
+    #[test]
+    fn chars_to_display_cols_combining_mark_is_zero_width() {
+        // 'e' + combining acute accent: visible as one glyph but two chars.
+        // The combining mark contributes 0 cells.
+        let s = "e\u{0301}f";
+        assert_eq!(chars_to_display_cols(s, 0), 0);
+        assert_eq!(chars_to_display_cols(s, 1), 1);
+        assert_eq!(chars_to_display_cols(s, 2), 1);
+        assert_eq!(chars_to_display_cols(s, 3), 2);
+    }
+
+    #[test]
+    fn char_window_ascii_unchanged() {
+        assert_eq!(char_window("hello world", 0, 5), "hello");
+        assert_eq!(char_window("hello world", 6, 5), "world");
+    }
+
+    #[test]
+    fn char_window_cjk_fits_in_cells() {
+        let s = "abc你好def";
+        // Window starts at char 0 with 4 cells: a(1)+b(1)+c(1)+你(2)=5 — too
+        // wide. The window must stop after 'c' so the wide char isn't split.
+        assert_eq!(char_window(s, 0, 4), "abc");
+        // 5 cells fits "abc你".
+        assert_eq!(char_window(s, 0, 5), "abc你");
+    }
+
+    #[test]
+    fn cursor_screen_col_ascii() {
+        assert_eq!(cursor_screen_col("hello", 3, 0), Some(3));
+        assert_eq!(cursor_screen_col("hello", 3, 1), Some(2));
+        assert_eq!(cursor_screen_col("hello", 0, 2), None);
+    }
+
+    #[test]
+    fn cursor_screen_col_after_wide_char() {
+        // After "你" (wide, 2 cells), char col 1 is at display col 2.
+        let line = "你好";
+        assert_eq!(cursor_screen_col(line, 1, 0), Some(2));
+        assert_eq!(cursor_screen_col(line, 2, 0), Some(4));
+    }
+
+    // ── paint_char_range parity tests ─────────────────────────────────
+    //
+    // These pin the post-refactor forward-walk implementation to the
+    // exact pixel pattern the previous O(N²) version produced, so the
+    // selection/search highlight visual output cannot regress silently.
+
+    /// Capture which `(x, y)` cells `paint_char_range` paints, as a
+    /// sorted Vec for stable comparisons.
+    fn capture_painted_cells(
+        line: &str,
+        range_start: usize,
+        range_end: usize,
+        left_col: usize,
+        width: usize,
+    ) -> Vec<u16> {
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        paint_char_range(
+            line,
+            range_start,
+            range_end,
+            left_col,
+            width,
+            0,
+            0,
+            &mut buf,
+            |buf, cx, cy| {
+                buf[(cx, cy)].set_symbol("X");
+            },
+        );
+        (0..area.width)
+            .filter(|x| buf[(*x, 0)].symbol() == "X")
+            .collect()
+    }
+
+    #[test]
+    fn paint_char_range_ascii_full_line() {
+        let cells = capture_painted_cells("hello", 0, 5, 0, 10);
+        assert_eq!(cells, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn paint_char_range_ascii_with_scroll() {
+        // left_col = 2 shifts char positions left by 2 cells.
+        let cells = capture_painted_cells("hello world", 4, 9, 2, 10);
+        // chars 4..9 = "o wor"; screen cols start at (display 4 - 2) = 2.
+        assert_eq!(cells, vec![2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn paint_char_range_wide_char_covers_two_cells() {
+        // "a你b" — '你' is wide (2 cells).  Painting char range 1..2
+        // covers BOTH cells of '你'.
+        let cells = capture_painted_cells("a你b", 1, 2, 0, 10);
+        assert_eq!(cells, vec![1, 2]);
+    }
+
+    #[test]
+    fn paint_char_range_combining_mark_paints_one_cell() {
+        // Combining mark (zero width) is forced to one cell so the
+        // highlight isn't invisible.  Range covers only the mark.
+        let cells = capture_painted_cells("e\u{0301}f", 1, 2, 0, 10);
+        assert_eq!(cells.len(), 1);
+    }
+
+    #[test]
+    fn paint_char_range_past_eol_pads_virtual_cells() {
+        // Range extends past the last char; each virtual column gets
+        // one cell of paint, up to the width budget.
+        let cells = capture_painted_cells("ab", 0, 6, 0, 5);
+        // chars 0..2 paint cells 0,1; virtual chars 2..5 paint cells 2,3,4.
+        assert_eq!(cells, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn paint_char_range_width_clamps_wide_char_at_edge() {
+        // The wide char would overflow the viewport — its second cell
+        // is dropped; the first cell is still painted.
+        let cells = capture_painted_cells("a你b", 0, 3, 0, 2);
+        // a → cell 0; first half of 你 → cell 1; second half clipped.
+        assert_eq!(cells, vec![0, 1]);
+    }
+
+    #[test]
+    fn paint_char_range_empty_range_paints_nothing() {
+        assert!(capture_painted_cells("hello", 3, 3, 0, 10).is_empty());
+        assert!(capture_painted_cells("hello", 5, 2, 0, 10).is_empty());
+    }
+
+    #[test]
+    fn paint_char_range_zero_width_paints_nothing() {
+        assert!(capture_painted_cells("hello", 0, 5, 0, 0).is_empty());
+    }
+
+    #[test]
+    fn paint_char_range_left_col_past_eol() {
+        // left_col is itself past the end of the line.  Selection that
+        // also lives past EOL should paint into the virtual columns
+        // starting from the viewport's left edge.
+        let cells = capture_painted_cells("ab", 4, 7, 4, 5);
+        // virtual chars 4..7 mapped past left_col=4 → screen cols 0,1,2.
+        assert_eq!(cells, vec![0, 1, 2]);
     }
 
     #[test]

@@ -37,7 +37,7 @@ pub struct DiffHunk {
 }
 
 /// A single line within a diff hunk.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiffLine {
     /// Whether this line is context, addition, or deletion.
     pub kind: DiffLineKind,
@@ -47,6 +47,13 @@ pub struct DiffLine {
     pub old_lineno: Option<usize>,
     /// Line number in the new file (if applicable).
     pub new_lineno: Option<usize>,
+    /// Whether this line is the last line of the file and lacks a
+    /// trailing newline.  libgit2 reports this via a follow-up
+    /// `=`/`>`/`<` origin line whose content is the standard
+    /// `\ No newline at end of file` marker.  Hunk patches must round-
+    /// trip this state, otherwise `git apply` either fails or silently
+    /// rewrites the trailing newline state of the file.
+    pub no_newline_eof: bool,
 }
 
 /// The kind of a diff line.
@@ -120,67 +127,83 @@ impl GitService {
 impl DiffHunk {
     /// Format this hunk as a valid unified diff patch string.
     ///
-    /// The result can be parsed by `git2::Diff::from_buffer()`.
-    pub fn to_patch(&self, path: &Path) -> String {
-        use std::fmt::Write;
-        let path_str = path.display();
-        let mut buf = String::new();
-        writeln!(buf, "diff --git a/{path_str} b/{path_str}").unwrap();
-        writeln!(buf, "--- a/{path_str}").unwrap();
-        writeln!(buf, "+++ b/{path_str}").unwrap();
-        writeln!(
-            buf,
-            "@@ -{},{} +{},{} @@",
-            self.old_start, self.old_count, self.new_start, self.new_count
-        )
-        .unwrap();
-        for line in &self.lines {
-            let prefix = match line.kind {
-                DiffLineKind::Context => ' ',
-                DiffLineKind::Addition => '+',
-                DiffLineKind::Deletion => '-',
-            };
-            let content = &line.content;
-            if content.ends_with('\n') {
-                write!(buf, "{prefix}{content}").unwrap();
-            } else {
-                writeln!(buf, "{prefix}{content}").unwrap();
-            }
-        }
-        buf
+    /// The result can be parsed by [`git2::Diff::from_buffer`].  Lines
+    /// flagged with `no_newline_eof` are followed by the standard
+    /// `\ No newline at end of file` marker so `git apply` preserves
+    /// the missing-newline state.
+    ///
+    /// # Errors
+    /// Returns an error if `path` contains non-UTF-8 bytes — the patch
+    /// header would otherwise be lossy and would not round-trip through
+    /// `git2::Diff::from_buffer`.
+    pub fn to_patch(&self, path: &Path) -> Result<String> {
+        let path_str = path_to_patch_str(path)?;
+        Ok(format_patch(self, path_str, false))
     }
 
     /// Format this hunk as a reverse patch (for unstaging/discarding).
     ///
     /// Swaps additions and deletions, and swaps old/new line counts.
-    pub fn to_reverse_patch(&self, path: &Path) -> String {
-        use std::fmt::Write;
-        let path_str = path.display();
-        let mut buf = String::new();
-        writeln!(buf, "diff --git a/{path_str} b/{path_str}").unwrap();
-        writeln!(buf, "--- a/{path_str}").unwrap();
-        writeln!(buf, "+++ b/{path_str}").unwrap();
-        // Swap old/new counts in the header.
+    /// Preserves no-newline-EOF markers (with their + / - flipped).
+    ///
+    /// # Errors
+    /// Returns an error if `path` contains non-UTF-8 bytes.
+    pub fn to_reverse_patch(&self, path: &Path) -> Result<String> {
+        let path_str = path_to_patch_str(path)?;
+        Ok(format_patch(self, path_str, true))
+    }
+}
+
+/// Reject non-UTF-8 paths up front — `display()` is lossy and the
+/// resulting patch header would not survive a round-trip through
+/// `git2::Diff::from_buffer`.
+fn path_to_patch_str(path: &Path) -> Result<&str> {
+    path.to_str()
+        .with_context(|| format!("path is not valid UTF-8: {}", path.display()))
+}
+
+/// Shared body for `to_patch` / `to_reverse_patch`.  When `reverse` is
+/// true, additions become deletions and vice versa, and the hunk
+/// header's old/new ranges are swapped.
+fn format_patch(hunk: &DiffHunk, path_str: &str, reverse: bool) -> String {
+    use std::fmt::Write;
+    let mut buf = String::new();
+    writeln!(buf, "diff --git a/{path_str} b/{path_str}").unwrap();
+    writeln!(buf, "--- a/{path_str}").unwrap();
+    writeln!(buf, "+++ b/{path_str}").unwrap();
+    if reverse {
         writeln!(
             buf,
             "@@ -{},{} +{},{} @@",
-            self.new_start, self.new_count, self.old_start, self.old_count
+            hunk.new_start, hunk.new_count, hunk.old_start, hunk.old_count
         )
         .unwrap();
-        for line in &self.lines {
-            let (prefix, content) = match line.kind {
-                DiffLineKind::Context => (' ', &line.content),
-                DiffLineKind::Addition => ('-', &line.content), // swap: + becomes -
-                DiffLineKind::Deletion => ('+', &line.content), // swap: - becomes +
-            };
-            if content.ends_with('\n') {
-                write!(buf, "{prefix}{content}").unwrap();
-            } else {
-                writeln!(buf, "{prefix}{content}").unwrap();
-            }
-        }
-        buf
+    } else {
+        writeln!(
+            buf,
+            "@@ -{},{} +{},{} @@",
+            hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
+        )
+        .unwrap();
     }
+
+    for line in &hunk.lines {
+        let prefix = match (line.kind, reverse) {
+            (DiffLineKind::Context, _) => ' ',
+            (DiffLineKind::Addition, false) | (DiffLineKind::Deletion, true) => '+',
+            (DiffLineKind::Deletion, false) | (DiffLineKind::Addition, true) => '-',
+        };
+        let content = &line.content;
+        if content.ends_with('\n') {
+            write!(buf, "{prefix}{content}").unwrap();
+        } else {
+            writeln!(buf, "{prefix}{content}").unwrap();
+        }
+        if line.no_newline_eof {
+            writeln!(buf, "\\ No newline at end of file").unwrap();
+        }
+    }
+    buf
 }
 
 /// Walk a `git2::Diff` and collect all file diffs.
@@ -188,7 +211,11 @@ impl DiffHunk {
 /// Uses `Diff::print` which provides a single callback instead of
 /// multiple mutable closures, avoiding borrow checker issues.
 fn collect_file_diffs(diff: &Diff<'_>) -> Result<Vec<FileDiff>> {
-    let mut file_diffs: Vec<FileDiff> = Vec::with_capacity(diff.stats()?.files_changed());
+    // No `diff.stats()` pre-walk: the previous capacity hint walked the
+    // entire diff once just to size this Vec, doubling the work.  A
+    // small starting capacity is enough — `Vec::push` reallocates O(log
+    // n) times and the cost is negligible compared to `diff.print` below.
+    let mut file_diffs: Vec<FileDiff> = Vec::new();
 
     diff.print(DiffFormat::Patch, |delta, hunk, line| {
         let path = delta
@@ -210,6 +237,17 @@ fn collect_file_diffs(diff: &Diff<'_>) -> Result<Vec<FileDiff>> {
         match line.origin() {
             'H' | 'F' => {
                 // File header / file footer — skip.
+            }
+            '=' | '>' | '<' => {
+                // "No newline at end of file" marker — flag the most
+                // recently-emitted content line in the current hunk.
+                // The marker itself produces no patch line; the flag
+                // controls whether `to_patch` re-emits the marker.
+                if let Some(h) = file_diff.hunks.last_mut() {
+                    if let Some(last_line) = h.lines.last_mut() {
+                        last_line.no_newline_eof = true;
+                    }
+                }
             }
             _ => {
                 // If we have a hunk header, create a new hunk entry.
@@ -248,6 +286,7 @@ fn collect_file_diffs(diff: &Diff<'_>) -> Result<Vec<FileDiff>> {
                         content,
                         old_lineno,
                         new_lineno,
+                        no_newline_eof: false,
                     });
                 }
             }
@@ -376,34 +415,39 @@ mod tests {
                     content: "line1\n".to_owned(),
                     old_lineno: Some(1),
                     new_lineno: Some(1),
+                    no_newline_eof: false,
                 },
                 DiffLine {
                     kind: DiffLineKind::Deletion,
                     content: "old\n".to_owned(),
                     old_lineno: Some(2),
                     new_lineno: None,
+                    no_newline_eof: false,
                 },
                 DiffLine {
                     kind: DiffLineKind::Addition,
                     content: "new\n".to_owned(),
                     old_lineno: None,
                     new_lineno: Some(2),
+                    no_newline_eof: false,
                 },
                 DiffLine {
                     kind: DiffLineKind::Addition,
                     content: "extra\n".to_owned(),
                     old_lineno: None,
                     new_lineno: Some(3),
+                    no_newline_eof: false,
                 },
                 DiffLine {
                     kind: DiffLineKind::Context,
                     content: "line3\n".to_owned(),
                     old_lineno: Some(3),
                     new_lineno: Some(4),
+                    no_newline_eof: false,
                 },
             ],
         };
-        let patch = hunk.to_patch(Path::new("test.txt"));
+        let patch = hunk.to_patch(Path::new("test.txt")).expect("to_patch");
         // Should be parseable by git2.
         assert!(git2::Diff::from_buffer(patch.as_bytes()).is_ok());
         assert!(patch.contains("+new\n"));
@@ -424,27 +468,76 @@ mod tests {
                     content: "ctx\n".to_owned(),
                     old_lineno: Some(1),
                     new_lineno: Some(1),
+                    no_newline_eof: false,
                 },
                 DiffLine {
                     kind: DiffLineKind::Addition,
                     content: "added\n".to_owned(),
                     old_lineno: None,
                     new_lineno: Some(2),
+                    no_newline_eof: false,
                 },
                 DiffLine {
                     kind: DiffLineKind::Context,
                     content: "ctx2\n".to_owned(),
                     old_lineno: Some(2),
                     new_lineno: Some(3),
+                    no_newline_eof: false,
                 },
             ],
         };
-        let patch = hunk.to_reverse_patch(Path::new("test.txt"));
+        let patch = hunk
+            .to_reverse_patch(Path::new("test.txt"))
+            .expect("to_reverse_patch");
         // Reverse should swap + and -.
         assert!(patch.contains("-added\n"));
         assert!(!patch.contains("+added"));
         // Should be parseable.
         assert!(git2::Diff::from_buffer(patch.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn no_newline_eof_marker_round_trips() {
+        // Commit a file with a trailing newline, then write a version
+        // without one — libgit2 should emit a `\ No newline at end of
+        // file` marker that survives our patch round-trip.
+        let (dir, svc) = repo_with_file("eof.txt", "line1\nline2\n");
+        fs::write(dir.path().join("eof.txt"), "line1\nline2_no_nl").unwrap();
+
+        let diff = svc.diff_file(Path::new("eof.txt")).unwrap().unwrap();
+        let hunk = diff.hunks.first().expect("one hunk");
+        assert!(
+            hunk.lines.iter().any(|l| l.no_newline_eof),
+            "expected at least one line flagged with no_newline_eof"
+        );
+
+        let patch = hunk.to_patch(Path::new("eof.txt")).unwrap();
+        assert!(
+            patch.contains("\\ No newline at end of file"),
+            "patch must include the no-newline marker"
+        );
+        // The emitted patch must still round-trip through git2.
+        git2::Diff::from_buffer(patch.as_bytes()).expect("patch parses");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn non_utf8_path_rejected() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        use std::path::PathBuf;
+
+        let hunk = DiffHunk {
+            header: "@@ -1 +1 @@".to_owned(),
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 1,
+            lines: vec![],
+        };
+        // Invalid UTF-8 byte sequence in path.
+        let bad: PathBuf = PathBuf::from(OsStr::from_bytes(b"bad\xFFpath"));
+        assert!(hunk.to_patch(&bad).is_err());
     }
 
     #[test]

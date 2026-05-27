@@ -162,11 +162,14 @@ impl PtyHandle {
         matches!(self.child.try_wait(), Ok(None))
     }
 
-    /// Wait for the child to exit and return its exit code.
+    /// Poll the child's exit status without blocking.
+    ///
+    /// Returns `Ok(Some(code))` once the child has exited, `Ok(None)` while
+    /// it is still running, and `Err(_)` on a wait failure.
     ///
     /// # Errors
     /// Returns an error if waiting fails.
-    pub fn wait(&mut self) -> anyhow::Result<Option<u32>> {
+    pub fn try_wait(&mut self) -> anyhow::Result<Option<u32>> {
         match self.child.try_wait() {
             Ok(Some(status)) => Ok(Some(status.exit_code())),
             Ok(None) => Ok(None),
@@ -188,6 +191,17 @@ impl PtyHandle {
     #[must_use]
     pub const fn size(&self) -> TermSize {
         self.size
+    }
+}
+
+/// `portable-pty::Child` does *not* kill the process on drop, so without
+/// this impl an `AiSession` that's dropped without an explicit `stop()`
+/// — including the implicit drop on app exit — would leave the child
+/// running forever as a zombie.  Send SIGKILL then reap.
+impl Drop for PtyHandle {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

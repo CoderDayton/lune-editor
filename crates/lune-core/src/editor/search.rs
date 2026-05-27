@@ -10,8 +10,6 @@ pub struct SearchState {
     pub query: String,
     /// Whether the search is case-sensitive.
     pub case_sensitive: bool,
-    /// Whether the query is a regex pattern.
-    pub regex: bool,
     /// All match ranges found in the buffer, as `(start, end)` positions.
     pub matches: Vec<(Position, Position)>,
     /// Index into `matches` of the currently highlighted match.
@@ -35,14 +33,16 @@ impl SearchState {
 impl TextBuffer {
     /// Search the buffer for `query` and populate the search state.
     ///
-    /// Returns a `SearchState` with all matches. For now, only plain-text
-    /// search is implemented (regex support is a TODO).
+    /// Plain-text only; the case-insensitive path uses Unicode lowercasing
+    /// (`char::to_lowercase`) and tracks the byte-to-char mapping back to
+    /// the original buffer so that variable-width lowerings such as
+    /// `ß → ss`, `İ → i\u{307}`, and `\u{01C4} → \u{01C6}` produce
+    /// match ranges that align with rope char boundaries.
     #[must_use]
     pub fn search(&self, query: &str, case_sensitive: bool) -> SearchState {
         let mut state = SearchState {
             query: query.to_string(),
             case_sensitive,
-            regex: false,
             matches: Vec::new(),
             current_match: None,
         };
@@ -51,44 +51,14 @@ impl TextBuffer {
             return state;
         }
 
-        // Allocate the text once (unavoidable — we need a contiguous &str
-        // for `str::find`). Avoid the previous redundant `.clone()`.
+        // Allocate the buffer text once (unavoidable — we need a contiguous
+        // &str for `str::find`).
         let text = self.text();
-        let (search_text, search_query);
 
         if case_sensitive {
-            // Borrow `text` directly — no clone needed.
-            search_text = std::borrow::Cow::Borrowed(text.as_str());
-            search_query = std::borrow::Cow::Borrowed(query);
+            self.find_matches_exact(&text, query, &mut state);
         } else {
-            search_text = std::borrow::Cow::Owned(text.to_lowercase());
-            search_query = std::borrow::Cow::Owned(query.to_lowercase());
-        }
-
-        // Maintain a running char count to avoid the O(n*m) re-scan from
-        // byte 0 on every match.  We track the char count up to the
-        // current `byte_offset` and only count newly-advanced bytes.
-        let mut byte_offset = 0;
-        let mut char_offset = 0;
-
-        while let Some(found) = search_text[byte_offset..].find(&*search_query) {
-            let match_start_byte = byte_offset + found;
-            let match_end_byte = match_start_byte + search_query.len();
-
-            // Count chars only in the gap since last position — O(n) total.
-            char_offset += text[byte_offset..match_start_byte].chars().count();
-            let start_char = char_offset;
-            let match_chars = text[match_start_byte..match_end_byte].chars().count();
-            let end_char = start_char + match_chars;
-
-            let start_pos = self.char_to_pos(start_char);
-            let end_pos = self.char_to_pos(end_char);
-
-            state.matches.push((start_pos, end_pos));
-
-            // Advance running counters to match end.
-            char_offset = end_char;
-            byte_offset = match_end_byte;
+            self.find_matches_case_insensitive(&text, query, &mut state);
         }
 
         if !state.matches.is_empty() {
@@ -96,6 +66,78 @@ impl TextBuffer {
         }
 
         state
+    }
+
+    /// Case-sensitive scan: bytes in the haystack alias bytes in the
+    /// original `text`, so we can count chars over the gap on the
+    /// original directly and accumulate `char_offset` in O(n) total.
+    fn find_matches_exact(&self, text: &str, query: &str, state: &mut SearchState) {
+        let mut byte_offset = 0;
+        let mut char_offset = 0;
+
+        while let Some(found) = text[byte_offset..].find(query) {
+            let match_start_byte = byte_offset + found;
+            let match_end_byte = match_start_byte + query.len();
+
+            char_offset += text[byte_offset..match_start_byte].chars().count();
+            let start_char = char_offset;
+            let match_chars = text[match_start_byte..match_end_byte].chars().count();
+            let end_char = start_char + match_chars;
+
+            state
+                .matches
+                .push((self.char_to_pos(start_char), self.char_to_pos(end_char)));
+
+            char_offset = end_char;
+            byte_offset = match_end_byte;
+        }
+    }
+
+    /// Case-insensitive scan: build a lowercased haystack alongside a
+    /// `lower-byte → original-char` map so that match byte offsets in the
+    /// lowercased string can be translated back to char positions in the
+    /// original buffer even when `char::to_lowercase` widens a char
+    /// (e.g. `ß → ss`, `İ → i\u{307}`).  Match ranges round outward to
+    /// cover every original char that contributed.
+    fn find_matches_case_insensitive(&self, text: &str, query: &str, state: &mut SearchState) {
+        // Pre-size to `text.len()`; the lowered form is typically the same
+        // length or slightly larger.
+        let mut lower = String::with_capacity(text.len());
+        let mut byte_to_char: Vec<usize> = Vec::with_capacity(text.len());
+        for (char_idx, ch) in text.chars().enumerate() {
+            for lc in ch.to_lowercase() {
+                let lc_bytes = lc.len_utf8();
+                for _ in 0..lc_bytes {
+                    byte_to_char.push(char_idx);
+                }
+                lower.push(lc);
+            }
+        }
+
+        let lower_query = query.to_lowercase();
+        // `query` was non-empty (caller checked), but lowercasing some
+        // unusual sequences could in theory yield empty output.  Bail
+        // defensively rather than risk an infinite loop on `find("")`.
+        if lower_query.is_empty() {
+            return;
+        }
+
+        let mut byte_offset = 0;
+        while let Some(found) = lower[byte_offset..].find(&lower_query) {
+            let match_start_byte = byte_offset + found;
+            let match_end_byte = match_start_byte + lower_query.len();
+
+            // Round outward: the start is the first contributing char,
+            // the end is one past the last contributing char.
+            let start_char = byte_to_char[match_start_byte];
+            let end_char = byte_to_char[match_end_byte - 1] + 1;
+
+            state
+                .matches
+                .push((self.char_to_pos(start_char), self.char_to_pos(end_char)));
+
+            byte_offset = match_end_byte;
+        }
     }
 
     /// Advance to the next match in the search state.
@@ -258,5 +300,45 @@ mod tests {
         // Single undo should revert all replacements.
         assert!(buf.undo());
         assert_eq!(buf.text(), "aaa bbb aaa");
+    }
+
+    #[test]
+    fn search_case_insensitive_capital_i_dot_widens() {
+        // `İ` (U+0130, 2 UTF-8 bytes) lowercases to `i\u{307}` (3 UTF-8
+        // bytes).  The lowercased haystack has a different byte length
+        // than the original, so the old code would mis-map byte offsets
+        // and could panic on a non-char-boundary slice.  The match range
+        // must align with original-char boundaries.
+        let buf = TextBuffer::from_text("İstanbul");
+        let state = buf.search("i", false);
+        assert_eq!(state.match_count(), 1);
+        // chars: İ(0), s(1), t(2), a(3), n(4), b(5), u(6), l(7).
+        assert_eq!(state.matches[0].0, Position::new(0, 0));
+        assert_eq!(state.matches[0].1, Position::new(0, 1));
+    }
+
+    #[test]
+    fn search_case_insensitive_widening_rounds_outward() {
+        // A match in the lowered form that straddles an `İ → i\u{307}`
+        // expansion should round outward to cover every original char
+        // that contributed.
+        let buf = TextBuffer::from_text("AİB");
+        let state = buf.search("ai", false);
+        assert_eq!(state.match_count(), 1);
+        // chars: A(0), İ(1), B(2) — match covers A and İ.
+        assert_eq!(state.matches[0].0, Position::new(0, 0));
+        assert_eq!(state.matches[0].1, Position::new(0, 2));
+    }
+
+    #[test]
+    fn search_case_insensitive_titlecase_digraph() {
+        // `Ǆ` (U+01C4) lowercases to `ǆ` (U+01C6) — same byte length, but
+        // a different codepoint.  The match must still land on the single
+        // original char.
+        let buf = TextBuffer::from_text("xǄy");
+        let state = buf.search("ǆ", false);
+        assert_eq!(state.match_count(), 1);
+        assert_eq!(state.matches[0].0, Position::new(0, 1));
+        assert_eq!(state.matches[0].1, Position::new(0, 2));
     }
 }

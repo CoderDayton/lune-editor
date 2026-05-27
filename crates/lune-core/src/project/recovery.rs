@@ -118,14 +118,18 @@ impl RecoveryState {
             }
         }
 
-        // Write new entries.
+        // Write new entries.  Each `.bak` lands via tmp + rename so a
+        // crash mid-write cannot corrupt the previous snapshot (the
+        // manifest below uses the same pattern).
         let mut entries = Vec::with_capacity(dirty_buffers.len());
         for (original_path, content) in dirty_buffers {
             let hash = content_hash(content);
             let filename = format!("{:016x}.bak", path_hash(original_path));
             let bak_path = recovery_dir.join(&filename);
+            let tmp_bak = recovery_dir.join(format!("{filename}.tmp"));
 
-            std::fs::write(&bak_path, content)?;
+            std::fs::write(&tmp_bak, content)?;
+            std::fs::rename(&tmp_bak, &bak_path)?;
 
             entries.push(RecoveryEntry {
                 original_path: original_path.clone(),
@@ -200,11 +204,18 @@ impl RecoveryState {
     pub fn clear(config: &ConfigPaths) -> anyhow::Result<()> {
         let recovery_dir = config.recovery_dir();
 
-        // Remove all .bak files.
+        // Remove all .bak files and any leftover .bak.tmp staging files
+        // from an interrupted atomic write.  We always create these with
+        // lower-case suffixes (see `autosave`), so a plain `ends_with` is
+        // sufficient — no case-insensitive match needed.
+        #[allow(clippy::case_sensitive_file_extension_comparisons)]
         if let Ok(read_dir) = std::fs::read_dir(&recovery_dir) {
             for entry in read_dir.flatten() {
                 let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "bak") {
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                if name.ends_with(".bak") || name.ends_with(".bak.tmp") {
                     let _ = std::fs::remove_file(&path);
                 }
             }

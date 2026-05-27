@@ -243,13 +243,21 @@ impl TextBuffer {
 
     /// Insert text at the given position.
     ///
-    /// Returns the `EditOp` that was applied.
+    /// Returns the `EditOp` that was applied.  Empty inserts are a no-op:
+    /// they do not bump the revision, touch dirty state, or push a
+    /// transaction onto the undo stack.
     pub fn insert(&mut self, pos: Position, text: &str) -> EditOp {
+        if text.is_empty() {
+            return EditOp::Insert {
+                pos,
+                text: Arc::from(""),
+            };
+        }
+
+        let cursor_before = self.cursor.clone();
         let char_idx = self.pos_to_char(pos);
         self.rope.insert(char_idx, text);
         self.current_revision += 1;
-        self.check_save_point_before_edit();
-        self.save_distance += 1;
 
         let text: Arc<str> = Arc::from(text);
         let op = EditOp::Insert {
@@ -261,7 +269,7 @@ impl TextBuffer {
         let end = end_position_after_insert(pos, &text);
         self.cursor = CursorState::at(end);
 
-        self.record_op(op.clone());
+        self.record_op(op.clone(), cursor_before);
         op
     }
 
@@ -277,11 +285,18 @@ impl TextBuffer {
         let start_idx = self.pos_to_char(lo);
         let end_idx = self.pos_to_char(hi);
 
+        if start_idx == end_idx {
+            return EditOp::Delete {
+                start: lo,
+                end: hi,
+                deleted_text: Arc::from(""),
+            };
+        }
+
+        let cursor_before = self.cursor.clone();
         let deleted_text: Arc<str> = Arc::from(self.rope.slice(start_idx..end_idx).to_string());
         self.rope.remove(start_idx..end_idx);
         self.current_revision += 1;
-        self.check_save_point_before_edit();
-        self.save_distance += 1;
 
         let op = EditOp::Delete {
             start: lo,
@@ -291,7 +306,7 @@ impl TextBuffer {
 
         self.cursor = CursorState::at(lo);
 
-        self.record_op(op.clone());
+        self.record_op(op.clone(), cursor_before);
         op
     }
 
@@ -309,6 +324,24 @@ impl TextBuffer {
         if !was_in_transaction {
             self.commit_transaction();
         }
+    }
+
+    /// Replace the entire buffer content with `text`, recorded as one
+    /// undoable transaction.
+    ///
+    /// If `text` matches the current content the call is a no-op (no
+    /// undo entry, dirty state unchanged).
+    ///
+    /// Used by crash recovery to push restored content into a buffer
+    /// that was just opened from disk so the user sees their unsaved
+    /// work as a dirty edit ready to save.
+    pub fn replace_all_text(&mut self, text: &str) {
+        if rope_equals_str(&self.rope, text) {
+            return;
+        }
+        let end_char = self.rope.len_chars();
+        let end_pos = self.char_to_pos(end_char);
+        self.replace(Position::default(), end_pos, text);
     }
 
     /// Insert the same text at every cursor in the current cursor set.
@@ -534,6 +567,10 @@ impl TextBuffer {
     /// Commit the current transaction, pushing it onto the undo stack.
     ///
     /// No-op if no transaction is in progress or if the transaction is empty.
+    /// `save_distance` is bumped exactly once per committed transaction so
+    /// that the matching `undo()` / `redo()` `±1` returns the buffer to a
+    /// consistent dirty/clean state — regardless of how many inner ops the
+    /// transaction grouped.
     pub fn commit_transaction(&mut self) {
         if let Some(ops) = self.pending_ops.take() {
             let cursor_before = self.pending_cursor_before.take().unwrap_or_default();
@@ -541,6 +578,9 @@ impl TextBuffer {
             if ops.is_empty() {
                 return;
             }
+
+            self.check_save_point_before_edit();
+            self.save_distance += 1;
 
             let txn = Transaction {
                 revision: self.current_revision,
@@ -555,12 +595,17 @@ impl TextBuffer {
 
     /// Record an edit op — either into the pending transaction or as a
     /// standalone transaction.
-    fn record_op(&mut self, op: EditOp) {
+    ///
+    /// `cursor_before` is the cursor state captured **before** the op
+    /// mutated the rope, so that undoing an auto-wrapped edit restores
+    /// the cursor to its pre-edit position.
+    fn record_op(&mut self, op: EditOp, cursor_before: CursorState) {
         if let Some(ref mut ops) = self.pending_ops {
             ops.push(op);
         } else {
             // Auto-wrap in a single-op transaction.
-            let cursor_before = self.cursor.clone();
+            self.check_save_point_before_edit();
+            self.save_distance += 1;
             let txn = Transaction {
                 revision: self.current_revision,
                 ops: vec![op],
@@ -674,7 +719,29 @@ impl TextBuffer {
         self.redo_stack.replace(state.redo_entries.into());
         true
     }
+}
 
+/// Compare a rope's content to a string slice without allocating.
+///
+/// Walks the rope's chunks against `s` in linear time, returning early on
+/// the first byte mismatch.  Used by [`TextBuffer::replace_all_text`] to
+/// skip a no-op replace when the new content matches the current rope.
+fn rope_equals_str(rope: &Rope, s: &str) -> bool {
+    if rope.len_bytes() != s.len() {
+        return false;
+    }
+    let mut tail = s.as_bytes();
+    for chunk in rope.chunks() {
+        let bytes = chunk.as_bytes();
+        if !tail.starts_with(bytes) {
+            return false;
+        }
+        tail = &tail[bytes.len()..];
+    }
+    tail.is_empty()
+}
+
+impl TextBuffer {
     /// FNV-1a hash of the full buffer content for mismatch detection.
     fn content_hash(&self) -> u64 {
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -1294,10 +1361,40 @@ mod tests {
         buf.commit_transaction();
 
         assert_eq!(buf.text(), "hello world");
+        assert!(buf.is_dirty());
 
-        // Single undo should revert the entire transaction.
+        // Single undo should revert the entire transaction AND restore
+        // the buffer to its saved (clean) state — `save_distance` must
+        // be bumped per-transaction, not per inner op.
         assert!(buf.undo());
         assert_eq!(buf.text(), "hello");
+        assert!(!buf.is_dirty());
+
+        // Redoing the transaction should put us back to dirty.
+        assert!(buf.redo());
+        assert_eq!(buf.text(), "hello world");
+        assert!(buf.is_dirty());
+    }
+
+    #[test]
+    fn empty_insert_is_noop() {
+        let mut buf = TextBuffer::from_text("hello");
+        let rev_before = buf.revision();
+        buf.insert(Position::new(0, 0), "");
+        assert_eq!(buf.text(), "hello");
+        assert_eq!(buf.revision(), rev_before);
+        assert!(!buf.is_dirty());
+        assert!(!buf.undo());
+    }
+
+    #[test]
+    fn auto_wrapped_undo_restores_pre_edit_cursor() {
+        let mut buf = TextBuffer::from_text("hello");
+        buf.cursor = CursorState::at(Position::new(0, 2));
+        buf.insert(Position::new(0, 2), "X");
+        assert_eq!(buf.cursor.primary.head, Position::new(0, 3));
+        assert!(buf.undo());
+        assert_eq!(buf.cursor.primary.head, Position::new(0, 2));
     }
 
     // ── Cursor movement ───────────────────────────────────────────────

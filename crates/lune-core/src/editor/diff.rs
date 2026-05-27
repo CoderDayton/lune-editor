@@ -246,11 +246,17 @@ pub fn compute_diff_incremental(
         h.id = i;
     }
 
-    // Fallback: verify by full diff. If counts diverge, use full diff.
-    // This is cheap for small files and catches edge cases.
-    let full = compute_diff(old, new);
-    if full.len() != result.len() {
-        return full;
+    // Debug-only sanity check: compare against a full diff and prefer
+    // the full one if the counts diverge.  In release builds the
+    // incremental result stands alone — running the full diff just to
+    // throw away the incremental answer would make this path slower
+    // than the non-incremental one.
+    #[cfg(debug_assertions)]
+    {
+        let full = compute_diff(old, new);
+        if full.len() != result.len() {
+            return full;
+        }
     }
 
     result
@@ -288,13 +294,16 @@ fn lines_inclusive(s: &str) -> Vec<&str> {
 
 /// Count "content lines" in a rope (excludes trailing empty line
 /// that ropey adds when the content ends with `\n`).
+///
+/// Uses a direct rope index lookup rather than allocating the whole
+/// content as a `String` for a one-character peek.
 fn count_content_lines(rope: &Rope) -> usize {
-    if rope.len_chars() == 0 {
+    let chars = rope.len_chars();
+    if chars == 0 {
         return 0;
     }
     let total = rope.len_lines();
-    let s = rope_to_string(rope);
-    if s.ends_with('\n') {
+    if rope.char(chars - 1) == '\n' {
         total.saturating_sub(1)
     } else {
         total

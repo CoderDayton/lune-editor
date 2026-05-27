@@ -67,7 +67,8 @@ impl GitService {
 
     /// Stage a single hunk by applying its patch to the index.
     pub fn stage_hunk(&self, rel_path: &Path, hunk: &crate::diff::DiffHunk) -> Result<()> {
-        let patch = hunk.to_patch(rel_path);
+        self.verify_hunk_fresh(rel_path, hunk, false)?;
+        let patch = hunk.to_patch(rel_path)?;
         let diff =
             git2::Diff::from_buffer(patch.as_bytes()).context("failed to parse hunk patch")?;
         self.repo()
@@ -78,7 +79,8 @@ impl GitService {
 
     /// Unstage a single hunk by applying its reverse patch to the index.
     pub fn unstage_hunk(&self, rel_path: &Path, hunk: &crate::diff::DiffHunk) -> Result<()> {
-        let patch = hunk.to_reverse_patch(rel_path);
+        self.verify_hunk_fresh(rel_path, hunk, true)?;
+        let patch = hunk.to_reverse_patch(rel_path)?;
         let diff = git2::Diff::from_buffer(patch.as_bytes())
             .context("failed to parse reverse hunk patch")?;
         self.repo()
@@ -91,12 +93,77 @@ impl GitService {
     ///
     /// **Destructive** — caller should confirm with user before calling.
     pub fn discard_hunk(&self, rel_path: &Path, hunk: &crate::diff::DiffHunk) -> Result<()> {
-        let patch = hunk.to_reverse_patch(rel_path);
+        self.verify_hunk_fresh(rel_path, hunk, false)?;
+        let patch = hunk.to_reverse_patch(rel_path)?;
         let diff = git2::Diff::from_buffer(patch.as_bytes())
             .context("failed to parse reverse hunk patch")?;
         self.repo()
             .apply(&diff, git2::ApplyLocation::WorkDir, None)
             .context("failed to apply reverse hunk to workdir")?;
+        Ok(())
+    }
+
+    /// Verify that `hunk` is still byte-identical to the corresponding
+    /// live diff hunk for `rel_path` before applying it.
+    ///
+    /// The check requires every `(kind, content, no_newline_eof)` triple
+    /// in `hunk.lines` to match the live hunk at the same `old_start`.
+    /// Comparing only `(old_start, old_count, new_start, new_count)` is
+    /// not enough: an edit that preserves the hunk shape (e.g. replacing
+    /// a line with a different line of the same length within the same
+    /// hunk window) would slip through and corrupt unrelated content
+    /// when the stale patch is applied.  `git apply`'s context-line
+    /// check would catch many such cases, but not all — so we enforce
+    /// identity here, up front, with a clear error.
+    fn verify_hunk_fresh(
+        &self,
+        rel_path: &Path,
+        hunk: &crate::diff::DiffHunk,
+        staged: bool,
+    ) -> Result<()> {
+        let current = if staged {
+            self.diff_staged(rel_path)?
+        } else {
+            self.diff_file(rel_path)?
+        };
+        let Some(current) = current else {
+            anyhow::bail!(
+                "hunk staleness check: no diff currently present for {} — refresh and retry",
+                rel_path.display()
+            );
+        };
+
+        // Find the candidate live hunk by header coordinates first; if
+        // nothing lines up, the hunk has been split/merged/moved.
+        let candidate = current.hunks.iter().find(|h| {
+            h.old_start == hunk.old_start
+                && h.old_count == hunk.old_count
+                && h.new_start == hunk.new_start
+                && h.new_count == hunk.new_count
+        });
+        let Some(candidate) = candidate else {
+            anyhow::bail!(
+                "hunk staleness check: hunk @@ -{},{} +{},{} @@ no longer present in {} — refresh and retry",
+                hunk.old_start,
+                hunk.old_count,
+                hunk.new_start,
+                hunk.new_count,
+                rel_path.display()
+            );
+        };
+
+        // Strong identity check on the hunk body.
+        if !hunks_equivalent(hunk, candidate) {
+            anyhow::bail!(
+                "hunk staleness check: hunk @@ -{},{} +{},{} @@ has the same shape but different content in {} — refresh and retry",
+                hunk.old_start,
+                hunk.old_count,
+                hunk.new_start,
+                hunk.new_count,
+                rel_path.display()
+            );
+        }
+
         Ok(())
     }
 
@@ -111,6 +178,18 @@ impl GitService {
             .context("failed to discard file changes")?;
         Ok(())
     }
+}
+
+/// Strong hunk-identity check: every line's `(kind, content,
+/// no_newline_eof)` must match.  Header coordinates are assumed to
+/// already line up — callers do that match first as a cheap filter.
+fn hunks_equivalent(a: &crate::diff::DiffHunk, b: &crate::diff::DiffHunk) -> bool {
+    if a.lines.len() != b.lines.len() {
+        return false;
+    }
+    a.lines.iter().zip(b.lines.iter()).all(|(la, lb)| {
+        la.kind == lb.kind && la.no_newline_eof == lb.no_newline_eof && la.content == lb.content
+    })
 }
 
 #[cfg(test)]
@@ -243,5 +322,54 @@ mod tests {
 
         let content = fs::read_to_string(&file_path).unwrap();
         assert_eq!(content, "original\n");
+    }
+
+    #[test]
+    fn verify_hunk_fresh_rejects_same_shape_different_content() {
+        // Capture a hunk, then mutate the file so a NEW hunk with the
+        // same `@@ -X,Y +X,Y @@` header but different inner content
+        // takes its place.  The strong identity check must reject the
+        // stale hunk rather than silently apply it.
+        let (dir, svc) = repo_with_file("h.txt", "alpha\nbeta\ngamma\n");
+        fs::write(dir.path().join("h.txt"), "alpha\nbravo\ngamma\n").unwrap();
+
+        // Snapshot the stale hunk (replaces beta with bravo).
+        let stale_diff = svc.diff_file(Path::new("h.txt")).unwrap().unwrap();
+        assert_eq!(stale_diff.hunks.len(), 1);
+        let stale_hunk = stale_diff.hunks[0].clone();
+
+        // Now mutate the working tree so the diff hunk has the same
+        // header coordinates but a different replacement line.
+        fs::write(dir.path().join("h.txt"), "alpha\ndelta\ngamma\n").unwrap();
+        let fresh_diff = svc.diff_file(Path::new("h.txt")).unwrap().unwrap();
+        assert_eq!(fresh_diff.hunks[0].old_start, stale_hunk.old_start);
+        assert_eq!(fresh_diff.hunks[0].old_count, stale_hunk.old_count);
+        assert_eq!(fresh_diff.hunks[0].new_start, stale_hunk.new_start);
+        assert_eq!(fresh_diff.hunks[0].new_count, stale_hunk.new_count);
+        // Sanity: the line contents differ.
+        assert_ne!(
+            fresh_diff.hunks[0].lines, stale_hunk.lines,
+            "test setup error: hunks should differ in content"
+        );
+
+        // Stale hunk must be rejected.
+        let err = svc
+            .stage_hunk(Path::new("h.txt"), &stale_hunk)
+            .expect_err("stale hunk should be rejected");
+        assert!(
+            err.to_string().contains("different content"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_hunk_fresh_accepts_current_hunk() {
+        let (dir, svc) = repo_with_file("h.txt", "alpha\nbeta\ngamma\n");
+        fs::write(dir.path().join("h.txt"), "alpha\nbravo\ngamma\n").unwrap();
+
+        let diff = svc.diff_file(Path::new("h.txt")).unwrap().unwrap();
+        assert_eq!(diff.hunks.len(), 1);
+        svc.stage_hunk(Path::new("h.txt"), &diff.hunks[0])
+            .expect("fresh hunk should stage successfully");
     }
 }

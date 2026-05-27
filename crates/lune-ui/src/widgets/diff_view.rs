@@ -352,30 +352,35 @@ mod tests {
                         content: "fn main() {\n".to_owned(),
                         old_lineno: Some(1),
                         new_lineno: Some(1),
+                        no_newline_eof: false,
                     },
                     DiffLine {
                         kind: DiffLineKind::Deletion,
                         content: "    println!(\"old\");\n".to_owned(),
                         old_lineno: Some(2),
                         new_lineno: None,
+                        no_newline_eof: false,
                     },
                     DiffLine {
                         kind: DiffLineKind::Addition,
                         content: "    println!(\"new\");\n".to_owned(),
                         old_lineno: None,
                         new_lineno: Some(2),
+                        no_newline_eof: false,
                     },
                     DiffLine {
                         kind: DiffLineKind::Addition,
                         content: "    println!(\"extra\");\n".to_owned(),
                         old_lineno: None,
                         new_lineno: Some(3),
+                        no_newline_eof: false,
                     },
                     DiffLine {
                         kind: DiffLineKind::Context,
                         content: "}\n".to_owned(),
                         old_lineno: Some(3),
                         new_lineno: Some(4),
+                        no_newline_eof: false,
                     },
                 ],
             }],
@@ -424,6 +429,7 @@ mod tests {
                 content: "new line\n".to_owned(),
                 old_lineno: None,
                 new_lineno: Some(12),
+                no_newline_eof: false,
             }],
         });
         state.set_diff(diff);

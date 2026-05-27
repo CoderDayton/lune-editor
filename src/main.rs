@@ -7,9 +7,12 @@ use lune_core::recovery::RecoveryState;
 use lune_core::settings::{CliOverrides, Settings};
 use lune_core::state_db::StateDb;
 
-/// Print usage information.
+/// Print usage information to stdout.
+///
+/// Convention is stdout for successful `--help` / `--version`, so that
+/// `lune-editor --help | less` works.
 fn print_help() {
-    eprintln!(
+    println!(
         "\
 Lune Editor — an Agentic Development Environment
 
@@ -29,12 +32,23 @@ OPTIONS:
     );
 }
 
-/// Print version.
+/// Print version to stdout.
 fn print_version() {
-    eprintln!(
+    println!(
         "lune-editor {}",
         option_env!("CARGO_PKG_VERSION").unwrap_or("dev")
     );
+}
+
+/// Outcome of parsing the CLI arguments.
+enum ParseOutcome {
+    /// Continue startup with the parsed overrides and positional paths.
+    Continue(CliOverrides, Vec<PathBuf>),
+    /// User asked for `--help` or `--version` — print and exit with 0.
+    HelpOrVersion,
+    /// Malformed invocation; the message has already been written to
+    /// stderr.  Exit with a nonzero status so CI / automation can detect it.
+    BadArgs,
 }
 
 /// Consume the next argument as a value for `flag`, or print an error.
@@ -51,7 +65,7 @@ fn next_arg_value<'a>(
 }
 
 /// Parse CLI arguments into overrides and positional paths.
-fn parse_args() -> Option<(CliOverrides, Vec<PathBuf>)> {
+fn parse_args() -> ParseOutcome {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut overrides = CliOverrides::default();
     let mut paths = Vec::new();
@@ -61,39 +75,47 @@ fn parse_args() -> Option<(CliOverrides, Vec<PathBuf>)> {
         match arg.as_str() {
             "--help" | "-h" => {
                 print_help();
-                return None;
+                return ParseOutcome::HelpOrVersion;
             }
             "--version" => {
                 print_version();
-                return None;
+                return ParseOutcome::HelpOrVersion;
             }
             "--vim" => overrides.vim_mode = Some(true),
             "--no-vim" => overrides.vim_mode = Some(false),
             "--config" => {
-                let val = next_arg_value(&mut iter, "--config", "a path argument")?;
+                let Some(val) = next_arg_value(&mut iter, "--config", "a path argument") else {
+                    return ParseOutcome::BadArgs;
+                };
                 overrides.config_path = Some(PathBuf::from(val));
             }
             "--theme" => {
-                let val = next_arg_value(&mut iter, "--theme", "a name argument")?;
+                let Some(val) = next_arg_value(&mut iter, "--theme", "a name argument") else {
+                    return ParseOutcome::BadArgs;
+                };
                 overrides.theme = Some(val.clone());
             }
             other if other.starts_with("--") => {
                 eprintln!("Unknown option: {other}");
                 print_help();
-                return None;
+                return ParseOutcome::BadArgs;
             }
             _ => paths.push(PathBuf::from(arg)),
         }
     }
 
-    Some((overrides, paths))
+    ParseOutcome::Continue(overrides, paths)
 }
 
 #[allow(clippy::too_many_lines)] // top-level bootstrap; extraction would obscure startup order
 fn main() -> Result<()> {
-    // Parse CLI args.
-    let Some((overrides, paths)) = parse_args() else {
-        return Ok(());
+    // Parse CLI args.  Unknown flags / missing values exit nonzero so
+    // shell pipelines and CI surface the failure; --help/--version exit
+    // cleanly with 0.
+    let (overrides, paths) = match parse_args() {
+        ParseOutcome::Continue(o, p) => (o, p),
+        ParseOutcome::HelpOrVersion => return Ok(()),
+        ParseOutcome::BadArgs => std::process::exit(2),
     };
 
     // Resolve config paths.
@@ -374,22 +396,57 @@ fn check_crash_recovery(state: &mut lune_ui::app::AppState, config_paths: Option
     }
 
     // Attempt to recover dirty buffers from the previous session.
+    //
+    // For each `(path, recovered_content)`:
+    //   1. If the file still exists on disk, open it (so the buffer is
+    //      associated with its real path and the canonical save target
+    //      is correct) and push the recovered content into the buffer
+    //      via `replace_all_text`.  The edit goes through a normal
+    //      transaction, so the buffer is marked dirty and the disk
+    //      version remains undoable.
+    //   2. If the file no longer exists on disk, fall back to a scratch
+    //      buffer holding the recovered content — losing the path is
+    //      better than losing the work.  The buffer is named after the
+    //      missing path so the user can recognize it and `Save As`.
     match RecoveryState::recover(cp) {
         Ok(recovered) if !recovered.is_empty() => {
-            let count = recovered.len();
-            for (original_path, _content) in &recovered {
-                // Open the original file (if it exists on disk).
-                // The recovery content is available but we open the disk
-                // version — the user can see the notification and decide
-                // whether to investigate.
+            let mut restored = 0usize;
+            let mut orphaned = 0usize;
+            let mut failed = 0usize;
+            for (original_path, content) in &recovered {
                 if original_path.exists() {
-                    let _ = state.open_file(original_path);
+                    match state.open_file(original_path) {
+                        Ok(id) => {
+                            if let Some(buf) = state.session.registry.get_mut(id) {
+                                buf.replace_all_text(content);
+                            }
+                            restored += 1;
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "recovery: failed to open {} ({e}); falling back to scratch",
+                                original_path.display()
+                            );
+                            if restore_to_scratch(state, original_path, content) {
+                                orphaned += 1;
+                            } else {
+                                failed += 1;
+                            }
+                        }
+                    }
+                } else {
+                    log::warn!(
+                        "recovery: source file {} no longer exists; restoring into a scratch buffer",
+                        original_path.display()
+                    );
+                    if restore_to_scratch(state, original_path, content) {
+                        orphaned += 1;
+                    } else {
+                        failed += 1;
+                    }
                 }
             }
-            state.overlay.notify(
-                format!("Recovered {count} unsaved file(s) from previous session"),
-                lune_ui::widgets::overlay::NotificationLevel::Warning,
-            );
+            notify_recovery_outcome(state, restored, orphaned, failed);
         }
         Ok(_) => {
             // Empty recovery — clean up stale manifest.
@@ -399,6 +456,65 @@ fn check_crash_recovery(state: &mut lune_ui::app::AppState, config_paths: Option
             eprintln!("Warning: failed to read recovery state: {e}");
         }
     }
+}
+
+/// Restore a recovery entry into a fresh scratch buffer when its disk
+/// path can no longer host it (deleted/moved, or `open_file` failed).
+///
+/// Returns `true` on success.  The buffer keeps the original path on
+/// `file_path` so the tab title is recognizable and a plain `Save` will
+/// re-create the missing file at its prior location; `replace_all_text`
+/// runs as a normal edit transaction so the buffer is marked dirty and
+/// the user is prompted on close.
+fn restore_to_scratch(
+    state: &mut lune_ui::app::AppState,
+    original_path: &Path,
+    content: &str,
+) -> bool {
+    let id = state.session.new_scratch();
+    let Some(buf) = state.session.registry.get_mut(id) else {
+        log::warn!(
+            "recovery: scratch buffer {id:?} vanished before content could be restored for {}",
+            original_path.display()
+        );
+        return false;
+    };
+    buf.file_path = Some(original_path.to_path_buf());
+    buf.replace_all_text(content);
+    true
+}
+
+/// Emit a single user-visible notification summarizing the recovery
+/// outcome.  Splits restored-in-place, restored-into-scratch, and
+/// outright failures so the user understands what happened.
+fn notify_recovery_outcome(
+    state: &mut lune_ui::app::AppState,
+    restored: usize,
+    orphaned: usize,
+    failed: usize,
+) {
+    use lune_ui::widgets::overlay::NotificationLevel;
+    if restored == 0 && orphaned == 0 && failed == 0 {
+        return;
+    }
+    let mut parts: Vec<String> = Vec::with_capacity(3);
+    if restored > 0 {
+        parts.push(format!("Recovered {restored} unsaved file(s)"));
+    }
+    if orphaned > 0 {
+        parts.push(format!(
+            "{orphaned} orphaned recovery file(s) restored to scratch — use Save As to rewrite"
+        ));
+    }
+    if failed > 0 {
+        parts.push(format!("{failed} recovery entries could not be restored"));
+    }
+    let level = if failed > 0 {
+        NotificationLevel::Error
+    } else {
+        NotificationLevel::Warning
+    };
+    state.overlay.notify(parts.join("; "), level);
 }
 
 /// Restore saved workspace state (open files, cursor positions, layout)

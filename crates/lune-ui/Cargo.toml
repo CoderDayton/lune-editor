@@ -41,6 +41,8 @@ tree-sitter-css.workspace = true
 tree-sitter-bash.workspace = true
 regex.workspace = true
 coolor.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
