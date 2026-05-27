@@ -43,6 +43,10 @@ regex.workspace = true
 coolor.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
+throbber-widgets-tui.workspace = true
+tui-markdown.workspace = true
+ratatui-image.workspace = true
+image.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

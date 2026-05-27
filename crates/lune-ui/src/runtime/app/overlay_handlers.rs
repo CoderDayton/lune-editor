@@ -26,7 +26,105 @@ pub(super) fn handle_overlay_key(key: &KeyEvent, state: &mut AppState) -> Contro
         Some(overlay::OverlayKind::LanguagePicker) => handle_language_picker_key(key, state),
         Some(overlay::OverlayKind::ThemePicker) => handle_theme_picker_key(key, state),
         Some(overlay::OverlayKind::LayoutPicker) => handle_layout_picker_key(key, state),
+        Some(overlay::OverlayKind::MarkdownPreview) => handle_markdown_preview_key(key, state),
+        Some(overlay::OverlayKind::ImagePreview) => handle_image_preview_key(key, state),
+        Some(overlay::OverlayKind::KeyHints) => handle_key_hints_key(key, state),
         None => Control::Continue,
+    }
+}
+
+fn handle_key_hints_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    match key.code {
+        KeyCode::Esc | KeyCode::F(1) => {
+            close_overlay(state);
+            state.focus.focus(PanelId::Editor);
+            Control::Changed
+        }
+        // Note: j/k are deliberately NOT bound to scroll here — the
+        // overlay's filter accepts any printable char, and shadowing
+        // j/k would prevent the user from filtering for labels or
+        // keys containing those letters.
+        KeyCode::Down => {
+            state.overlay.key_hints.scroll_down(1);
+            Control::Changed
+        }
+        KeyCode::Up => {
+            state.overlay.key_hints.scroll_up(1);
+            Control::Changed
+        }
+        KeyCode::PageDown => {
+            state.overlay.key_hints.scroll_down(10);
+            Control::Changed
+        }
+        KeyCode::PageUp => {
+            state.overlay.key_hints.scroll_up(10);
+            Control::Changed
+        }
+        KeyCode::Home => {
+            state.overlay.key_hints.scroll = 0;
+            Control::Changed
+        }
+        KeyCode::End => {
+            // Clamped to actual content height at render time.
+            state.overlay.key_hints.scroll = u16::MAX;
+            Control::Changed
+        }
+        KeyCode::Backspace => {
+            state.overlay.key_hints.pop_filter();
+            Control::Changed
+        }
+        KeyCode::Char(ch) => {
+            state.overlay.key_hints.push_filter(ch);
+            Control::Changed
+        }
+        _ => Control::Continue,
+    }
+}
+
+fn handle_image_preview_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Enter => {
+            close_overlay(state);
+            state.focus.focus(PanelId::Editor);
+            Control::Changed
+        }
+        _ => Control::Continue,
+    }
+}
+
+fn handle_markdown_preview_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    match key.code {
+        KeyCode::Esc => {
+            close_overlay(state);
+            state.focus.focus(PanelId::Editor);
+            Control::Changed
+        }
+        KeyCode::Down | KeyCode::Char('j') if key.modifiers.is_empty() => {
+            state.overlay.markdown_preview.scroll_down(1);
+            Control::Changed
+        }
+        KeyCode::Up | KeyCode::Char('k') if key.modifiers.is_empty() => {
+            state.overlay.markdown_preview.scroll_up(1);
+            Control::Changed
+        }
+        KeyCode::PageDown => {
+            state.overlay.markdown_preview.scroll_down(10);
+            Control::Changed
+        }
+        KeyCode::PageUp => {
+            state.overlay.markdown_preview.scroll_up(10);
+            Control::Changed
+        }
+        KeyCode::Home => {
+            state.overlay.markdown_preview.scroll = 0;
+            Control::Changed
+        }
+        KeyCode::End => {
+            // Clamped to actual content height at render time.
+            state.overlay.markdown_preview.scroll = u16::MAX;
+            Control::Changed
+        }
+        _ => Control::Continue,
     }
 }
 
@@ -478,5 +576,201 @@ mod tests {
             Some(0)
         );
         assert!(state.overlay.is_active());
+    }
+
+    // ── KeyHints overlay ───────────────────────────────────────────
+
+    fn key_hints_state() -> AppState {
+        let mut state = AppState::new();
+        state.overlay.open_key_hints();
+        state
+    }
+
+    #[test]
+    fn key_hints_esc_closes_and_refocuses_editor() {
+        let mut state = key_hints_state();
+        state.focus.focus(PanelId::CommandPalette);
+
+        let r = handle_key_hints_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut state);
+
+        assert!(matches!(r, Control::Changed));
+        assert!(!state.overlay.is_active());
+        assert!(state.focus.is_focused(PanelId::Editor));
+    }
+
+    #[test]
+    fn key_hints_arrows_scroll() {
+        let mut state = key_hints_state();
+
+        let r = handle_key_hints_key(
+            &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &mut state,
+        );
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(state.overlay.key_hints.scroll, 1);
+
+        let r = handle_key_hints_key(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &mut state);
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(state.overlay.key_hints.scroll, 0);
+    }
+
+    #[test]
+    fn key_hints_j_k_append_to_filter_not_scroll() {
+        let mut state = key_hints_state();
+
+        let r = handle_key_hints_key(
+            &KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            &mut state,
+        );
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(state.overlay.key_hints.scroll, 0, "j must not scroll");
+        assert_eq!(state.overlay.key_hints.filter, "j");
+
+        let r = handle_key_hints_key(
+            &KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+            &mut state,
+        );
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(state.overlay.key_hints.scroll, 0, "k must not scroll");
+        assert_eq!(state.overlay.key_hints.filter, "jk");
+    }
+
+    #[test]
+    fn key_hints_end_jumps_to_bottom_home_jumps_to_top() {
+        let mut state = key_hints_state();
+
+        let r = handle_key_hints_key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &mut state);
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(state.overlay.key_hints.scroll, u16::MAX);
+
+        let r = handle_key_hints_key(
+            &KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+            &mut state,
+        );
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(state.overlay.key_hints.scroll, 0);
+    }
+
+    #[test]
+    fn key_hints_char_appends_to_filter() {
+        let mut state = key_hints_state();
+
+        for ch in "save".chars() {
+            let _ = handle_key_hints_key(
+                &KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                &mut state,
+            );
+        }
+        assert_eq!(state.overlay.key_hints.filter, "save");
+
+        let r = handle_key_hints_key(
+            &KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            &mut state,
+        );
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(state.overlay.key_hints.filter, "sav");
+    }
+
+    // ── Markdown preview overlay ───────────────────────────────────
+
+    fn markdown_preview_state() -> AppState {
+        let mut state = AppState::new();
+        state
+            .overlay
+            .open_markdown_preview("# Hello\n\nbody".to_string(), "preview.md".to_string());
+        state
+    }
+
+    #[test]
+    fn markdown_preview_esc_closes_and_refocuses_editor() {
+        let mut state = markdown_preview_state();
+        state.focus.focus(PanelId::CommandPalette);
+
+        let r = handle_markdown_preview_key(
+            &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut state,
+        );
+
+        assert!(matches!(r, Control::Changed));
+        assert!(!state.overlay.is_active());
+        assert!(state.focus.is_focused(PanelId::Editor));
+    }
+
+    #[test]
+    fn markdown_preview_j_with_modifier_falls_through() {
+        let mut state = markdown_preview_state();
+
+        // Ctrl+J must NOT consume the scroll binding — it should fall
+        // through (Continue) so other handlers can pick it up.
+        let r = handle_markdown_preview_key(
+            &KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
+            &mut state,
+        );
+
+        assert!(matches!(r, Control::Continue));
+        assert_eq!(state.overlay.markdown_preview.scroll, 0);
+    }
+
+    #[test]
+    fn markdown_preview_end_then_home_round_trip() {
+        let mut state = markdown_preview_state();
+
+        let r = handle_markdown_preview_key(
+            &KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+            &mut state,
+        );
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(state.overlay.markdown_preview.scroll, u16::MAX);
+
+        let r = handle_markdown_preview_key(
+            &KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+            &mut state,
+        );
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(state.overlay.markdown_preview.scroll, 0);
+    }
+
+    #[test]
+    fn markdown_preview_caches_parsed_text_on_open() {
+        let state = markdown_preview_state();
+        assert!(state.overlay.markdown_preview.rendered.is_some());
+    }
+
+    // ── Image preview overlay ──────────────────────────────────────
+
+    fn image_preview_state() -> AppState {
+        let mut state = AppState::new();
+        let decoder = state.image_decoder.clone();
+        // Spawning a worker for a non-existent path is fine for the
+        // dispatch-side test — the worker just posts a failure result
+        // that the event loop will eventually drop.
+        state.overlay.open_image_preview(
+            std::path::Path::new("/tmp/lune-test-no-such-file.png"),
+            &decoder,
+        );
+        state
+    }
+
+    #[test]
+    fn image_preview_esc_closes_and_refocuses_editor() {
+        let mut state = image_preview_state();
+        state.focus.focus(PanelId::CommandPalette);
+
+        let r =
+            handle_image_preview_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut state);
+
+        assert!(matches!(r, Control::Changed));
+        assert!(!state.overlay.is_active());
+        assert!(state.focus.is_focused(PanelId::Editor));
+    }
+
+    #[test]
+    fn image_preview_open_sets_loading_status() {
+        let state = image_preview_state();
+        assert!(matches!(
+            state.overlay.image_preview.status,
+            overlay::ImagePreviewStatus::Loading
+        ));
+        assert!(state.overlay.image_preview.generation > 0);
     }
 }

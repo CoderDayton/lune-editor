@@ -49,7 +49,16 @@ pub(super) fn render_editor_tab(area: Rect, buf: &mut Buffer, state: &mut AppSta
     }
 
     let status_state = state.build_status_line();
-    status_bar::render_status_bar(splits.status, buf, &status_state, &state.theme);
+    if status_state.ai_busy || status_state.git_busy {
+        state.throbber_state.calc_next();
+    }
+    status_bar::render_status_bar(
+        splits.status,
+        buf,
+        &status_state,
+        &state.theme,
+        &mut state.throbber_state,
+    );
 }
 
 fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused: bool) {
@@ -142,6 +151,10 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
     // mouse hit-testing (scrollbar, click-to-position, drag
     // autoscroll, PageUp/Down sizing, wheel clamp) operates on the
     // same coordinates as the rendered content.
+    let tab_size = state
+        .cached_settings
+        .as_ref()
+        .map_or(4, |s| s.editor.tab_size);
     editor_pane::render_editor_pane(
         content_area,
         buf,
@@ -154,6 +167,7 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         active_gutter,
         search_state,
         &state.theme,
+        tab_size,
     );
     state.last_editor_content_area = Some(content_area);
 }

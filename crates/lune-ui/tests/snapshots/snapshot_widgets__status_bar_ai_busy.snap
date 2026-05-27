@@ -1,0 +1,5 @@
+---
+source: crates/lune-ui/tests/snapshot_widgets.rs
+expression: buffer_to_text(&buf)
+---
+ NORMAL  ..             Ln 10, Col 5 | main             | UTF-8   | ⠧ Working

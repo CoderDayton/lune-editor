@@ -809,6 +809,42 @@ pub(super) fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Co
             state.focus.focus(PanelId::CommandPalette);
             Control::Changed
         }
+        AppCommand::ToggleKeyHints => {
+            if matches!(state.overlay.active, Some(overlay::OverlayKind::KeyHints)) {
+                state.overlay.close();
+                state.focus.focus(PanelId::Editor);
+                return Control::Changed;
+            }
+            state.overlay.open_key_hints();
+            state.focus.focus(PanelId::CommandPalette);
+            Control::Changed
+        }
+        AppCommand::ToggleMarkdownPreview => {
+            if matches!(
+                state.overlay.active,
+                Some(overlay::OverlayKind::MarkdownPreview)
+            ) {
+                state.overlay.close();
+                state.focus.focus(PanelId::Editor);
+                return Control::Changed;
+            }
+            // Snapshot the active buffer's text + path for the preview frame
+            // title. With no active buffer, this command is a no-op.
+            let Some(buf_id) = state.session.active_buffer else {
+                return Control::Continue;
+            };
+            let Some(buf) = state.session.registry.get(buf_id) else {
+                return Control::Continue;
+            };
+            let source = buf.text();
+            let title = buf
+                .file_path
+                .as_ref()
+                .map_or_else(|| "untitled".to_string(), |p| p.display().to_string());
+            state.overlay.open_markdown_preview(source, title);
+            state.focus.focus(PanelId::CommandPalette);
+            Control::Changed
+        }
         _ => Control::Continue,
     }
 }

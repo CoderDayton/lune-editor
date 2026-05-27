@@ -32,7 +32,8 @@ pub use ratatui_core::widgets::{StatefulWidget, Widget};
 // ── Ratatui high-level widgets (overlay borders, etc.) ────────────────
 
 pub use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs,
+    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Tabs, Wrap,
 };
 
 // ── Glyph constants (line/block/scrollbar etc.) ───────────────────────

@@ -24,6 +24,7 @@ use lune_ui::widgets::git_panel::{GitPanelState, render_git_panel};
 use lune_ui::widgets::overlay::{OverlayState, render_overlay};
 use lune_ui::widgets::status_bar::{StatusLineState, render_status_bar};
 use lune_ui::widgets::tab_bar::{TabEntry, TabManager, render_tab_bar};
+use throbber_widgets_tui::ThrobberState;
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -77,7 +78,8 @@ fn snapshot_status_bar_normal_mode() {
         ..StatusLineState::default()
     };
 
-    render_status_bar(area, &mut buf, &status, &theme);
+    let mut throbber = ThrobberState::default();
+    render_status_bar(area, &mut buf, &status, &theme, &mut throbber);
     insta::assert_snapshot!("status_bar_normal", buffer_to_text(&buf));
 }
 
@@ -100,7 +102,8 @@ fn snapshot_status_bar_insert_dirty() {
         ..StatusLineState::default()
     };
 
-    render_status_bar(area, &mut buf, &status, &theme);
+    let mut throbber = ThrobberState::default();
+    render_status_bar(area, &mut buf, &status, &theme, &mut throbber);
     insta::assert_snapshot!("status_bar_insert_dirty", buffer_to_text(&buf));
 }
 
@@ -120,7 +123,8 @@ fn snapshot_status_bar_with_message() {
         ..StatusLineState::default()
     };
 
-    render_status_bar(area, &mut buf, &status, &theme);
+    let mut throbber = ThrobberState::default();
+    render_status_bar(area, &mut buf, &status, &theme, &mut throbber);
     insta::assert_snapshot!("status_bar_with_message", buffer_to_text(&buf));
 }
 
@@ -234,6 +238,7 @@ fn snapshot_editor_pane_welcome() {
         None,
         None,
         &theme,
+        4,
     );
 
     insta::assert_snapshot!("editor_pane_welcome", buffer_to_text(&buf));
@@ -261,6 +266,7 @@ fn snapshot_editor_pane_with_content() {
         None,
         None,
         &theme,
+        4,
     );
 
     insta::assert_snapshot!("editor_pane_with_content", buffer_to_text(&buf));
@@ -288,6 +294,7 @@ fn snapshot_editor_pane_insert_mode() {
         None,
         None,
         &theme,
+        4,
     );
 
     insta::assert_snapshot!("editor_pane_insert_mode", buffer_to_text(&buf));
@@ -662,6 +669,110 @@ fn snapshot_overlay_inactive() {
     insta::assert_snapshot!("overlay_inactive", buffer_to_text(&buf));
 }
 
+#[test]
+fn snapshot_overlay_key_hints() {
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buf = Buffer::empty(area);
+    let theme = Theme::dark();
+
+    let mut overlay = OverlayState::default();
+    overlay.open_key_hints();
+
+    render_overlay(area, &mut buf, &mut overlay, &theme);
+    insta::assert_snapshot!("overlay_key_hints", buffer_to_text(&buf));
+}
+
+#[test]
+fn snapshot_overlay_key_hints_filtered() {
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buf = Buffer::empty(area);
+    let theme = Theme::dark();
+
+    let mut overlay = OverlayState::default();
+    overlay.open_key_hints();
+    for ch in "save".chars() {
+        overlay.key_hints.push_filter(ch);
+    }
+
+    render_overlay(area, &mut buf, &mut overlay, &theme);
+    insta::assert_snapshot!("overlay_key_hints_filtered", buffer_to_text(&buf));
+}
+
+#[test]
+fn snapshot_overlay_markdown_preview() {
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buf = Buffer::empty(area);
+    let theme = Theme::dark();
+
+    let mut overlay = OverlayState::default();
+    overlay.open_markdown_preview(
+        "# Title\n\nBody **bold** and *italic*.\n\n- one\n- two\n".to_string(),
+        "README.md".to_string(),
+    );
+
+    render_overlay(area, &mut buf, &mut overlay, &theme);
+    insta::assert_snapshot!("overlay_markdown_preview", buffer_to_text(&buf));
+}
+
+#[test]
+fn snapshot_overlay_image_loading() {
+    // Loading placeholder — no decode dispatched, just an empty state
+    // forced into the Loading status with a frame title.
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buf = Buffer::empty(area);
+    let theme = Theme::dark();
+
+    let mut overlay = OverlayState::default();
+    overlay.image_preview.path = Some(PathBuf::from("/tmp/lune-loading.png"));
+    overlay.image_preview.status = lune_ui::widgets::overlay::ImagePreviewStatus::Loading;
+    overlay.image_preview.generation = 1;
+    overlay.active = Some(lune_ui::widgets::overlay::OverlayKind::ImagePreview);
+
+    render_overlay(area, &mut buf, &mut overlay, &theme);
+    insta::assert_snapshot!("overlay_image_loading", buffer_to_text(&buf));
+}
+
+#[test]
+fn snapshot_overlay_image_failed() {
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buf = Buffer::empty(area);
+    let theme = Theme::dark();
+
+    let mut overlay = OverlayState::default();
+    overlay.image_preview.path = Some(PathBuf::from("/tmp/lune-broken.png"));
+    overlay.image_preview.error = Some("decode: invalid magic bytes".to_string());
+    overlay.image_preview.status = lune_ui::widgets::overlay::ImagePreviewStatus::Failed;
+    overlay.image_preview.generation = 1;
+    overlay.active = Some(lune_ui::widgets::overlay::OverlayKind::ImagePreview);
+
+    render_overlay(area, &mut buf, &mut overlay, &theme);
+    insta::assert_snapshot!("overlay_image_failed", buffer_to_text(&buf));
+}
+
+#[test]
+fn snapshot_status_bar_ai_busy() {
+    let area = Rect::new(0, 0, 80, 1);
+    let mut buf = Buffer::empty(area);
+    let theme = Theme::dark();
+
+    let status = StatusLineState {
+        mode: VimMode::Normal,
+        file_path: "src/main.rs".to_string(),
+        dirty: false,
+        cursor_line: 10,
+        cursor_col: 5,
+        git_branch: "main".to_string(),
+        encoding: "UTF-8",
+        ai_status: "Working".to_string(),
+        ai_busy: true,
+        ..StatusLineState::default()
+    };
+
+    let mut throbber = ThrobberState::default();
+    render_status_bar(area, &mut buf, &status, &theme, &mut throbber);
+    insta::assert_snapshot!("status_bar_ai_busy", buffer_to_text(&buf));
+}
+
 // ── Light theme snapshots ─────────────────────────────────────────────
 
 #[test]
@@ -681,7 +792,8 @@ fn snapshot_status_bar_light_theme() {
         ..StatusLineState::default()
     };
 
-    render_status_bar(area, &mut buf, &status, &theme);
+    let mut throbber = ThrobberState::default();
+    render_status_bar(area, &mut buf, &status, &theme, &mut throbber);
     insta::assert_snapshot!("status_bar_light_theme", buffer_to_text(&buf));
 }
 

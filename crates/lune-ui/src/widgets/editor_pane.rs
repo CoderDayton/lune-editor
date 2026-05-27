@@ -8,7 +8,7 @@
 //! styled spans from the theme instead of plain text.
 
 use crate::primitives::{
-    Buffer, Line, Modifier, Rect, Scrollbar, ScrollbarOrientation, ScrollbarState, Span,
+    Buffer, Color, Line, Modifier, Rect, Scrollbar, ScrollbarOrientation, ScrollbarState, Span,
     StatefulWidget, Style, Stylize, Widget, symbols,
 };
 
@@ -241,6 +241,7 @@ pub fn render_editor_pane(
     gutter_marks: Option<&GutterSnapshot>,
     search_matches: Option<&lune_core::search::SearchState>,
     theme: &Theme,
+    tab_size: usize,
 ) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -374,8 +375,123 @@ pub fn render_editor_pane(
         }
     }
 
+    // Overlay indent guides and bracket-pair colorization in a single
+    // post-pass. Reads the just-rendered content cells, then rewrites
+    // symbols/colors in the editor content region only — gutters and
+    // scrollbar are untouched.
+    let content_x = area.x + total_gutter;
+    let content_w = u16::try_from(content_width).unwrap_or(u16::MAX);
+    apply_indent_guides_and_brackets(
+        Rect::new(content_x, area.y, content_w, area.height),
+        buf,
+        tab_size.max(1),
+        theme,
+    );
+
     if show_scrollbar {
         render_vertical_scrollbar(area, total_lines, viewport, viewport_height, buf, theme);
+    }
+}
+
+/// Overlay indent guides (dim `│` at column multiples of `tab_size`
+/// inside leading whitespace) and rainbow bracket colors (per-row
+/// nesting counter for `()[]{}`).
+///
+/// `area` is the content region only — gutters and scrollbar must be
+/// outside it so this pass never overwrites them.
+#[allow(clippy::cast_sign_loss, clippy::items_after_statements)]
+fn apply_indent_guides_and_brackets(area: Rect, buf: &mut Buffer, tab_size: usize, theme: &Theme) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    // Rainbow palette — six distinct hues that cycle as nesting deepens.
+    // Picks readable colors on both light and dark themes; opaline-style
+    // theme tokens could replace this later without changing the loop.
+    const RAINBOW: [Color; 6] = [
+        Color::Cyan,
+        Color::Yellow,
+        Color::Magenta,
+        Color::Green,
+        Color::Red,
+        Color::Blue,
+    ];
+    let guide_style = Style::new().fg(theme.fg_muted).add_modifier(Modifier::DIM);
+    let tab_w = u16::try_from(tab_size).unwrap_or(4).max(1);
+    for dy in 0..area.height {
+        let y = area.y + dy;
+        // Detect both leading-whitespace extent AND whether the row has
+        // any real content. A row that is *all* spaces is either past
+        // the end of the buffer (tilde rows, which sit outside this area)
+        // or a genuinely empty buffer line — neither should get indent
+        // guides.
+        let mut leading_end: u16 = 0;
+        let mut has_content = false;
+        for dx in 0..area.width {
+            let cell = &buf[(area.x + dx, y)];
+            if cell.symbol() != " " {
+                has_content = true;
+                break;
+            }
+            leading_end = dx + 1;
+        }
+        if !has_content {
+            continue;
+        }
+        // Indent guides: at every tab_w-th column inside the leading-space
+        // region (skipping column 0, which would clutter the gutter edge).
+        let mut col = tab_w;
+        while col < leading_end {
+            let cell = &mut buf[(area.x + col, y)];
+            cell.set_symbol(symbols::line::VERTICAL);
+            // Preserve the existing bg; only set fg + dim.
+            cell.set_fg(theme.fg_muted);
+            cell.modifier.insert(Modifier::DIM);
+            col = col.saturating_add(tab_w);
+        }
+        // Bracket-pair colorization (per-row simple nesting counter).
+        // Counts independently for () [] {} so different bracket types
+        // don't interfere. Per-row state is "good enough" visually for
+        // most code and avoids cross-line tracking complexity.
+        let _ = guide_style; // referenced above implicitly; silence unused
+        let mut paren = 0i32;
+        let mut square = 0i32;
+        let mut curly = 0i32;
+        for dx in 0..area.width {
+            let cell = &mut buf[(area.x + dx, y)];
+            let depth_color = match cell.symbol() {
+                "(" => {
+                    let c = RAINBOW[(paren.max(0) as usize) % RAINBOW.len()];
+                    paren += 1;
+                    Some(c)
+                }
+                ")" => {
+                    paren -= 1;
+                    Some(RAINBOW[(paren.max(0) as usize) % RAINBOW.len()])
+                }
+                "[" => {
+                    let c = RAINBOW[(square.max(0) as usize) % RAINBOW.len()];
+                    square += 1;
+                    Some(c)
+                }
+                "]" => {
+                    square -= 1;
+                    Some(RAINBOW[(square.max(0) as usize) % RAINBOW.len()])
+                }
+                "{" => {
+                    let c = RAINBOW[(curly.max(0) as usize) % RAINBOW.len()];
+                    curly += 1;
+                    Some(c)
+                }
+                "}" => {
+                    curly -= 1;
+                    Some(RAINBOW[(curly.max(0) as usize) % RAINBOW.len()])
+                }
+                _ => None,
+            };
+            if let Some(c) = depth_color {
+                cell.set_fg(c);
+            }
+        }
     }
 }
 
@@ -1416,6 +1532,7 @@ mod tests {
             None,
             None,
             &theme,
+            4,
         );
 
         // No row of the rendered area should be a horizontal rule.
@@ -1454,6 +1571,7 @@ mod tests {
             None,
             None,
             &theme,
+            4,
         );
 
         let gw = gutter_width(text_buf.line_count());

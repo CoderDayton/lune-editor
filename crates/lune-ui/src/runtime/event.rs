@@ -28,6 +28,10 @@ pub enum AppEvent {
     Rendered,
     /// Application-level command (from keybinding, command palette, etc.).
     Command(AppCommand),
+    /// One or more image decode workers have results ready. The handler
+    /// drains the receiver on [`AppState`] and applies stale-filtered
+    /// results to the image preview overlay.
+    ImageDecodeReady,
 }
 
 // Required by PollCrossterm.
@@ -157,6 +161,14 @@ pub enum AppCommand {
     OpenLanguagePicker,
     /// Open the theme picker overlay.
     OpenThemePicker,
+    /// Toggle a markdown preview overlay for the active buffer.
+    ///
+    /// The overlay renders the buffer through `tui-markdown`, giving a
+    /// formatted view (headings, lists, code blocks, links) over the raw
+    /// source. Works for any buffer; most useful for `.md` files.
+    ToggleMarkdownPreview,
+    /// Toggle the keybinding hints overlay (categorized cheatsheet).
+    ToggleKeyHints,
 
     // ── Vim mode transitions ──────────────────────────────────────
     /// Enter vim normal mode.

@@ -88,6 +88,27 @@ rustc-hash = "2"
 # Stack-allocated small collections
 smallvec = "1.15"
 
+# Activity indicator (spinner) widget for ratatui.
+throbber-widgets-tui = "0.11"
+
+# Markdown → ratatui Text renderer (AI responses, README preview).
+tui-markdown = "0.3"
+
+# Image rendering in terminal (sixel, kitty, iterm2, halfblocks fallback).
+#
+# `image-defaults` (the upstream default) forwards `image/default`, which
+# turns on AV1 decoding via `ravif`/`rav1e` and a TIFF/HDR decoder — none
+# of which a terminal image preview needs. We disable the feature here
+# and declare `image` directly with only the formats we actually surface.
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
+
+# Image decoder crate, pinned with an explicit minimal feature set.
+# Declared directly (rather than relying on ratatui-image's transitive
+# pull) so this Cargo.toml is the single source of truth for which
+# decoders ship in the binary; Cargo feature unification means
+# `ratatui-image` sees the same enabled set.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
+
 # Color conversions (ANSI / RGB / HSL) for TUI theming
 coolor = "1"
 

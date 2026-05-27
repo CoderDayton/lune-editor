@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use anyhow::Error;
 use crossbeam::channel::{self, Receiver, TryRecvError};
 use rat_salsa::poll::{PollCrossterm, PollRendered, PollTimers};
+use rat_salsa::timer::{TimerDef, TimerHandle};
 use rat_salsa::{Control, RunConfig, SalsaAppContext, SalsaContext, run_tui};
 
 use crate::primitives::{
@@ -67,7 +68,9 @@ use crate::vim::{VimAction, VimMode, VimState};
 use crate::widgets::editor_pane::{self, ViewportState};
 use crate::widgets::file_tree::{self, FileTreeState};
 use crate::widgets::git_panel::{self, GitPanelState};
-use crate::widgets::overlay::{self, NotificationLevel, OverlayState};
+use crate::widgets::overlay::{
+    self, ImageDecodeResult, ImageDecoder, NotificationLevel, OverlayState,
+};
 use crate::widgets::status_bar::{self, StatusLineState};
 use crate::widgets::tab_bar::{self, TabManager};
 use crate::widgets::terminal;
@@ -309,6 +312,30 @@ pub struct AppState {
     /// Persistence port. Defaults to in-memory; replaced by the JSON file
     /// adapter in a later slice.
     persistence_port: SharedPersistencePort,
+    /// Shared throbber animation state — advanced once per render in
+    /// [`ui_render::render_editor_tab`] / [`agent_tab::render`] so all
+    /// "busy" spinners (AI status, git fetch/push) tick in lockstep.
+    pub throbber_state: throbber_widgets_tui::ThrobberState,
+
+    // ── Image decode pipeline ─────────────────────────────────────
+    //
+    // The image preview overlay decodes off the event-loop thread.
+    // Open-image requests dispatch via `image_decoder` (a cloneable
+    // handle that spawns a one-shot worker per request). Workers post
+    // their result on `image_decode_rx` and set `image_decode_wake`;
+    // `PollImageDecode` drains the wake flag and emits
+    // `AppEvent::ImageDecodeReady`, which `handle_image_decode_ready`
+    // applies to `overlay.image_preview`.
+    pub image_decoder: ImageDecoder,
+    image_decode_rx: Receiver<ImageDecodeResult>,
+    image_decode_wake: Arc<AtomicBool>,
+
+    /// Active spinner timer handle, registered while any status-bar
+    /// spinner is in flight (AI/git busy). `None` when idle, so the
+    /// event loop returns to `PollTimers`'s natural "no due timer" state
+    /// and stops waking on a fixed cadence. Synced after every event
+    /// in [`sync_spinner_timer`].
+    spinner_timer: Option<TimerHandle>,
 }
 
 /// Which border is being dragged by the mouse.
@@ -399,7 +426,33 @@ impl AppState {
             // own snapshot cell rather than a throwaway null one.
             ai_manager_port: Arc::new(NullAiManagerPort::new()),
             persistence_port: Arc::new(MemoryPersistencePort::new()),
+            throbber_state: throbber_widgets_tui::ThrobberState::default(),
+            image_decoder: {
+                // Replaced below — we need the receiver out before we
+                // can hand the sender into the decoder handle. Using a
+                // throwaway channel here keeps the struct initializer
+                // exhaustive without an `Option` field.
+                let (tx, _rx) = channel::unbounded();
+                ImageDecoder::new(tx, Arc::new(AtomicBool::new(false)))
+            },
+            image_decode_rx: {
+                let (_tx, rx) = channel::unbounded();
+                rx
+            },
+            image_decode_wake: Arc::new(AtomicBool::new(false)),
+            spinner_timer: None,
         };
+        // Wire the real image decode pipeline: a single channel pair
+        // shared between the cloneable `ImageDecoder` handle (which
+        // workers send into) and the receiver drained by
+        // `handle_image_decode_ready`. The wake flag is shared with
+        // `PollImageDecode` so workers can signal "result ready" without
+        // waiting on the next idle tick.
+        let (image_tx, image_rx) = channel::unbounded::<ImageDecodeResult>();
+        let image_wake = Arc::new(AtomicBool::new(false));
+        out.image_decoder = ImageDecoder::new(image_tx, Arc::clone(&image_wake));
+        out.image_decode_rx = image_rx;
+        out.image_decode_wake = image_wake;
         // Root the AI port on the adapter's real snapshot cell.
         out.ai_manager_port = out.ai_manager.shared_port();
         out
@@ -1150,6 +1203,27 @@ impl AppState {
         }
     }
 
+    /// True when an AI session is starting or actively running. Used by
+    /// the status bar to render a spinner glyph and by the event loop
+    /// to drive a periodic redraw while the spinner is in flight.
+    #[must_use]
+    pub fn is_ai_busy(&self) -> bool {
+        self.ai_manager.active_session().is_some_and(|s| {
+            matches!(
+                s.state(),
+                lune_ai::SessionState::Starting | lune_ai::SessionState::Running
+            )
+        })
+    }
+
+    /// True when any status-bar spinner should be ticking. Combines all
+    /// in-flight async sources (currently only AI; `git_busy` is a
+    /// placeholder until the git port publishes an in-flight signal).
+    #[must_use]
+    pub fn spinner_active(&self) -> bool {
+        self.is_ai_busy()
+    }
+
     /// Move focus to the file tree when there is no open buffer.
     ///
     /// Intended to be called once after startup file/workspace loading so
@@ -1192,6 +1266,11 @@ impl AppState {
             })
             .unwrap_or_default();
 
+        let ai_busy = self.is_ai_busy();
+        // `git_busy` is wired through but the git port snapshot doesn't yet
+        // expose an in-flight signal — surface it as `false` for now; future
+        // work can flip this when the adapter publishes fetch/push activity.
+        let git_busy = false;
         StatusLineState {
             mode: self.vim.mode,
             file_path,
@@ -1206,6 +1285,8 @@ impl AppState {
             selection_chars,
             line_ending,
             vim_cmdline: (self.vim.mode == VimMode::Command).then(|| self.vim.cmdline.clone()),
+            ai_busy,
+            git_busy,
         }
     }
 
@@ -1456,9 +1537,9 @@ const ROOT_TAB_DIVIDER: &str = " ";
 pub fn event(
     event: &AppEvent,
     state: &mut AppState,
-    _global: &mut LuneGlobal,
+    global: &mut LuneGlobal,
 ) -> Result<Control<AppEvent>, Error> {
-    match event {
+    let result = match event {
         AppEvent::Terminal(ct_event) => Ok(handle_terminal_event(ct_event, state)),
         AppEvent::Timer(_timeout) => {
             // Debounced reactive state persistence (~2 s).
@@ -1467,7 +1548,12 @@ pub fn event(
             // Prune notifications on timer ticks.
             let had = !state.overlay.notifications.is_empty();
             state.overlay.prune_notifications();
-            if had && state.overlay.notifications.is_empty() {
+            let notif_changed = had && state.overlay.notifications.is_empty();
+            // While the spinner timer is registered, every tick must
+            // result in a render so `throbber.calc_next()` advances —
+            // otherwise the spinner freezes on a quiet terminal
+            // between user events.
+            if notif_changed || state.spinner_timer.is_some() {
                 Ok(Control::Changed)
             } else {
                 Ok(Control::Continue)
@@ -1477,6 +1563,56 @@ pub fn event(
         AppEvent::Command(cmd) => Ok(handle_command(cmd, state)),
         AppEvent::Fs(fs_event) => Ok(handle_fs_event(fs_event, state)),
         AppEvent::Ai(_) => Ok(handle_ai_event(state)),
+        AppEvent::ImageDecodeReady => Ok(handle_image_decode_ready(state)),
+    };
+    sync_spinner_timer(state, global);
+    result
+}
+
+/// Register or remove the status-bar spinner timer so it matches the
+/// current `ai_busy` / `git_busy` state.
+///
+/// The throbber widget only advances when render fires, and render only
+/// fires when an event is delivered. Without this, a quiet terminal
+/// (no key/mouse activity, no AI output) leaves the spinner frozen the
+/// instant the model goes silent. Registering a repeat-forever 150 ms
+/// timer while busy guarantees a periodic Timer event and thus a
+/// matching render; removing it on idle returns the loop to its normal
+/// blocked-on-input state so we don't burn CPU when nothing is happening.
+fn sync_spinner_timer(state: &mut AppState, global: &LuneGlobal) {
+    let busy = state.spinner_active();
+    match (&state.spinner_timer, busy) {
+        (None, true) => {
+            let handle = global.add_timer(
+                TimerDef::new()
+                    .repeat_forever()
+                    .timer(Duration::from_millis(150)),
+            );
+            state.spinner_timer = Some(handle);
+        }
+        (Some(_), false) => {
+            if let Some(h) = state.spinner_timer.take() {
+                global.remove_timer(h);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Drain any pending image decode results from the worker channel and
+/// apply them to the active preview overlay. Stale results (different
+/// generation or different path than the current preview) are dropped
+/// inside `ImagePreviewState::apply_result`.
+fn handle_image_decode_ready(state: &mut AppState) -> Control<AppEvent> {
+    let mut applied = false;
+    while let Ok(result) = state.image_decode_rx.try_recv() {
+        state.overlay.image_preview.apply_result(result);
+        applied = true;
+    }
+    if applied {
+        Control::Changed
+    } else {
+        Control::Continue
     }
 }
 
@@ -2008,7 +2144,9 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
         | AppCommand::OpenCommandPalette
         | AppCommand::OpenFilePicker
         | AppCommand::OpenLanguagePicker
-        | AppCommand::OpenThemePicker => handle_panel_command(cmd, state),
+        | AppCommand::OpenThemePicker
+        | AppCommand::ToggleMarkdownPreview
+        | AppCommand::ToggleKeyHints => handle_panel_command(cmd, state),
         AppCommand::Undo => {
             apply_buf_edit(state, TextBuffer::undo);
             Control::Changed
@@ -2261,6 +2399,47 @@ impl rat_salsa::poll::PollEvents<AppEvent, Error> for PollAiSessions {
     }
 }
 
+/// Event source that watches the image-decode wake flag set by worker
+/// threads in [`overlay::ImageDecoder::spawn`].
+///
+/// Holds no data — the actual results live on `AppState::image_decode_rx`
+/// and are drained by [`handle_image_decode_ready`] when this poll
+/// emits an [`AppEvent::ImageDecodeReady`].
+pub struct PollImageDecode {
+    wake: Arc<AtomicBool>,
+    has_changes: bool,
+}
+
+impl PollImageDecode {
+    #[must_use]
+    pub const fn new(wake: Arc<AtomicBool>) -> Self {
+        Self {
+            wake,
+            has_changes: false,
+        }
+    }
+}
+
+impl rat_salsa::poll::PollEvents<AppEvent, Error> for PollImageDecode {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn poll(&mut self) -> Result<bool, Error> {
+        self.has_changes = self.wake.swap(false, Ordering::AcqRel);
+        Ok(self.has_changes)
+    }
+
+    fn read(&mut self) -> Result<Control<AppEvent>, Error> {
+        if self.has_changes {
+            self.has_changes = false;
+            Ok(Control::Event(AppEvent::ImageDecodeReady))
+        } else {
+            Ok(Control::Continue)
+        }
+    }
+}
+
 /// Run the Lune Editor TUI event loop.
 ///
 /// # Errors
@@ -2270,6 +2449,7 @@ pub fn run(state: &mut AppState) -> Result<(), Error> {
     let mut global = LuneGlobal::default();
     let watcher_rx = state.watcher_receiver();
     let ai_wake_flag = state.ai_manager.wake_flag();
+    let image_wake = Arc::clone(&state.image_decode_wake);
 
     // Flush any warning accumulated during boot (e.g. workspace state
     // disabled due to lock contention) so the user sees it as a toast on
@@ -2290,7 +2470,8 @@ pub fn run(state: &mut AppState) -> Result<(), Error> {
             .poll(PollTimers::default())
             .poll(PollRendered)
             .poll(PollFileWatcher::new(watcher_rx))
-            .poll(PollAiSessions::new(ai_wake_flag)),
+            .poll(PollAiSessions::new(ai_wake_flag))
+            .poll(PollImageDecode::new(image_wake)),
     )?;
 
     Ok(())

@@ -39,7 +39,16 @@ pub(super) fn render_agents_tab(area: Rect, buf: &mut Buffer, state: &mut AppSta
     }
 
     let status_state = state.build_status_line();
-    status_bar::render_status_bar(status, buf, &status_state, &state.theme);
+    if status_state.ai_busy || status_state.git_busy {
+        state.throbber_state.calc_next();
+    }
+    status_bar::render_status_bar(
+        status,
+        buf,
+        &status_state,
+        &state.theme,
+        &mut state.throbber_state,
+    );
 }
 
 fn render_empty_agents_tab(content: Rect, buf: &mut Buffer, state: &AppState) {

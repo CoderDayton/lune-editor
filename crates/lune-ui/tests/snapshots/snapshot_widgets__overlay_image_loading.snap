@@ -1,0 +1,25 @@
+---
+source: crates/lune-ui/tests/snapshot_widgets.rs
+expression: buffer_to_text(&buf)
+---
+
+
+        ╭ /tmp/lune-loading.png ───────────────────────────────────────╮
+        │Decoding…                                                     │
+        │                                                              │
+        │                                                              │
+        │                                                              │
+        │                                                              │
+        │                                                              │
+        │                                                              │
+        │                                                              │
+        │                                                              │
+        │                                                              │
+        │                                                              │
+        │                                                              │
+        │                                                              │
+        │                                                              │
+        │                                                              │
+        │                                                              │
+        │                                                              │
+        ╰──────────────────────────────────────────────────────────────╯

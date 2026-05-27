@@ -1,0 +1,25 @@
+---
+source: crates/lune-ui/tests/snapshot_widgets.rs
+expression: buffer_to_text(&buf)
+---
+
+
+        ╭ Keybindings  (Esc/F1 close · type to filter) ────────────────╮
+        │File                                                          │
+        │  Ctrl+S           Save                                       │
+        │  Ctrl+Shift+S     Save all                                   │
+        │  Ctrl+O           Open file picker                           │
+        │  Ctrl+N           New file                                   │
+        │                                                              │
+        │Tabs                                                          │
+        │  Ctrl+W           Close tab                                  │
+        │  Ctrl+Tab         Next tab                                   │
+        │  Ctrl+Shift+Tab   Previous tab                               │
+        │  Ctrl+1           Show Editor tab                            │
+        │  Ctrl+2           Show Agents tab                            │
+        │  Ctrl+`           Toggle Agents tab                          │
+        │                                                              │
+        │Editor                                                        │
+        │  Ctrl+Z           Undo                                       │
+        │  Ctrl+Y           Redo                                       │
+        ╰──────────────────────────────────────────────────────────────╯

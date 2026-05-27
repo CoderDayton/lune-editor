@@ -298,6 +298,14 @@ fn handle_delete(path: &Path, state: &mut AppState) -> Control<AppEvent> {
 }
 
 pub(super) fn handle_open_file(path: &std::path::Path, state: &mut AppState) -> Control<AppEvent> {
+    // Image files: route to the image preview overlay instead of opening
+    // as a text buffer (which would garble binary data into the editor).
+    if is_image_path(path) {
+        state.overlay.open_image_preview(path, &state.image_decoder);
+        state.focus.focus(PanelId::CommandPalette);
+        state.status_message = format!("Previewing: {}", path.display());
+        return Control::Changed;
+    }
     match state.open_file(path) {
         Ok(_) => {
             state.set_root_tab(RootTab::Editor);
@@ -379,6 +387,17 @@ fn handle_change_language(lang_id: LanguageId, state: &mut AppState) -> Control<
     Control::Changed
 }
 
+/// Returns true if `path` looks like an image file ratatui-image can decode.
+fn is_image_path(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_lowercase)
+            .as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,5 +411,30 @@ mod tests {
 
         assert_eq!(result, Some(Control::Continue));
         assert!(state.overlay.input_dialog.is_none());
+    }
+
+    #[test]
+    fn is_image_path_matches_common_extensions() {
+        for ext in ["png", "jpg", "jpeg", "gif", "bmp", "webp"] {
+            let p = std::path::PathBuf::from(format!("photo.{ext}"));
+            assert!(is_image_path(&p), "expected image: {ext}");
+        }
+    }
+
+    #[test]
+    fn is_image_path_is_case_insensitive() {
+        assert!(is_image_path(std::path::Path::new("IMAGE.JPG")));
+        assert!(is_image_path(std::path::Path::new("Photo.PNG")));
+        assert!(is_image_path(std::path::Path::new("Icon.GiF")));
+    }
+
+    #[test]
+    fn is_image_path_rejects_non_image_extensions() {
+        for name in ["main.rs", "README.md", "Cargo.toml", "noext", "data.json"] {
+            assert!(
+                !is_image_path(std::path::Path::new(name)),
+                "expected non-image: {name}"
+            );
+        }
     }
 }

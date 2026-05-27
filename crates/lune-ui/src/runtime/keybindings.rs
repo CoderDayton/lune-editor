@@ -124,6 +124,18 @@ impl Keymap {
             (Char('l'), CTRL, AppCommand::OpenLanguagePicker),
             // Theme
             (Char('t'), CTRL, AppCommand::OpenThemePicker),
+            // Markdown preview overlay (toggle).
+            (Char('V'), CTRL_SHIFT, AppCommand::ToggleMarkdownPreview),
+            // Keybinding hints (which-key style cheatsheet).
+            //
+            // `?` is intentionally NOT bound globally — it would block
+            // typing `?` into a buffer. Bind `?` in vim normal mode in a
+            // future change once the vim keymap layer grows the hook.
+            (
+                KeyCode::F(1),
+                KeyModifiers::empty(),
+                AppCommand::ToggleKeyHints,
+            ),
             // Vim mode
             (Char('v'), CTRL_ALT, AppCommand::ToggleVimMode),
         ];
@@ -382,6 +394,8 @@ pub fn parse_command(s: &str) -> Option<AppCommand> {
         "prev_theme" => Some(AppCommand::PrevTheme),
         "dismiss_notifications" => Some(AppCommand::DismissNotifications),
         "open_theme_picker" => Some(AppCommand::OpenThemePicker),
+        "toggle_markdown_preview" => Some(AppCommand::ToggleMarkdownPreview),
+        "toggle_key_hints" => Some(AppCommand::ToggleKeyHints),
         // Agent pane
         "agent_split_auto" => Some(AppCommand::AgentSplitAuto),
         "agent_split_vertical" => Some(AppCommand::AgentSplitVertical),
