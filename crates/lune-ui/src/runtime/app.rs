@@ -1520,6 +1520,31 @@ pub fn render(
         RootTab::Agents => render_agents_tab(content_area, buf, state),
     }
 
+    // Live-update the markdown preview before rendering: cheap (one
+    // BufferId + revision comparison) when the buffer hasn't moved,
+    // re-parses only when it has. Closures defer materializing
+    // `buf.text()` until a refresh is actually needed. Per-keystroke
+    // re-parses on the same buffer are debounced inside the overlay.
+    if matches!(
+        state.overlay.active,
+        Some(overlay::OverlayKind::MarkdownPreview)
+    ) && let Some(buf_id) = state.session.active_buffer
+        && let Some(buf) = state.session.registry.get(buf_id)
+    {
+        let rev = buf.revision();
+        state.overlay.refresh_markdown_preview(
+            buf_id,
+            rev,
+            std::time::Instant::now(),
+            || buf.text(),
+            || {
+                buf.file_path
+                    .as_ref()
+                    .map_or_else(|| "untitled".to_string(), |p| p.display().to_string())
+            },
+        );
+    }
+
     // Render overlays on top.
     overlay::render_overlay(area, buf, &mut state.overlay, &state.theme);
 

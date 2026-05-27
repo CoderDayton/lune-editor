@@ -841,7 +841,12 @@ pub(super) fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Co
                 .file_path
                 .as_ref()
                 .map_or_else(|| "untitled".to_string(), |p| p.display().to_string());
-            state.overlay.open_markdown_preview(source, title);
+            let revision = buf.revision();
+            // `source_key` seeds the cache so the per-frame refresh in
+            // `app::render` is a no-op until the buffer's revision advances.
+            state
+                .overlay
+                .open_markdown_preview(source, title, Some((buf_id, revision)));
             state.focus.focus(PanelId::CommandPalette);
             Control::Changed
         }

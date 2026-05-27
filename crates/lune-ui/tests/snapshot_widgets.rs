@@ -708,6 +708,7 @@ fn snapshot_overlay_markdown_preview() {
     overlay.open_markdown_preview(
         "# Title\n\nBody **bold** and *italic*.\n\n- one\n- two\n".to_string(),
         "README.md".to_string(),
+        None,
     );
 
     render_overlay(area, &mut buf, &mut overlay, &theme);

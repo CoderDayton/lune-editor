@@ -24,7 +24,9 @@ use crate::runtime::tiling::{SavedTileNode, SplitDirection};
 use crate::style::color as color_util;
 use crate::theme::Theme;
 use lune_ai::session::AiClientKind;
+use lune_core::buffer::BufferId;
 use lune_core::language::LanguageId;
+use lune_core::undo::RevisionId;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -207,34 +209,97 @@ impl OverlayState {
 
     /// Open the markdown preview for `source` with a frame title `title`.
     ///
-    /// The markdown is parsed once here into an owned `Text<'static>` and
-    /// cached on the state — the render path then never re-parses,
-    /// even across hundreds of scroll/render frames.
-    pub fn open_markdown_preview(&mut self, mut source: String, title: String) {
-        // tui-markdown runs synchronously on the event-loop thread; cap
-        // the input so a huge buffer can't freeze the UI, and isolate
-        // parser panics so `panic = "abort"` can't kill the editor on
-        // a pathological CommonMark input.
-        const MAX_MARKDOWN_PREVIEW_BYTES: usize = 4 * 1024 * 1024;
-        if source.len() > MAX_MARKDOWN_PREVIEW_BYTES {
-            let mut cut = MAX_MARKDOWN_PREVIEW_BYTES;
-            while cut > 0 && !source.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            source.truncate(cut);
-            source.push_str("\n\n…[truncated]…\n");
-        }
-        let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            into_static_text(tui_markdown::from_str(&source))
-        }))
-        .unwrap_or_else(|_| Text::from("[markdown render panicked]"));
+    /// Parses once into an owned `Text<'static>` cached on the state so
+    /// the render path doesn't re-parse on every frame. Passing `source_key`
+    /// = `Some((buf_id, revision))` seeds the cache key so a follow-up
+    /// [`Self::refresh_markdown_preview`] call at the same revision is a
+    /// no-op — pass `None` for a one-shot preview not backed by a buffer.
+    pub fn open_markdown_preview(
+        &mut self,
+        source: String,
+        title: String,
+        source_key: Option<(BufferId, RevisionId)>,
+    ) {
+        let (source, rendered) = parse_markdown(source);
+        let (source_buffer, source_revision) = match source_key {
+            Some((id, rev)) => (Some(id), Some(rev)),
+            None => (None, None),
+        };
         self.markdown_preview = MarkdownPreviewState {
             source,
             title,
             scroll: 0,
             rendered: Some(rendered),
+            source_buffer,
+            source_revision,
+            last_parsed_at: Some(Instant::now()),
         };
         self.active = Some(OverlayKind::MarkdownPreview);
+    }
+
+    /// Re-parse the markdown preview if `(buf_id, revision)` differs from
+    /// the cached key. `source_fn` and `title_fn` are only invoked when
+    /// a re-parse is actually needed — we don't materialize the rope into a
+    /// `String` on frames where the buffer hasn't changed, and `title_fn`
+    /// is skipped on revision-only updates since the title only changes
+    /// when the source buffer changes identity.
+    ///
+    /// Revision-only updates against the same buffer are debounced by
+    /// [`MIN_LIVE_REFRESH_INTERVAL`]: `tui_markdown` runs synchronously on
+    /// the UI thread and re-parsing on every keystroke can produce
+    /// noticeable input lag for large markdown sources. Buffer swaps and
+    /// the initial parse always bypass the debounce so newly-opened
+    /// previews are never stale. Scroll is preserved across refreshes.
+    ///
+    /// `now` is taken as a parameter so tests can drive time deterministically;
+    /// production callers pass `Instant::now()`.
+    ///
+    /// No-op when the markdown preview overlay is not currently active.
+    pub fn refresh_markdown_preview<F, G>(
+        &mut self,
+        buf_id: BufferId,
+        revision: RevisionId,
+        now: Instant,
+        source_fn: F,
+        title_fn: G,
+    ) where
+        F: FnOnce() -> String,
+        G: FnOnce() -> String,
+    {
+        if !matches!(self.active, Some(OverlayKind::MarkdownPreview)) {
+            return;
+        }
+        let cached_buffer = self.markdown_preview.source_buffer;
+        let cached_revision = self.markdown_preview.source_revision;
+        if cached_buffer == Some(buf_id) && cached_revision == Some(revision) {
+            return;
+        }
+        let same_buffer = cached_buffer == Some(buf_id);
+        // Debounce revision-only bumps on the same buffer: this is the hot
+        // path (every keystroke). Buffer swaps and the initial parse must
+        // run immediately to avoid showing stale content from a stale buffer.
+        if same_buffer
+            && let Some(last) = self.markdown_preview.last_parsed_at
+            && now.duration_since(last) < MIN_LIVE_REFRESH_INTERVAL
+        {
+            return;
+        }
+        let scroll = self.markdown_preview.scroll;
+        let title = if same_buffer {
+            std::mem::take(&mut self.markdown_preview.title)
+        } else {
+            title_fn()
+        };
+        let (source, rendered) = parse_markdown(source_fn());
+        self.markdown_preview = MarkdownPreviewState {
+            source,
+            title,
+            scroll,
+            rendered: Some(rendered),
+            source_buffer: Some(buf_id),
+            source_revision: Some(revision),
+            last_parsed_at: Some(now),
+        };
     }
 
     /// Open the image preview overlay for `path`.
@@ -1079,6 +1144,15 @@ pub struct MarkdownPreviewState {
     /// Cached ratatui `Text` produced by `tui_markdown::from_str` at open
     /// time. `None` only on a defaulted state (before any open call).
     pub rendered: Option<Text<'static>>,
+    /// Buffer the cached parse came from. Together with `source_revision`,
+    /// this forms the cache key for [`OverlayState::refresh_markdown_preview`].
+    pub source_buffer: Option<BufferId>,
+    /// Revision of `source_buffer` when the cached parse was produced.
+    pub source_revision: Option<RevisionId>,
+    /// Wall-clock instant of the last parse. Used by
+    /// [`OverlayState::refresh_markdown_preview`] to debounce per-keystroke
+    /// re-parses on the UI thread.
+    pub last_parsed_at: Option<Instant>,
 }
 
 impl MarkdownPreviewState {
@@ -2424,6 +2498,38 @@ fn render_markdown_preview(
 /// which borrows from its input) into an owned `Text<'static>` so it can
 /// be cached on overlay state without a lifetime tied to the source
 /// buffer.
+/// Minimum interval between live re-parses of the same buffer's markdown
+/// preview. `tui_markdown::from_str` runs synchronously on the UI thread
+/// and `buf.text()` materializes the entire rope; without this, every
+/// keystroke on a large markdown buffer would block the event loop on
+/// a full re-parse. 80 ms caps the worst-case re-parse rate at ~12 Hz
+/// while keeping perceived staleness below typical human reaction time.
+/// Bypassed for buffer swaps and the initial open so those paths are
+/// never stale.
+const MIN_LIVE_REFRESH_INTERVAL: Duration = Duration::from_millis(80);
+
+/// Cap markdown source at a safe upper bound, then parse via
+/// `tui_markdown` under `catch_unwind` so a pathological `CommonMark`
+/// input can't freeze or abort the editor (parser runs on the UI
+/// thread). Returns the (possibly-truncated) source and the parsed
+/// owned `Text<'static>`.
+fn parse_markdown(mut source: String) -> (String, Text<'static>) {
+    const MAX_MARKDOWN_PREVIEW_BYTES: usize = 4 * 1024 * 1024;
+    if source.len() > MAX_MARKDOWN_PREVIEW_BYTES {
+        let mut cut = MAX_MARKDOWN_PREVIEW_BYTES;
+        while cut > 0 && !source.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        source.truncate(cut);
+        source.push_str("\n\n…[truncated]…\n");
+    }
+    let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        into_static_text(tui_markdown::from_str(&source))
+    }))
+    .unwrap_or_else(|_| Text::from("[markdown render panicked]"));
+    (source, rendered)
+}
+
 fn into_static_text(t: Text<'_>) -> Text<'static> {
     Text {
         alignment: t.alignment,
@@ -5029,5 +5135,163 @@ mod tests {
         assert!(overlay.is_active());
         assert!(matches!(overlay.active, Some(OverlayKind::LanguagePicker)));
         assert_eq!(overlay.language_picker.all_languages.len(), 2);
+    }
+    // ── Markdown preview live-update ───────────────────────────────
+
+    #[test]
+    fn markdown_refresh_skips_when_revision_unchanged() {
+        let mut overlay = OverlayState::default();
+        let buf_id = BufferId(lune_core::uuid::Uuid::nil());
+        overlay.open_markdown_preview("# A".to_string(), "x.md".to_string(), Some((buf_id, 7)));
+
+        let mut source_calls = 0;
+        let mut title_calls = 0;
+        // Backdate `last_parsed_at` so the debounce window can't be what's
+        // suppressing the call — this test is about the revision-equality
+        // cache hit, not the debounce path.
+        overlay.markdown_preview.last_parsed_at =
+            Instant::now().checked_sub(Duration::from_secs(1));
+        overlay.refresh_markdown_preview(
+            buf_id,
+            7,
+            Instant::now(),
+            || {
+                source_calls += 1;
+                "# B".to_string()
+            },
+            || {
+                title_calls += 1;
+                "x.md".to_string()
+            },
+        );
+        assert_eq!(source_calls, 0, "lazy source_fn must not run when cached");
+        assert_eq!(title_calls, 0, "lazy title_fn must not run when cached");
+        assert_eq!(overlay.markdown_preview.source, "# A");
+    }
+
+    #[test]
+    fn markdown_refresh_reparses_on_revision_bump() {
+        let mut overlay = OverlayState::default();
+        let buf_id = BufferId(lune_core::uuid::Uuid::nil());
+        overlay.open_markdown_preview(
+            "# Initial".to_string(),
+            "x.md".to_string(),
+            Some((buf_id, 1)),
+        );
+        overlay.markdown_preview.scroll = 4;
+        // Push last parse past the debounce window so the revision bump is
+        // allowed to re-parse.
+        overlay.markdown_preview.last_parsed_at =
+            Instant::now().checked_sub(Duration::from_secs(1));
+
+        let mut title_calls = 0;
+        overlay.refresh_markdown_preview(
+            buf_id,
+            2,
+            Instant::now(),
+            || "# Updated content\n\nmore".to_string(),
+            || {
+                title_calls += 1;
+                "x.md".to_string()
+            },
+        );
+        assert_eq!(overlay.markdown_preview.source, "# Updated content\n\nmore");
+        assert_eq!(overlay.markdown_preview.source_revision, Some(2));
+        assert_eq!(
+            overlay.markdown_preview.scroll, 4,
+            "scroll position preserved across refresh"
+        );
+        assert_eq!(
+            title_calls, 0,
+            "title_fn must not run on a same-buffer revision bump"
+        );
+        assert_eq!(overlay.markdown_preview.title, "x.md");
+    }
+
+    #[test]
+    fn markdown_refresh_noop_when_overlay_inactive() {
+        let mut overlay = OverlayState::default();
+        // Never opened — overlay not active.
+        let buf_id = BufferId(lune_core::uuid::Uuid::nil());
+        overlay.refresh_markdown_preview(
+            buf_id,
+            1,
+            Instant::now(),
+            || "should not be called".to_string(),
+            || "x.md".to_string(),
+        );
+        assert!(overlay.markdown_preview.source.is_empty());
+        assert!(overlay.markdown_preview.source_buffer.is_none());
+    }
+
+    #[test]
+    fn markdown_refresh_swaps_on_different_buffer() {
+        let mut overlay = OverlayState::default();
+        let buf_a = BufferId(lune_core::uuid::Uuid::nil());
+        let buf_b = BufferId(lune_core::uuid::Uuid::new_v4());
+        overlay.open_markdown_preview("# A".to_string(), "a.md".to_string(), Some((buf_a, 1)));
+        // A buffer swap must bypass the debounce even when the previous
+        // parse happened a moment ago — switching files must never show
+        // stale content from the wrong buffer.
+        overlay.markdown_preview.last_parsed_at = Some(Instant::now());
+
+        let mut title_calls = 0;
+        overlay.refresh_markdown_preview(
+            buf_b,
+            1, // same revision number — different buffer must still trigger
+            Instant::now(),
+            || "# B".to_string(),
+            || {
+                title_calls += 1;
+                "b.md".to_string()
+            },
+        );
+        assert_eq!(overlay.markdown_preview.source, "# B");
+        assert_eq!(overlay.markdown_preview.source_buffer, Some(buf_b));
+        assert_eq!(overlay.markdown_preview.title, "b.md");
+        assert_eq!(title_calls, 1, "title_fn must run on a buffer swap");
+    }
+
+    #[test]
+    fn markdown_refresh_debounces_revision_bumps_on_same_buffer() {
+        let mut overlay = OverlayState::default();
+        let buf_id = BufferId(lune_core::uuid::Uuid::nil());
+        let t0 = Instant::now();
+        overlay.open_markdown_preview("# v1".to_string(), "x.md".to_string(), Some((buf_id, 1)));
+        overlay.markdown_preview.last_parsed_at = Some(t0);
+
+        // Revision bump well within the debounce window: must be skipped.
+        let mut source_calls = 0;
+        overlay.refresh_markdown_preview(
+            buf_id,
+            2,
+            t0 + Duration::from_millis(10),
+            || {
+                source_calls += 1;
+                "# v2".to_string()
+            },
+            || "x.md".to_string(),
+        );
+        assert_eq!(
+            source_calls, 0,
+            "within-window revision bump must be skipped"
+        );
+        assert_eq!(overlay.markdown_preview.source_revision, Some(1));
+        assert_eq!(overlay.markdown_preview.source, "# v1");
+
+        // Same revision bump past the debounce window: must re-parse.
+        overlay.refresh_markdown_preview(
+            buf_id,
+            2,
+            t0 + MIN_LIVE_REFRESH_INTERVAL + Duration::from_millis(1),
+            || {
+                source_calls += 1;
+                "# v2".to_string()
+            },
+            || "x.md".to_string(),
+        );
+        assert_eq!(source_calls, 1, "past-window revision bump must re-parse");
+        assert_eq!(overlay.markdown_preview.source_revision, Some(2));
+        assert_eq!(overlay.markdown_preview.source, "# v2");
     }
 }

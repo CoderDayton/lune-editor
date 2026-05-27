@@ -675,9 +675,11 @@ mod tests {
 
     fn markdown_preview_state() -> AppState {
         let mut state = AppState::new();
-        state
-            .overlay
-            .open_markdown_preview("# Hello\n\nbody".to_string(), "preview.md".to_string());
+        state.overlay.open_markdown_preview(
+            "# Hello\n\nbody".to_string(),
+            "preview.md".to_string(),
+            None,
+        );
         state
     }
 
