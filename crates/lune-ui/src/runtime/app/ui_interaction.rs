@@ -14,6 +14,17 @@ pub(super) fn handle_terminal_event(ct_event: &CtEvent, state: &mut AppState) ->
 }
 
 fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    // Quit-confirmation modal owns input while it's open. It sits
+    // above all other overlays, so dispatch keys to it first.
+    if state.quit_confirm.is_open() {
+        return match state.quit_confirm.handle_key(key) {
+            Some(ConfirmChoice::Confirm) => {
+                Control::Event(AppEvent::Command(AppCommand::ForceQuit))
+            }
+            Some(ConfirmChoice::Cancel) | None => Control::Changed,
+        };
+    }
+
     if state.overlay.is_active() {
         return handle_overlay_key(key, state);
     }
@@ -905,6 +916,53 @@ mod tests {
         // displayed (first arg = top entry).
         state.recent_files.entries.reverse();
         state
+    }
+
+    #[test]
+    fn quit_confirm_open_consumes_keys_with_changed_when_cancelled() {
+        let mut state = state_with_text("hello");
+        state.quit_confirm.open();
+        // 'n' resolves to Cancel — dialog closes, no command emitted.
+        let result = handle_key_event(
+            &KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+            &mut state,
+        );
+        assert!(matches!(result, Control::Changed));
+        assert!(!state.quit_confirm.is_open());
+    }
+
+    #[test]
+    fn quit_confirm_open_emits_force_quit_on_confirm() {
+        let mut state = state_with_text("hello");
+        state.quit_confirm.open();
+        let result = handle_key_event(
+            &KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            &mut state,
+        );
+        match result {
+            Control::Event(AppEvent::Command(AppCommand::ForceQuit)) => {}
+            other => panic!("expected ForceQuit event, got {other:?}"),
+        }
+        assert!(
+            !state.quit_confirm.is_open(),
+            "dialog must close on confirm"
+        );
+    }
+
+    #[test]
+    fn quit_confirm_open_blocks_other_key_handling() {
+        // Tab would normally cycle focus; the open quit dialog must
+        // consume it instead (toggling its button selection).
+        let mut state = state_with_text("hello");
+        state.quit_confirm.open();
+        let before = state.focus.active();
+        let result = handle_key_event(&KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &mut state);
+        assert!(matches!(result, Control::Changed));
+        assert_eq!(state.focus.active(), before, "Tab must not change focus");
+        assert!(
+            state.quit_confirm.is_open(),
+            "Tab must keep the dialog open"
+        );
     }
 
     #[test]

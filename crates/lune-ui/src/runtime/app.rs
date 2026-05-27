@@ -65,6 +65,7 @@ use crate::layout::{self, LayoutSplits, LayoutState};
 use crate::runtime::terminal_layouts;
 use crate::runtime::tiling;
 use crate::vim::{VimAction, VimMode, VimState};
+use crate::widgets::confirm_dialog::{ConfirmChoice, ConfirmDialogState};
 use crate::widgets::editor_pane::{self, ViewportState};
 use crate::widgets::file_tree::{self, FileTreeState};
 use crate::widgets::git_panel::{self, GitPanelState};
@@ -277,6 +278,10 @@ pub struct AppState {
     pub recent_files: RecentFiles,
     /// Welcome-screen selection cursor over `recent_files`.
     pub welcome_nav: welcome_nav::WelcomeNav,
+    /// "Discard unsaved changes and quit?" confirmation dialog.
+    /// Opened by [`AppCommand::Quit`] when dirty buffers exist;
+    /// Confirm emits [`AppCommand::ForceQuit`], Cancel just closes.
+    pub quit_confirm: ConfirmDialogState,
     /// Timestamp of the last successful state-db save (for debounce).
     last_state_save: Instant,
 
@@ -423,6 +428,13 @@ impl AppState {
             state_db: None,
             recent_files: RecentFiles::default(),
             welcome_nav: welcome_nav::WelcomeNav::default(),
+            quit_confirm: ConfirmDialogState::new(
+                "Discard unsaved changes?",
+                "One or more buffers have unsaved edits.",
+            )
+            .confirm_label("Discard & quit")
+            .cancel_label("Keep editing")
+            .destructive(true),
             last_state_save: Instant::now(),
             last_scroll_render: Instant::now(),
             viewport_scroll_target: None,
@@ -1596,6 +1608,10 @@ pub fn render(
     // Render overlays on top.
     overlay::render_overlay(area, buf, &mut state.overlay, &state.theme);
 
+    // The quit confirmation modal sits above all other overlays so
+    // backdrop dimming covers them too.
+    state.quit_confirm.render(area, buf, &state.theme);
+
     Ok(())
 }
 
@@ -2178,7 +2194,15 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
     }
 
     match cmd {
-        AppCommand::Quit | AppCommand::ForceQuit => Control::Quit,
+        AppCommand::Quit => {
+            if state.collect_dirty_buffers().is_empty() {
+                Control::Quit
+            } else {
+                state.quit_confirm.open();
+                Control::Changed
+            }
+        }
+        AppCommand::ForceQuit => Control::Quit,
         AppCommand::CloseTab => {
             state.close_active_tab();
             state.viewport_follow_cursor = true;
@@ -2964,6 +2988,40 @@ mod tests {
             handle_command(&AppCommand::ForceQuit, &mut state),
             Control::Quit
         ));
+    }
+
+    #[test]
+    fn command_quit_with_dirty_buffer_opens_confirm_dialog() {
+        let (mut state, _tmp) = state_with_file();
+        if let Some(buf) = state.active_buf_mut() {
+            buf.insert(Position::new(0, 0), "x");
+        }
+        assert!(!state.collect_dirty_buffers().is_empty());
+
+        let result = handle_command(&AppCommand::Quit, &mut state);
+        assert!(matches!(result, Control::Changed));
+        assert!(state.quit_confirm.is_open(), "Quit must open the dialog");
+    }
+
+    #[test]
+    fn command_quit_without_dirty_buffers_quits_immediately() {
+        let (mut state, _tmp) = state_with_file();
+        // Buffer is clean — no edits since open_file.
+        assert!(state.collect_dirty_buffers().is_empty());
+        let result = handle_command(&AppCommand::Quit, &mut state);
+        assert!(matches!(result, Control::Quit));
+        assert!(!state.quit_confirm.is_open());
+    }
+
+    #[test]
+    fn command_force_quit_bypasses_confirm_dialog_even_with_dirty_buffer() {
+        let (mut state, _tmp) = state_with_file();
+        if let Some(buf) = state.active_buf_mut() {
+            buf.insert(Position::new(0, 0), "x");
+        }
+        let result = handle_command(&AppCommand::ForceQuit, &mut state);
+        assert!(matches!(result, Control::Quit));
+        assert!(!state.quit_confirm.is_open());
     }
 
     #[test]
