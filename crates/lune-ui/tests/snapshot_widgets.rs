@@ -220,7 +220,9 @@ fn snapshot_tab_bar_unfocused() {
 
 #[test]
 fn snapshot_editor_pane_welcome() {
-    let area = Rect::new(0, 0, 60, 20);
+    // Height 17 keeps the snapshot deterministic — the tip-of-the-day
+    // row only renders when area.height >= 18 and rotates daily.
+    let area = Rect::new(0, 0, 60, 17);
     let mut buf = Buffer::empty(area);
     let theme = Theme::dark();
     let syntax_theme = SyntaxTheme::dark();
@@ -239,6 +241,7 @@ fn snapshot_editor_pane_welcome() {
         None,
         &theme,
         4,
+        None,
     );
 
     insta::assert_snapshot!("editor_pane_welcome", buffer_to_text(&buf));
@@ -267,6 +270,7 @@ fn snapshot_editor_pane_with_content() {
         None,
         &theme,
         4,
+        None,
     );
 
     insta::assert_snapshot!("editor_pane_with_content", buffer_to_text(&buf));
@@ -295,6 +299,7 @@ fn snapshot_editor_pane_insert_mode() {
         None,
         &theme,
         4,
+        None,
     );
 
     insta::assert_snapshot!("editor_pane_insert_mode", buffer_to_text(&buf));

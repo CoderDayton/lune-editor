@@ -36,7 +36,7 @@ pub mod prelude {
     pub use crate::settings::{CliOverrides, Settings};
     pub use crate::state_db::StateDb;
     pub use crate::workspace::Workspace;
-    pub use crate::workspace_state::{RecentWorkspaces, WorkspaceState};
+    pub use crate::workspace_state::{RecentFiles, RecentWorkspaces, WorkspaceState};
 }
 
 /// Re-export key dependencies used by downstream crates.

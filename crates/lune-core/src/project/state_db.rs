@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::project::kv_store::KvStore;
-use crate::workspace_state::{RecentWorkspaces, WorkspaceState};
+use crate::workspace_state::{RecentFiles, RecentWorkspaces, WorkspaceState};
 
 const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
 
@@ -38,6 +38,7 @@ const GLOBAL_FILE_NAME: &str = "global.json";
 const WORKSPACES_SUBDIR: &str = "workspaces";
 
 const RECENT_KEY: &[u8] = b"recent:workspaces";
+const RECENT_FILES_KEY: &[u8] = b"recent:files";
 const WORKSPACE_STATE_KEY: &[u8] = b"workspace:state";
 const UNDO_PREFIX: &str = "undo:";
 
@@ -151,6 +152,27 @@ impl StateDb {
         match g.get(RECENT_KEY) {
             Some(bytes) => Ok(decode(bytes)?),
             None => Ok(RecentWorkspaces::default()),
+        }
+    }
+
+    // ── Recent files (global) ─────────────────────────────────────────
+
+    pub fn put_recent_files(&mut self, recent: &RecentFiles) -> anyhow::Result<()> {
+        let Some(g) = self.global.as_mut() else {
+            return Ok(());
+        };
+        let val = encode(recent)?;
+        g.put(RECENT_FILES_KEY, val);
+        Ok(())
+    }
+
+    pub fn get_recent_files(&self) -> anyhow::Result<RecentFiles> {
+        let Some(g) = self.global.as_ref() else {
+            return Ok(RecentFiles::default());
+        };
+        match g.get(RECENT_FILES_KEY) {
+            Some(bytes) => Ok(decode(bytes)?),
+            None => Ok(RecentFiles::default()),
         }
     }
 

@@ -84,6 +84,7 @@ mod git_commands;
 mod overlay_handlers;
 mod ui_interaction;
 mod ui_render;
+mod welcome_nav;
 mod workspace_commands;
 
 #[cfg(test)]
@@ -271,6 +272,11 @@ pub struct AppState {
     /// Set after construction via [`AppState::set_state_db`].  When present,
     /// workspace state is persisted on a debounced timer (~2 s).
     state_db: Option<StateDb>,
+    /// Most-recently-opened files (cross-workspace), shown on the welcome
+    /// screen and persisted via `state_db` under `b"recent:files"`.
+    pub recent_files: RecentFiles,
+    /// Welcome-screen selection cursor over `recent_files`.
+    pub welcome_nav: welcome_nav::WelcomeNav,
     /// Timestamp of the last successful state-db save (for debounce).
     last_state_save: Instant,
 
@@ -415,6 +421,8 @@ impl AppState {
             cached_settings: None,
             clipboard: None,
             state_db: None,
+            recent_files: RecentFiles::default(),
+            welcome_nav: welcome_nav::WelcomeNav::default(),
             last_state_save: Instant::now(),
             last_scroll_render: Instant::now(),
             viewport_scroll_target: None,
@@ -649,6 +657,30 @@ impl AppState {
     pub fn set_state_db(&mut self, db: StateDb) {
         self.state_db = Some(db);
         self.load_saved_agent_layouts();
+        self.load_recent_files();
+    }
+
+    fn load_recent_files(&mut self) {
+        let Some(db) = self.state_db() else {
+            return;
+        };
+        match db.get_recent_files() {
+            Ok(mut rf) => {
+                rf.prune_missing();
+                self.recent_files = rf;
+            }
+            Err(e) => log::warn!("failed to load recent files: {e}"),
+        }
+    }
+
+    /// Snapshot of recent-file paths (most-recently-opened first).
+    /// Used by the welcome screen for rendering and key dispatch.
+    pub fn recent_paths(&self) -> Vec<std::path::PathBuf> {
+        self.recent_files
+            .entries
+            .iter()
+            .map(|e| e.path.clone())
+            .collect()
     }
 
     /// Borrow the state database, if set.
@@ -952,6 +984,22 @@ impl AppState {
             self.session.tabs.push(id);
         }
         self.session.active_buffer = Some(id);
+
+        // Promote in the global recent-files list and persist best-effort.
+        // Skip the canonicalize syscall when the path is already absolute;
+        // most open-file codepaths already pass an absolute path.
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        };
+        self.recent_files.record_open(&absolute);
+        let snapshot = self.recent_files.clone();
+        if let Some(db) = self.state_db_mut() {
+            if let Err(e) = db.put_recent_files(&snapshot) {
+                log::warn!("failed to persist recent files: {e}");
+            }
+        }
 
         // Assign a syntax highlighter if we don't already have one for
         // this buffer.  Skip the eager full-buffer `update()` — it runs

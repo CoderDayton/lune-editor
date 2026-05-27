@@ -8,9 +8,12 @@
 //! styled spans from the theme instead of plain text.
 
 use crate::primitives::{
-    Buffer, Color, Line, Modifier, Rect, Scrollbar, ScrollbarOrientation, ScrollbarState, Span,
-    StatefulWidget, Style, Stylize, Widget, symbols,
+    Block, BorderType, Borders, Buffer, Color, Line, Modifier, Rect, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Span, StatefulWidget, Style, Stylize, Widget, symbols,
 };
+
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use smallvec::SmallVec;
 
@@ -242,6 +245,7 @@ pub fn render_editor_pane(
     search_matches: Option<&lune_core::search::SearchState>,
     theme: &Theme,
     tab_size: usize,
+    welcome: Option<&WelcomeInfo>,
 ) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -253,7 +257,7 @@ pub fn render_editor_pane(
     // top borders on row 0.  This function draws into the rect it was
     // given, full stop.
     let Some(text_buf) = text_buf else {
-        render_welcome(area, buf, theme);
+        render_welcome(area, buf, theme, welcome);
         return;
     };
 
@@ -1088,9 +1092,138 @@ fn apply_search_highlight(
     }
 }
 
-/// Render the welcome screen when no buffer is open.
+// ── Welcome screen ────────────────────────────────────────────────────
+
+/// ANSI Shadow figlet of "LUNE". Each row is exactly 38 display cells
+/// wide (box-drawing glyphs are width-1).
+const LUNE_BANNER: [&str; 6] = [
+    "██╗      ██╗   ██╗ ███╗   ██╗ ███████╗",
+    "██║      ██║   ██║ ████╗  ██║ ██╔════╝",
+    "██║      ██║   ██║ ██╔██╗ ██║ █████╗  ",
+    "██║      ██║   ██║ ██║╚██╗██║ ██╔══╝  ",
+    "███████╗ ╚██████╔╝ ██║ ╚████║ ███████╗",
+    "╚══════╝  ╚═════╝  ╚═╝  ╚═══╝ ╚══════╝",
+];
+const BANNER_WIDTH: u16 = 38;
+const BANNER_HEIGHT: u16 = 6;
+
+/// Rotating tip pool — one is shown per UTC day at the bottom of the
+/// welcome screen. Order is stable so users see the same tip all day.
+const TIPS: &[&str] = &[
+    "Ctrl+P opens the command palette — fuzzy-find any action.",
+    "Ctrl+B toggles the file tree.",
+    "Ctrl+` opens the agents tab.",
+    "Ctrl+\\ splits the current pane.",
+    "Ctrl+Shift+P jumps to a file by name.",
+    "Drop a file onto the terminal to open it in a new tab.",
+];
+
+/// Optional info passed to the welcome screen.
+pub struct WelcomeInfo<'a> {
+    /// Recent files, most-recently-opened first.
+    pub recent_files: &'a [std::path::PathBuf],
+    /// Currently selected recent-files index (highlighted row).
+    /// `None` means no selection cursor is shown — e.g. when the
+    /// editor pane is unfocused or the list is empty.
+    pub selected: Option<usize>,
+}
+
+/// Render the welcome screen shown when no buffer is open.
 #[allow(clippy::cast_possible_truncation)]
-fn render_welcome(area: Rect, buf: &mut Buffer, theme: &Theme) {
+fn render_welcome(area: Rect, buf: &mut Buffer, theme: &Theme, info: Option<&WelcomeInfo>) {
+    // Fall back to a plain centered layout when the pane is too small
+    // to fit the banner with breathing room.
+    if area.width < BANNER_WIDTH + 4 || area.height < 14 {
+        render_welcome_minimal(area, buf, theme);
+        return;
+    }
+
+    let recent: &[std::path::PathBuf] = info.map_or(&[], |i| i.recent_files);
+    let show_recent = !recent.is_empty() && area.width >= 60;
+    let recent_rows = recent.len().min(5) as u16;
+    // Panel = 2 (borders) + N content lines. Two side-by-side panels
+    // share the same height; cap to the taller content (shortcuts always
+    // has 4 lines; recent has up to 5).
+    let panel_inner = if show_recent {
+        4u16.max(recent_rows)
+    } else {
+        4
+    };
+    let panel_height = panel_inner + 2;
+
+    // Compute total stack height (banner + gaps + panel + tip) so we
+    // can vertically center it.
+    let tip_rows: u16 = if area.height >= 18 { 2 } else { 0 }; // 1 blank + 1 tip
+    let total_h = BANNER_HEIGHT + 2 /* gap + tagline */ + 1 /* gap */ + panel_height + tip_rows;
+    let start_y = area.y + area.height.saturating_sub(total_h) / 2;
+
+    // ── Banner ──────────────────────────────────────────────────
+    let banner_x = area.x + area.width.saturating_sub(BANNER_WIDTH) / 2;
+    let banner_style = Style::new().fg(theme.accent).add_modifier(Modifier::BOLD);
+    for (i, row) in LUNE_BANNER.iter().enumerate() {
+        let y = start_y + i as u16;
+        Line::from(Span::styled(*row, banner_style))
+            .render(Rect::new(banner_x, y, BANNER_WIDTH, 1), buf);
+    }
+
+    // ── Tagline + version ───────────────────────────────────────
+    let tagline = format!("a minimal terminal editor · v{}", env!("CARGO_PKG_VERSION"));
+    let tagline_y = start_y + BANNER_HEIGHT + 1;
+    let tagline_w = tagline.chars().count() as u16;
+    let tagline_x = area.x + area.width.saturating_sub(tagline_w) / 2;
+    Line::from(Span::styled(tagline, Style::new().fg(theme.fg_muted)))
+        .render(Rect::new(tagline_x, tagline_y, tagline_w, 1), buf);
+
+    // ── Panels (shortcuts always, recent optional) ──────────────
+    let panel_y = tagline_y + 2;
+    let shortcuts_w: u16 = 32;
+    let recent_w: u16 = 38;
+    let panels_total_w = if show_recent {
+        shortcuts_w + 1 + recent_w
+    } else {
+        shortcuts_w
+    };
+    let panels_x = area.x + area.width.saturating_sub(panels_total_w) / 2;
+
+    render_shortcuts_panel(
+        Rect::new(panels_x, panel_y, shortcuts_w, panel_height),
+        buf,
+        theme,
+    );
+
+    if show_recent {
+        render_recent_panel(
+            Rect::new(panels_x + shortcuts_w + 1, panel_y, recent_w, panel_height),
+            buf,
+            theme,
+            recent,
+            recent_rows as usize,
+            info.and_then(|i| i.selected),
+        );
+    }
+
+    // ── Tip-of-the-day ──────────────────────────────────────────
+    if tip_rows > 0 {
+        let tip = pick_tip();
+        let tip_text = format!("tip · {tip}");
+        let max_tip_w = area.width.saturating_sub(4);
+        let tip_text = truncate_to_cells(&tip_text, max_tip_w as usize);
+        let tip_w = tip_text.chars().count() as u16;
+        let tip_y = panel_y + panel_height + 1;
+        let tip_x = area.x + area.width.saturating_sub(tip_w) / 2;
+        Line::from(Span::styled(
+            tip_text,
+            Style::new()
+                .fg(theme.fg_muted)
+                .add_modifier(Modifier::ITALIC),
+        ))
+        .render(Rect::new(tip_x, tip_y, tip_w, 1), buf);
+    }
+}
+
+/// Fallback layout for small panes — the original plain text list.
+#[allow(clippy::cast_possible_truncation)]
+fn render_welcome_minimal(area: Rect, buf: &mut Buffer, theme: &Theme) {
     let messages = [
         "Lune Editor",
         "",
@@ -1109,14 +1242,175 @@ fn render_welcome(area: Rect, buf: &mut Buffer, theme: &Theme) {
         if y >= area.y + area.height {
             break;
         }
-        let x = area.x + area.width.saturating_sub(msg.len() as u16) / 2;
+        let w = msg.chars().count() as u16;
+        let x = area.x + area.width.saturating_sub(w) / 2;
         let span = if i == 0 {
             Span::styled(*msg, theme.welcome_title)
         } else {
             Span::styled(*msg, theme.welcome_text)
         };
-        Line::from(span).render(Rect::new(x, y, msg.len() as u16, 1), buf);
+        Line::from(span).render(Rect::new(x, y, w, 1), buf);
     }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn render_shortcuts_panel(area: Rect, buf: &mut Buffer, theme: &Theme) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.border_unfocused))
+        .title(Span::styled(
+            " shortcuts ",
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    block.render(area, buf);
+
+    let rows: &[(&str, &str)] = &[
+        ("Ctrl+P", "Command palette"),
+        ("Ctrl+B", "Toggle file tree"),
+        ("Ctrl+`", "Toggle agents tab"),
+        ("Ctrl+Q", "Quit"),
+    ];
+    let key_style = Style::new().fg(theme.accent).add_modifier(Modifier::BOLD);
+    let txt_style = Style::new().fg(theme.fg);
+    let key_col_w = 7u16; // "Ctrl+`" is 6 chars + 1 space
+
+    for (i, (k, v)) in rows.iter().take(inner.height as usize).enumerate() {
+        let y = inner.y + i as u16;
+        // Indent 1 cell from the inner edge.
+        if inner.width < key_col_w + 1 {
+            continue;
+        }
+        Line::from(Span::styled(*k, key_style))
+            .render(Rect::new(inner.x + 1, y, k.chars().count() as u16, 1), buf);
+        let v_x = inner.x + 1 + key_col_w;
+        let v_w = inner.width.saturating_sub(2 + key_col_w);
+        let v_trunc = truncate_to_cells(v, v_w as usize);
+        Line::from(Span::styled(v_trunc, txt_style)).render(Rect::new(v_x, y, v_w, 1), buf);
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn render_recent_panel(
+    area: Rect,
+    buf: &mut Buffer,
+    theme: &Theme,
+    recent: &[std::path::PathBuf],
+    show_count: usize,
+    selected: Option<usize>,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.border_unfocused))
+        .title(Span::styled(
+            " recent ",
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    block.render(area, buf);
+
+    let max_w = inner.width.saturating_sub(2);
+    for (i, path) in recent.iter().take(show_count).enumerate() {
+        let y = inner.y + i as u16;
+        let is_selected = selected == Some(i);
+        let style = if is_selected {
+            Style::new()
+                .fg(theme.fg)
+                .bg(theme.tree_selected_bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(theme.fg)
+        };
+
+        // Paint full inner row with the selection bg so the highlight
+        // reads as a continuous bar, not just behind the text.
+        if is_selected {
+            for x in inner.x..inner.x + inner.width {
+                buf[(x, y)].set_bg(theme.tree_selected_bg);
+            }
+        }
+        let display = humanize_path(path);
+        let truncated = truncate_to_cells_left(&display, max_w as usize);
+        Line::from(Span::styled(truncated, style)).render(Rect::new(inner.x + 1, y, max_w, 1), buf);
+    }
+}
+
+/// Replace `$HOME` with `~` for display.
+fn humanize_path(p: &Path) -> String {
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = std::path::PathBuf::from(home);
+        if let Ok(rel) = p.strip_prefix(&home) {
+            return format!("~/{}", rel.display());
+        }
+    }
+    p.display().to_string()
+}
+
+/// Right-truncate to `max` display cells, appending `…` if cut.
+fn truncate_to_cells(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    let mut width = 0usize;
+    let mut out = String::new();
+    for ch in s.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + w > max {
+            // Replace last cell with `…` if there is room.
+            if max >= 1 {
+                while width > max - 1 {
+                    if let Some(c) = out.pop() {
+                        width -= unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                    } else {
+                        break;
+                    }
+                }
+                out.push('…');
+            }
+            return out;
+        }
+        out.push(ch);
+        width += w;
+    }
+    out
+}
+
+/// Left-truncate (keeps the tail) to `max` display cells, prepending
+/// `…` if cut. Useful for file paths where the basename matters most.
+fn truncate_to_cells_left(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    let total: usize = s
+        .chars()
+        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
+        .sum();
+    if total <= max {
+        return s.to_string();
+    }
+    let mut width = 0usize;
+    let mut out: Vec<char> = Vec::new();
+    for ch in s.chars().rev() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + w > max - 1 {
+            break;
+        }
+        out.push(ch);
+        width += w;
+    }
+    let mut s: String = out.into_iter().rev().collect();
+    s.insert(0, '…');
+    s
+}
+
+fn pick_tip() -> &'static str {
+    let day = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() / 86_400);
+    let idx = usize::try_from(day).unwrap_or(0) % TIPS.len();
+    TIPS[idx]
 }
 
 /// Map a mouse click position to a buffer position, accounting for
@@ -1209,6 +1503,107 @@ pub const fn click_to_position(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn count_cells_with_bg(buf: &Buffer, target: Color) -> usize {
+        let area = buf.area;
+        let mut n = 0;
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                if buf
+                    .cell((x, y))
+                    .is_some_and(|c| c.style().bg == Some(target))
+                {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    fn highlight_row(buf: &Buffer, target: Color) -> Option<u16> {
+        let area = buf.area;
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                if buf
+                    .cell((x, y))
+                    .is_some_and(|c| c.style().bg == Some(target))
+                {
+                    return Some(y);
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn welcome_paints_no_recent_highlight_when_selection_is_none() {
+        let area = Rect::new(0, 0, 80, 22);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::dark();
+        let recent = vec![
+            std::path::PathBuf::from("/a.rs"),
+            std::path::PathBuf::from("/b.rs"),
+            std::path::PathBuf::from("/c.rs"),
+        ];
+        let info = WelcomeInfo {
+            recent_files: &recent,
+            selected: None,
+        };
+        render_welcome(area, &mut buf, &theme, Some(&info));
+        assert_eq!(
+            count_cells_with_bg(&buf, theme.tree_selected_bg),
+            0,
+            "no highlight bg should be painted when selected is None",
+        );
+    }
+
+    #[test]
+    fn welcome_paints_recent_highlight_when_selection_is_set() {
+        let area = Rect::new(0, 0, 80, 22);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::dark();
+        let recent = vec![
+            std::path::PathBuf::from("/a.rs"),
+            std::path::PathBuf::from("/b.rs"),
+            std::path::PathBuf::from("/c.rs"),
+        ];
+        let info = WelcomeInfo {
+            recent_files: &recent,
+            selected: Some(1),
+        };
+        render_welcome(area, &mut buf, &theme, Some(&info));
+        assert!(
+            count_cells_with_bg(&buf, theme.tree_selected_bg) > 0,
+            "selected index should paint the highlight bg",
+        );
+    }
+
+    #[test]
+    fn welcome_highlight_row_tracks_selected_index() {
+        let area = Rect::new(0, 0, 80, 22);
+        let theme = Theme::dark();
+        let recent = vec![
+            std::path::PathBuf::from("/a.rs"),
+            std::path::PathBuf::from("/b.rs"),
+            std::path::PathBuf::from("/c.rs"),
+        ];
+
+        let row_for = |sel: usize| -> u16 {
+            let mut buf = Buffer::empty(area);
+            let info = WelcomeInfo {
+                recent_files: &recent,
+                selected: Some(sel),
+            };
+            render_welcome(area, &mut buf, &theme, Some(&info));
+            highlight_row(&buf, theme.tree_selected_bg).expect("a row must be highlighted")
+        };
+
+        let r0 = row_for(0);
+        let r1 = row_for(1);
+        let r2 = row_for(2);
+        assert_eq!(r1, r0 + 1, "selecting next must move highlight down 1 row");
+        assert_eq!(r2, r0 + 2, "selecting 2-ahead must move highlight down 2");
+    }
 
     #[test]
     fn line_cache_invalidates_on_buffer_switch() {
@@ -1533,6 +1928,7 @@ mod tests {
             None,
             &theme,
             4,
+            None,
         );
 
         // No row of the rendered area should be a horizontal rule.
@@ -1572,6 +1968,7 @@ mod tests {
             None,
             &theme,
             4,
+            None,
         );
 
         let gw = gutter_width(text_buf.line_count());

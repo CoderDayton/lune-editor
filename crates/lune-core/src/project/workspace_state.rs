@@ -175,6 +175,62 @@ impl RecentWorkspaces {
     }
 }
 
+/// A single entry in the recent files list.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentFileEntry {
+    /// Absolute path to the file.
+    pub path: PathBuf,
+    /// Unix timestamp of last open (seconds since epoch).
+    pub last_opened: u64,
+}
+
+/// Most-recently-opened files, persisted globally (cross-workspace).
+///
+/// Mirrors [`RecentWorkspaces`] but tracks individual files. Used to
+/// populate the welcome screen.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RecentFiles {
+    /// Ordered list of recently opened files (most recent first).
+    pub entries: Vec<RecentFileEntry>,
+    /// Maximum number of entries to retain.
+    pub max_entries: usize,
+}
+
+impl Default for RecentFiles {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            max_entries: 10,
+        }
+    }
+}
+
+impl RecentFiles {
+    /// Record that a file was opened. Moves it to the front if already
+    /// present, or adds a new entry. Trims to `max_entries`.
+    pub fn record_open(&mut self, path: &Path) {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+
+        self.entries.retain(|e| e.path != path);
+        self.entries.insert(
+            0,
+            RecentFileEntry {
+                path: path.to_path_buf(),
+                last_opened: now,
+            },
+        );
+        self.entries.truncate(self.max_entries);
+    }
+
+    /// Drop entries whose files no longer exist on disk.
+    pub fn prune_missing(&mut self) {
+        self.entries.retain(|e| e.path.exists());
+    }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────
 
 /// Compute a deterministic u64 hash of a path for use as a filename.

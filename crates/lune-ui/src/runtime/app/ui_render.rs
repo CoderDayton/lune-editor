@@ -107,6 +107,17 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         .and_then(|id| state.gutter_for_render(id));
     let active_gutter = active_gutter_owned.as_deref();
 
+    // Snapshot recent-files paths BEFORE the `&mut state.highlighters`
+    // borrow below; reconcile the welcome selection cursor against the
+    // current list length and hide it when the editor is unfocused.
+    let recent_paths = state.recent_paths();
+    state.welcome_nav.clamp(recent_paths.len());
+    let welcome_selected = if recent_paths.is_empty() || !is_focused {
+        None
+    } else {
+        Some(state.welcome_nav.selected)
+    };
+
     // `content_area` is already the editor's exact draw region
     // (post-block, post-tab-strip), so its height is the true visible
     // viewport height.
@@ -151,6 +162,10 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         .cached_settings
         .as_ref()
         .map_or(4, |s| s.editor.tab_size);
+    let welcome = editor_pane::WelcomeInfo {
+        recent_files: &recent_paths,
+        selected: welcome_selected,
+    };
     editor_pane::render_editor_pane(
         content_area,
         buf,
@@ -164,6 +179,7 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         search_state,
         &state.theme,
         tab_size,
+        Some(&welcome),
     );
     state.last_editor_content_area = Some(content_area);
 }

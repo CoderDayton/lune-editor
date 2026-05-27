@@ -63,6 +63,21 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         return handle_git_panel_key(key, state);
     }
 
+    // Welcome-screen navigation: when no buffer is open and the editor
+    // pane is focused, j/k/arrows + Enter act on the recent-files list
+    // instead of falling through to vim mode.
+    if state.root_tab == RootTab::Editor
+        && state.session.active_buffer.is_none()
+        && state.focus.is_focused(PanelId::Editor)
+    {
+        let recent_paths = state.recent_paths();
+        if let Some(control) =
+            welcome_nav::handle_welcome_key(key, &mut state.welcome_nav, &recent_paths, true)
+        {
+            return control;
+        }
+    }
+
     if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
         let page_size = state
             .last_editor_content_area
@@ -875,6 +890,88 @@ mod tests {
         state.session.tabs.push(id);
         state.focus.set_active(PanelId::Editor);
         state
+    }
+
+    fn welcome_state_with_recent(paths: &[&str]) -> AppState {
+        let mut state = AppState::new();
+        state.set_root_tab(RootTab::Editor);
+        state.focus.set_active(PanelId::Editor);
+        // No active buffer → welcome screen is shown.
+        assert!(state.session.active_buffer.is_none());
+        for p in paths {
+            state.recent_files.record_open(std::path::Path::new(p));
+        }
+        // record_open is LRU-first; reverse to keep the input order as
+        // displayed (first arg = top entry).
+        state.recent_files.entries.reverse();
+        state
+    }
+
+    #[test]
+    fn welcome_j_moves_selection_down_one() {
+        let mut state = welcome_state_with_recent(&["/a", "/b", "/c"]);
+        assert_eq!(state.welcome_nav.selected, 0);
+
+        let result = handle_key_event(
+            &KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            &mut state,
+        );
+
+        assert!(matches!(result, Control::Changed));
+        assert_eq!(state.welcome_nav.selected, 1);
+    }
+
+    #[test]
+    fn welcome_k_moves_selection_up_one() {
+        let mut state = welcome_state_with_recent(&["/a", "/b", "/c"]);
+        state.welcome_nav.selected = 2;
+
+        let result = handle_key_event(
+            &KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+            &mut state,
+        );
+
+        assert!(matches!(result, Control::Changed));
+        assert_eq!(state.welcome_nav.selected, 1);
+    }
+
+    #[test]
+    fn welcome_enter_emits_open_file_for_selected() {
+        let mut state = welcome_state_with_recent(&["/x", "/y", "/z"]);
+        state.welcome_nav.selected = 1;
+
+        let result = handle_key_event(
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut state,
+        );
+
+        match result {
+            Control::Event(AppEvent::Command(AppCommand::OpenFile(p))) => {
+                assert_eq!(p, std::path::PathBuf::from("/y"));
+            }
+            other => panic!("expected OpenFile(/y), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn welcome_keys_do_not_fire_when_buffer_is_open() {
+        // Buffer is open → not on the welcome screen; j/k must fall
+        // through to the editor (vim normal mode), not move welcome_nav.
+        let mut state = state_with_text("hello");
+        for p in ["/a", "/b"] {
+            state.recent_files.record_open(std::path::Path::new(p));
+        }
+        let before = state.welcome_nav.selected;
+
+        let _ = handle_key_event(
+            &KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            &mut state,
+        );
+
+        assert_eq!(
+            state.welcome_nav.selected, before,
+            "welcome_nav must not move while a buffer is active",
+        );
     }
 
     #[test]
