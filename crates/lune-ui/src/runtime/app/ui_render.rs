@@ -67,17 +67,13 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
     }
 
     // Wrap the entire center column (tab strip + editor) in one
-    // focus-aware Block with TOP|BOTTOM borders.  This puts the
-    // editor's top border on row 0 of the center column — the same
-    // row that file_tree's and git_panel's top borders sit on — and
-    // tucks the tab strip into the first inner row, just below the
-    // top border.  Vertical borders are intentionally omitted so the
-    // editor doesn't double the `│` columns drawn by its neighbors.
-    let block = crate::widgets::panel::panel_block(
-        &state.theme,
-        is_focused,
-        Borders::TOP | Borders::BOTTOM,
-    );
+    // focus-aware Block with ALL borders.  Closing the box on the
+    // left and right means the editor reads as its own pane — the
+    // file_tree's right `│` and the editor's left `│` sit in adjacent
+    // columns (a deliberate `││` seam rather than a shared single
+    // line) so each pane has a complete frame even when the panes
+    // don't otherwise visually connect.
+    let block = crate::widgets::panel::panel_block(&state.theme, is_focused, Borders::ALL);
     let inner = block.inner(area);
     block.render(area, buf);
 

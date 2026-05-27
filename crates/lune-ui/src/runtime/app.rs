@@ -3341,17 +3341,24 @@ mod tests {
             left.y
         );
 
-        // Editor's top border: first cell of the center column at row
-        // 0 must be a horizontal rule.  If the block were still drawn
-        // below the tab bar this would be tab text instead.
-        let editor_top = buf
+        // Editor's top border with Borders::ALL: top-left corner at
+        // the first cell, horizontal rule continuing inward.
+        let editor_top_left = buf
             .cell((center.x, center.y))
             .map(|c| c.symbol().to_string())
             .unwrap_or_default();
         assert_eq!(
-            editor_top, "─",
-            "editor top border expected at row {} col {}, got {editor_top:?}",
+            editor_top_left, "┌",
+            "editor top-left corner expected at row {} col {}, got {editor_top_left:?}",
             center.y, center.x
+        );
+        let editor_top_mid = buf
+            .cell((center.x + 1, center.y))
+            .map(|c| c.symbol().to_string())
+            .unwrap_or_default();
+        assert_eq!(
+            editor_top_mid, "─",
+            "editor top rule expected just inside the left corner, got {editor_top_mid:?}"
         );
     }
 
@@ -3368,26 +3375,49 @@ mod tests {
 
         let center = state.last_splits.as_ref().unwrap().center;
 
-        // Row 0 across the center column: every cell is the top rule.
-        for x in center.x..center.x + center.width {
+        // Row 0 across the center column with Borders::ALL: corners
+        // bracket the row, horizontal rules fill between.
+        let last_x = center.x + center.width - 1;
+        for x in center.x..=last_x {
             let sym = buf
                 .cell((x, center.y))
                 .map(|c| c.symbol().to_string())
                 .unwrap_or_default();
+            let expected = if x == center.x {
+                "┌"
+            } else if x == last_x {
+                "┐"
+            } else {
+                "─"
+            };
             assert_eq!(
-                sym, "─",
-                "expected top rule at row {} col {x}, got {sym:?}",
+                sym, expected,
+                "row {} col {x}: expected {expected:?}, got {sym:?}",
                 center.y
             );
         }
 
-        // Row 1 is the tab strip — not a horizontal rule.  Empty
-        // tab_mgr renders " No open files " placeholder; either way
-        // no cell should be `─`.
-        let row_one = row_text(&buf, area, center.y + 1);
-        assert!(
-            !row_one.starts_with('─'),
-            "row 1 must be tab strip, not border: {row_one:?}"
+        // Row 1 is the tab strip inside the block. The first and last
+        // cells are the block's vertical sides; between them, the tab
+        // strip itself starts (never with a horizontal rule).
+        let left_side = buf
+            .cell((center.x, center.y + 1))
+            .map(|c| c.symbol().to_string())
+            .unwrap_or_default();
+        assert_eq!(
+            left_side, "│",
+            "row 1 col {} must be the block's left side, got {left_side:?}",
+            center.x
+        );
+        let tab_strip_start = buf
+            .cell((center.x + 1, center.y + 1))
+            .map(|c| c.symbol().to_string())
+            .unwrap_or_default();
+        assert_ne!(
+            tab_strip_start,
+            "─",
+            "row 1 col {} (inside block) must be tab strip, not border",
+            center.x + 1
         );
     }
 

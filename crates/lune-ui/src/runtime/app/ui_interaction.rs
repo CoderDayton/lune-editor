@@ -505,10 +505,17 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
         }
 
         // The tab strip lives at row `center.y + 1` — the first row
-        // inside the editor's TOP|BOTTOM block (row `center.y` is the
-        // block's top border).
-        if row == splits.center.y + 1 {
-            let tab_area = Rect::new(splits.center.x, splits.center.y + 1, splits.center.width, 1);
+        // inside the editor's Borders::ALL block (row `center.y` is
+        // the block's top border). With ALL borders, the strip is
+        // also inset by 1 column on each side (the block's vertical
+        // sides), so the clickable region is `center.x + 1 .. center.x + width - 1`.
+        if row == splits.center.y + 1 && splits.center.width >= 2 {
+            let tab_area = Rect::new(
+                splits.center.x + 1,
+                splits.center.y + 1,
+                splits.center.width - 2,
+                1,
+            );
             if let Some((idx, is_close)) = state.tab_mgr.hit_test(col, tab_area.x, tab_area.width) {
                 if is_close {
                     if let Some(bid) = state.tab_mgr.buffer_at(idx) {
