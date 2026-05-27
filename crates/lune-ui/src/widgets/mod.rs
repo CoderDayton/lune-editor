@@ -8,6 +8,7 @@ pub mod editor_pane;
 pub mod file_tree;
 pub mod git_panel;
 pub mod overlay;
+pub mod panel;
 pub mod status_bar;
 pub mod tab_bar;
 pub mod terminal;

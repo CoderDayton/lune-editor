@@ -5,12 +5,13 @@
 //! position and a session status header.
 
 use crate::primitives::{
-    Block, BorderType, Borders, Buffer, Color, Line, Modifier, Rect, Span, Style, Stylize, Widget,
+    Borders, Buffer, Color, Line, Modifier, Rect, Span, Style, Stylize, Widget,
 };
 
 use lune_ai::session::{AiSessionId, SessionState};
 
 use crate::theme::Theme;
+use crate::widgets::panel::panel_block;
 
 /// Convert a `vt100::Color` to a `ratatui::Color`.
 #[must_use]
@@ -304,17 +305,7 @@ pub fn render_terminal_panel(
         theme,
     );
 
-    let border_color = if is_focused {
-        theme.border_focused
-    } else {
-        theme.border_unfocused
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
-        .title(Line::from(title_spans))
-        .style(Style::new().fg(border_color));
+    let block = panel_block(theme, is_focused, Borders::ALL).title(Line::from(title_spans));
     let inner = block.inner(area);
     block.render(area, buf);
 

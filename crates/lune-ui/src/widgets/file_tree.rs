@@ -9,11 +9,12 @@
 
 use std::path::Path;
 
-use crate::primitives::{Block, Buffer, Line, Modifier, Rect, Span, Style, Widget};
+use crate::primitives::{Borders, Buffer, Line, Modifier, Rect, Span, Style, Widget};
 
 use lune_core::workspace::{DirEntry, EntryKind, FileStatus, Workspace, flatten_tree};
 
 use crate::theme::Theme;
+use crate::widgets::panel::{panel_block, panel_title};
 
 /// Configuration for file tree rendering.
 #[derive(Clone, Debug)]
@@ -230,24 +231,11 @@ pub fn render_file_tree(
         return;
     }
 
-    let accent = if is_focused {
-        theme.border_focused
-    } else {
-        theme.border_unfocused
-    };
-
-    // Wrap the file tree in a proper ratatui Block with a titled border.
-    let border_style = Style::default().fg(accent);
-    let title_style = if is_focused {
-        Style::default()
-            .fg(theme.accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().add_modifier(Modifier::BOLD)
-    };
-    let block = Block::bordered()
-        .border_style(border_style)
-        .title(Span::styled(format!(" {workspace_name} "), title_style));
+    let block = panel_block(theme, is_focused, Borders::ALL).title(panel_title(
+        workspace_name,
+        theme,
+        is_focused,
+    ));
     let content_area = block.inner(area);
     block.render(area, buf);
     let content_width = content_area.width;

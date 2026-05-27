@@ -3102,6 +3102,90 @@ mod tests {
     }
 
     #[test]
+    fn editor_top_border_aligns_with_file_tree_top_border() {
+        // file_tree and the editor pane both wrap their content in
+        // bordered Blocks; the top borders must share a row.  Pre-fix,
+        // the editor's block was drawn after a 1-row tab strip, so its
+        // top border floated at row 1 while file_tree's sat at row 0.
+        //
+        // With the block hoisted to wrap the whole center column, the
+        // top border lives at row 0 of the center and the tab strip
+        // moves to row 1 (inside the block).
+        let mut state = AppState::new();
+        state.layout.show_file_tree = true;
+
+        let area = Rect::new(0, 0, 100, 20);
+        let mut buf = Buffer::empty(area);
+        render_editor_tab(area, &mut buf, &mut state);
+
+        let splits = state.last_splits.as_ref().expect("splits stored").clone();
+        let left = splits.left.expect("file tree visible");
+        let center = splits.center;
+        assert_eq!(left.y, 0);
+        assert_eq!(center.y, 0);
+
+        // file_tree's top-left corner of its block.
+        let ft_top = buf
+            .cell((left.x, left.y))
+            .map(|c| c.symbol().to_string())
+            .unwrap_or_default();
+        assert!(
+            ft_top == "┌" || ft_top == "─",
+            "file_tree top-left at row {}: {ft_top:?}",
+            left.y
+        );
+
+        // Editor's top border: first cell of the center column at row
+        // 0 must be a horizontal rule.  If the block were still drawn
+        // below the tab bar this would be tab text instead.
+        let editor_top = buf
+            .cell((center.x, center.y))
+            .map(|c| c.symbol().to_string())
+            .unwrap_or_default();
+        assert_eq!(
+            editor_top, "─",
+            "editor top border expected at row {} col {}, got {editor_top:?}",
+            center.y, center.x
+        );
+    }
+
+    #[test]
+    fn editor_tab_strip_renders_inside_block_at_row_one() {
+        // After the block wraps the whole center column, row 0 is the
+        // top border and row 1 is the tab strip.  Pre-fix the order
+        // was reversed (tab strip on row 0, top border on row 1).
+        // This test pins the row roles independently of tab_mgr state.
+        let mut state = AppState::new();
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buf = Buffer::empty(area);
+        render_editor_tab(area, &mut buf, &mut state);
+
+        let center = state.last_splits.as_ref().unwrap().center;
+
+        // Row 0 across the center column: every cell is the top rule.
+        for x in center.x..center.x + center.width {
+            let sym = buf
+                .cell((x, center.y))
+                .map(|c| c.symbol().to_string())
+                .unwrap_or_default();
+            assert_eq!(
+                sym, "─",
+                "expected top rule at row {} col {x}, got {sym:?}",
+                center.y
+            );
+        }
+
+        // Row 1 is the tab strip — not a horizontal rule.  Empty
+        // tab_mgr renders " No open files " placeholder; either way
+        // no cell should be `─`.
+        let row_one = row_text(&buf, area, center.y + 1);
+        assert!(
+            !row_one.starts_with('─'),
+            "row 1 must be tab strip, not border: {row_one:?}"
+        );
+    }
+
+    #[test]
     fn render_agents_tab_empty_state_clears_editor_cache_and_stale_panes() {
         let mut state = AppState::new();
         state.last_editor_content_area = Some(Rect::new(2, 1, 70, 18));

@@ -5,7 +5,7 @@
 //! discarding (`d`), opening diff view (`Enter`), and committing (`c`).
 
 use crate::primitives::{
-    Block, BorderType, Borders, Buffer, Color, Line, Modifier, Rect, Span, Style, Stylize, Widget,
+    Borders, Buffer, Color, Line, Modifier, Rect, Span, Style, Stylize, Widget,
 };
 
 use std::sync::Arc;
@@ -14,6 +14,7 @@ use lune_core::ports::{FileEntry, FileState, StatusSnapshot};
 
 use crate::theme::Theme;
 use crate::widgets::diff_view::DiffViewState;
+use crate::widgets::panel::{panel_block, panel_title};
 
 /// State of the git panel widget.
 #[derive(Clone, Debug)]
@@ -198,26 +199,11 @@ pub fn render_git_panel(
         return;
     }
 
-    let accent = if is_focused {
-        theme.border_focused
-    } else {
-        theme.border_unfocused
-    };
-
-    // Wrap the git panel in a proper ratatui Block with a titled border.
-    let border_style = Style::default().fg(accent);
-    let title_style = if is_focused {
-        Style::default()
-            .fg(theme.accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().add_modifier(Modifier::BOLD)
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
-        .border_style(border_style)
-        .title(Span::styled(" SOURCE CONTROL ", title_style));
+    let block = panel_block(theme, is_focused, Borders::ALL).title(panel_title(
+        "SOURCE CONTROL",
+        theme,
+        is_focused,
+    ));
     let content_area = block.inner(area);
     block.render(area, buf);
     let content_x = content_area.x;

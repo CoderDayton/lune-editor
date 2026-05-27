@@ -504,8 +504,11 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             }
         }
 
-        if row == splits.center.y {
-            let tab_area = Rect::new(splits.center.x, splits.center.y, splits.center.width, 1);
+        // The tab strip lives at row `center.y + 1` — the first row
+        // inside the editor's TOP|BOTTOM block (row `center.y` is the
+        // block's top border).
+        if row == splits.center.y + 1 {
+            let tab_area = Rect::new(splits.center.x, splits.center.y + 1, splits.center.width, 1);
             if let Some((idx, is_close)) = state.tab_mgr.hit_test(col, tab_area.x, tab_area.width) {
                 if is_close {
                     if let Some(bid) = state.tab_mgr.buffer_at(idx) {
@@ -867,6 +870,58 @@ mod tests {
         assert_eq!(
             state.active_buf().unwrap().cursor.primary.head,
             Position::new(0, 0)
+        );
+    }
+
+    #[test]
+    fn click_on_editor_tab_strip_row_switches_buffer() {
+        // After the block hoist, the editor's tab strip lives at
+        // `center.y + 1` (the first row inside the block, below the
+        // top border).  A click at that row on a tab label must
+        // activate that buffer.  Pre-fix the handler watched row
+        // `center.y`, so this click landed on the new top-border row
+        // and never reached the tab handler.
+        let mut state = AppState::new();
+
+        // Two scratch buffers → two tabs; first is active.
+        let id1 = state.session.registry.new_scratch();
+        let id2 = state.session.registry.new_scratch();
+        state.session.tabs.push(id1);
+        state.session.tabs.push(id2);
+        state.session.active_buffer = Some(id1);
+        state.tab_mgr.sync_from_registry(
+            &state.session.tabs,
+            state.session.active_buffer,
+            &state.session.registry,
+        );
+        state.set_root_tab(RootTab::Editor);
+
+        // Drive a real render so splits, focus, and tab_mgr layout are
+        // populated by the production path.
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buf = Buffer::empty(area);
+        super::super::ui_render::render_editor_tab(area, &mut buf, &mut state);
+
+        let center = state.last_splits.as_ref().unwrap().center;
+
+        // Each scratch tab labels "Untitled" → width " Untitled x " =
+        // 12 cells, separator = 1.  Click inside the second tab.
+        let tab_row = center.y + 1;
+        let click_col = center.x + 12 + 1 + 3; // start of tab 2 + 3 chars in
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: click_col,
+            row: tab_row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        let result = handle_mouse_click(click, &mut state);
+
+        assert!(matches!(result, Control::Changed));
+        assert_eq!(
+            state.session.active_buffer,
+            Some(id2),
+            "click at row {tab_row} col {click_col} should switch to tab 2"
         );
     }
 

@@ -57,10 +57,29 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         return;
     }
 
+    // Wrap the entire center column (tab strip + editor) in one
+    // focus-aware Block with TOP|BOTTOM borders.  This puts the
+    // editor's top border on row 0 of the center column — the same
+    // row that file_tree's and git_panel's top borders sit on — and
+    // tucks the tab strip into the first inner row, just below the
+    // top border.  Vertical borders are intentionally omitted so the
+    // editor doesn't double the `│` columns drawn by its neighbors.
+    let block = crate::widgets::panel::panel_block(
+        &state.theme,
+        is_focused,
+        Borders::TOP | Borders::BOTTOM,
+    );
+    let inner = block.inner(area);
+    block.render(area, buf);
+
+    if inner.height < 1 {
+        return;
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
-        .split(area);
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
 
     let tab_area = chunks[0];
     let content_area = chunks[1];
@@ -83,10 +102,10 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         .and_then(|id| state.gutter_for_render(id));
     let active_gutter = active_gutter_owned.as_deref();
 
-    // Inner content height after the editor's TOP|BOTTOM borders.  We
-    // use it both as the highlight pre-fetch window and (below) as the
-    // click-target area stored in `last_editor_content_area`.
-    let inner_height = content_area.height.saturating_sub(2) as usize;
+    // `content_area` is already the editor's exact draw region
+    // (post-block, post-tab-strip), so its height is the true visible
+    // viewport height.
+    let viewport_height = content_area.height as usize;
 
     let highlighted: Option<&[HighlightedLine]> = if let Some(id) = state.session.active_buffer {
         // Lazy initial parse: `open_file` defers the whole-buffer
@@ -95,7 +114,7 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         // hit the `primed_highlighters` fast path and return early.
         state.ensure_highlighter_primed(id);
         let top = state.viewport.top_line.saturating_sub(50);
-        let end = state.viewport.top_line + inner_height + 50;
+        let end = state.viewport.top_line + viewport_height + 50;
         state
             .highlighters
             .get_mut(&id)
@@ -119,11 +138,11 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         None
     };
 
-    // The editor draws its own TOP|BOTTOM border and returns the inner
-    // rect.  Store that inner rect — mouse hit-testing (scrollbar,
-    // click-to-position, drag autoscroll, PageUp/Down sizing, wheel
-    // clamp) all expect coordinates that match the rendered content.
-    let inner = editor_pane::render_editor_pane(
+    // `content_area` is the editor's exact draw region.  Store it so
+    // mouse hit-testing (scrollbar, click-to-position, drag
+    // autoscroll, PageUp/Down sizing, wheel clamp) operates on the
+    // same coordinates as the rendered content.
+    editor_pane::render_editor_pane(
         content_area,
         buf,
         text_buf,
@@ -135,7 +154,6 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         active_gutter,
         search_state,
         &state.theme,
-        is_focused,
     );
-    state.last_editor_content_area = Some(inner);
+    state.last_editor_content_area = Some(content_area);
 }

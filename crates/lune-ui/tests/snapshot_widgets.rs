@@ -234,7 +234,6 @@ fn snapshot_editor_pane_welcome() {
         None,
         None,
         &theme,
-        true,
     );
 
     insta::assert_snapshot!("editor_pane_welcome", buffer_to_text(&buf));
@@ -262,7 +261,6 @@ fn snapshot_editor_pane_with_content() {
         None,
         None,
         &theme,
-        true,
     );
 
     insta::assert_snapshot!("editor_pane_with_content", buffer_to_text(&buf));
@@ -290,7 +288,6 @@ fn snapshot_editor_pane_insert_mode() {
         None,
         None,
         &theme,
-        true,
     );
 
     insta::assert_snapshot!("editor_pane_insert_mode", buffer_to_text(&buf));
