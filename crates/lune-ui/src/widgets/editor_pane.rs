@@ -8,8 +8,8 @@
 //! styled spans from the theme instead of plain text.
 
 use crate::primitives::{
-    Buffer, Line, Modifier, Rect, Scrollbar, ScrollbarOrientation, ScrollbarState, Span,
-    StatefulWidget, Style, Stylize, Widget,
+    Block, Borders, Buffer, Line, Modifier, Rect, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Span, StatefulWidget, Style, Stylize, Widget,
 };
 
 use smallvec::SmallVec;
@@ -239,14 +239,38 @@ pub fn render_editor_pane(
     gutter_marks: Option<&GutterSnapshot>,
     search_matches: Option<&lune_core::search::SearchState>,
     theme: &Theme,
-) {
+    is_focused: bool,
+) -> Rect {
     if area.height == 0 || area.width == 0 {
-        return;
+        return area;
+    }
+
+    // Wrap the editor in a focus-aware bordered Block.  Only TOP and
+    // BOTTOM borders are drawn: the file tree on the left and the git
+    // panel on the right already supply their own vertical borders,
+    // and stacking another column next to them would render two
+    // adjacent `│` lines.  Returning the inner rect lets the caller
+    // store it as the click-target area so mouse hit-testing operates
+    // on the same coordinates as the rendered content.
+    let border_color = if is_focused {
+        theme.border_focused
+    } else {
+        theme.border_unfocused
+    };
+    let block = Block::default()
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .border_style(Style::default().fg(border_color));
+    let inner_area = block.inner(area);
+    block.render(area, buf);
+    let area = inner_area;
+
+    if area.height == 0 || area.width == 0 {
+        return area;
     }
 
     let Some(text_buf) = text_buf else {
         render_welcome(area, buf, theme);
-        return;
+        return area;
     };
 
     let total_lines = text_buf.line_count();
@@ -370,6 +394,8 @@ pub fn render_editor_pane(
     if show_scrollbar {
         render_vertical_scrollbar(area, total_lines, viewport, viewport_height, buf, theme);
     }
+
+    area
 }
 
 /// Clear a single editor row so stale text does not persist between frames.
@@ -1386,8 +1412,81 @@ mod tests {
     }
 
     #[test]
+    fn render_editor_pane_returns_inner_area_for_click_targeting() {
+        // The editor wraps its contents in a Block with TOP|BOTTOM
+        // borders (no LEFT/RIGHT — the sibling panels' borders provide
+        // the vertical separators, and doubling them is ugly).  The
+        // returned Rect MUST equal the area inside those borders, so
+        // the runtime can store it as `last_editor_content_area` and
+        // feed it back into is_on_scrollbar / click_to_position with
+        // matching coordinates.
+        //
+        // Without this contract, clicks on the top border row map to
+        // line `top_line` of the buffer, and the actual scrollbar
+        // column is misclassified as content (was the bug pre-fix).
+        let outer = Rect::new(0, 0, 20, 10);
+        let mut render_buf = Buffer::empty(outer);
+        let mut viewport = ViewportState::default();
+        let text = "line\n".repeat(100);
+        let text_buf = TextBuffer::from_text(&text);
+        let theme = Theme::dark();
+
+        let inner = render_editor_pane(
+            outer,
+            &mut render_buf,
+            Some(&text_buf),
+            &mut viewport,
+            false,
+            VimMode::Normal,
+            None,
+            &SyntaxTheme::dark(),
+            None,
+            None,
+            &theme,
+            true,
+        );
+
+        // TOP|BOTTOM borders → inner shrinks by 1 row at top and 1 at
+        // bottom; x and width are unchanged.
+        assert_eq!(inner, Rect::new(0, 1, 20, 8));
+
+        // Click on the top border row (outside `inner`) must not map
+        // to any buffer position.
+        let vp = ViewportState::default();
+        assert!(
+            click_to_position(5, 0, inner, &vp, text_buf.line_count(), false).is_none(),
+            "click on top border row must be rejected"
+        );
+
+        // The scrollbar lives at the rightmost INNER column.  Hit-test
+        // with the inner area must classify that column as a scrollbar
+        // click — and the cell to its left as content.
+        let inner_right = inner.x + inner.width - 1;
+        assert!(
+            is_on_scrollbar(inner_right, inner.y, inner, text_buf.line_count(), false),
+            "rightmost inner column must be the scrollbar"
+        );
+        assert!(
+            !is_on_scrollbar(
+                inner_right - 1,
+                inner.y,
+                inner,
+                text_buf.line_count(),
+                false
+            ),
+            "column to the left of scrollbar must be content"
+        );
+    }
+
+    #[test]
     fn render_editor_pane_draws_secondary_cursor_with_accent_style() {
-        let area = Rect::new(0, 0, 20, 3);
+        // Area is 20x5: enough rows for the TOP|BOTTOM border to leave
+        // a usable interior (top + bottom rule + at least one content
+        // row).  The secondary cursor sits at char column 2 of
+        // "alpha".  Cell coordinates are derived from the returned
+        // inner Rect so this test stays correct if the border shape
+        // changes again.
+        let area = Rect::new(0, 0, 20, 5);
         let mut render_buf = Buffer::empty(area);
         let mut viewport = ViewportState::default();
         let mut text_buf = TextBuffer::from_text("alpha");
@@ -1395,7 +1494,7 @@ mod tests {
         assert!(text_buf.toggle_secondary_cursor(Position::new(0, 2)));
 
         let theme = Theme::dark();
-        render_editor_pane(
+        let inner = render_editor_pane(
             area,
             &mut render_buf,
             Some(&text_buf),
@@ -1407,9 +1506,13 @@ mod tests {
             None,
             None,
             &theme,
+            true,
         );
 
-        let cell = &render_buf[(4, 0)];
+        // First content row of the inner area, gutter (1 line → 2
+        // cols, "1 ") then char column 2 of the line.
+        let gw = gutter_width(text_buf.line_count());
+        let cell = &render_buf[(inner.x + gw + 2, inner.y)];
         assert_eq!(cell.style().bg, Some(theme.accent));
         assert_eq!(cell.style().fg, Some(theme.bg));
     }

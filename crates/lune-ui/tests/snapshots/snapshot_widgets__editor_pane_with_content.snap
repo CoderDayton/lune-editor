@@ -1,8 +1,8 @@
 ---
 source: crates/lune-ui/tests/snapshot_widgets.rs
-assertion_line: 292
 expression: buffer_to_text(&buf)
 ---
+──────────────────────────────────────────────────
 1 fn main() {
 2     println!("Hello");
 3 }
@@ -11,5 +11,4 @@ expression: buffer_to_text(&buf)
 ~
 ~
 ~
-~
-~
+──────────────────────────────────────────────────

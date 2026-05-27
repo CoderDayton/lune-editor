@@ -2,7 +2,7 @@
 source: crates/lune-ui/tests/snapshot_widgets.rs
 expression: buffer_to_text(&buf)
 ---
-
+────────────────────────────────────────────────────────────
 
 
 
@@ -16,3 +16,9 @@ expression: buffer_to_text(&buf)
                   Ctrl+B  Toggle File Tree
                  Ctrl+`  Toggle Agents Tab
                         Ctrl+Q  Quit
+
+
+
+
+
+────────────────────────────────────────────────────────────

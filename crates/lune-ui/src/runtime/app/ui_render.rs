@@ -66,7 +66,6 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
     let content_area = chunks[1];
 
     tab_bar::render_tab_bar(tab_area, buf, &state.tab_mgr, is_focused, &state.theme);
-    state.last_editor_content_area = Some(content_area);
 
     // Compute `highlighted` with an explicit `if let` instead of a
     // closure so the returned borrow flows cleanly out of the scope
@@ -84,15 +83,19 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         .and_then(|id| state.gutter_for_render(id));
     let active_gutter = active_gutter_owned.as_deref();
 
+    // Inner content height after the editor's TOP|BOTTOM borders.  We
+    // use it both as the highlight pre-fetch window and (below) as the
+    // click-target area stored in `last_editor_content_area`.
+    let inner_height = content_area.height.saturating_sub(2) as usize;
+
     let highlighted: Option<&[HighlightedLine]> = if let Some(id) = state.session.active_buffer {
         // Lazy initial parse: `open_file` defers the whole-buffer
         // `Highlighter::update` to the first render so that opening a
         // large file doesn't block the UI thread.  Subsequent renders
         // hit the `primed_highlighters` fast path and return early.
         state.ensure_highlighter_primed(id);
-        let viewport_height = content_area.height as usize;
         let top = state.viewport.top_line.saturating_sub(50);
-        let end = state.viewport.top_line + viewport_height + 50;
+        let end = state.viewport.top_line + inner_height + 50;
         state
             .highlighters
             .get_mut(&id)
@@ -116,7 +119,11 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         None
     };
 
-    editor_pane::render_editor_pane(
+    // The editor draws its own TOP|BOTTOM border and returns the inner
+    // rect.  Store that inner rect — mouse hit-testing (scrollbar,
+    // click-to-position, drag autoscroll, PageUp/Down sizing, wheel
+    // clamp) all expect coordinates that match the rendered content.
+    let inner = editor_pane::render_editor_pane(
         content_area,
         buf,
         text_buf,
@@ -128,5 +135,7 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         active_gutter,
         search_state,
         &state.theme,
+        is_focused,
     );
+    state.last_editor_content_area = Some(inner);
 }

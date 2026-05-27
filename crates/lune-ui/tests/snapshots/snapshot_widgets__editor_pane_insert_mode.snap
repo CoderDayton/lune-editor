@@ -1,13 +1,12 @@
 ---
 source: crates/lune-ui/tests/snapshot_widgets.rs
-assertion_line: 318
 expression: buffer_to_text(&buf)
 ---
+──────────────────────────────────────────────────
 1 line 1
 2 line 2
 3 line 3
 4 line 4
 5 line 5
 6
-~
-~
+──────────────────────────────────────────────────
