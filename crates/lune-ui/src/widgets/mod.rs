@@ -3,10 +3,12 @@
 //! Each widget is a self-contained rendering unit that draws to a
 //! `ratatui_core::buffer::Buffer` given a `Rect` and some state.
 
+pub mod confirm_dialog;
 pub mod diff_view;
 pub mod editor_pane;
 pub mod file_tree;
 pub mod git_panel;
+pub mod modal;
 pub mod overlay;
 pub mod panel;
 pub mod status_bar;
