@@ -152,6 +152,72 @@ impl DiffHunk {
         let path_str = path_to_patch_str(path)?;
         Ok(format_patch(self, path_str, true))
     }
+
+    /// Slice this hunk to a sub-range of its lines.
+    ///
+    /// Returns a new `DiffHunk` containing `self.lines[start..end]` with
+    /// `old_start` / `new_start` / `old_count` / `new_count` recomputed so
+    /// the slice forms a self-contained unified-diff hunk that `git apply`
+    /// will accept at the correct file location.
+    ///
+    /// Pairs with [`Self::to_patch`] / [`Self::to_reverse_patch`] to enable
+    /// staging or discarding an arbitrary line range within a hunk
+    /// (VS Code-style "stage selected lines").
+    ///
+    /// # Errors
+    /// Returns an error if `start >= end` (empty range) or `end` exceeds
+    /// the line count.
+    pub fn sub_hunk(&self, start: usize, end: usize) -> Result<Self> {
+        if start >= end {
+            anyhow::bail!("sub_hunk: empty range {start}..{end}");
+        }
+        if end > self.lines.len() {
+            anyhow::bail!(
+                "sub_hunk: range {start}..{end} out of bounds for {} lines",
+                self.lines.len()
+            );
+        }
+
+        // Shift the sub-hunk's start coordinates by counting how many
+        // old/new lines the prefix [0..start] consumes from the parent.
+        let (mut old_offset, mut new_offset) = (0usize, 0usize);
+        for line in &self.lines[..start] {
+            match line.kind {
+                DiffLineKind::Context => {
+                    old_offset += 1;
+                    new_offset += 1;
+                }
+                DiffLineKind::Deletion => old_offset += 1,
+                DiffLineKind::Addition => new_offset += 1,
+            }
+        }
+
+        let lines: Vec<DiffLine> = self.lines[start..end].to_vec();
+        let (mut old_count, mut new_count) = (0usize, 0usize);
+        for line in &lines {
+            match line.kind {
+                DiffLineKind::Context => {
+                    old_count += 1;
+                    new_count += 1;
+                }
+                DiffLineKind::Deletion => old_count += 1,
+                DiffLineKind::Addition => new_count += 1,
+            }
+        }
+
+        let old_start = self.old_start + old_offset;
+        let new_start = self.new_start + new_offset;
+        let header = format!("@@ -{old_start},{old_count} +{new_start},{new_count} @@");
+
+        Ok(Self {
+            header,
+            old_start,
+            old_count,
+            new_start,
+            new_count,
+            lines,
+        })
+    }
 }
 
 /// Reject non-UTF-8 paths up front — `display()` is lossy and the
@@ -494,6 +560,183 @@ mod tests {
         assert!(!patch.contains("+added"));
         // Should be parseable.
         assert!(git2::Diff::from_buffer(patch.as_bytes()).is_ok());
+    }
+
+    /// Build a `DiffHunk` that mirrors
+    ///   @@ -10,4 +10,4 @@
+    ///    a       (context)
+    ///   -b       (deletion of old line 11)
+    ///   +B       (addition becomes new line 11)
+    ///    c       (context)
+    /// — used as a fixture by the `sub_hunk_*` tests below.
+    fn fixture_hunk() -> DiffHunk {
+        DiffHunk {
+            header: "@@ -10,3 +10,3 @@".to_owned(),
+            old_start: 10,
+            old_count: 3,
+            new_start: 10,
+            new_count: 3,
+            lines: vec![
+                DiffLine {
+                    kind: DiffLineKind::Context,
+                    content: "a\n".to_owned(),
+                    old_lineno: Some(10),
+                    new_lineno: Some(10),
+                    no_newline_eof: false,
+                },
+                DiffLine {
+                    kind: DiffLineKind::Deletion,
+                    content: "b\n".to_owned(),
+                    old_lineno: Some(11),
+                    new_lineno: None,
+                    no_newline_eof: false,
+                },
+                DiffLine {
+                    kind: DiffLineKind::Addition,
+                    content: "B\n".to_owned(),
+                    old_lineno: None,
+                    new_lineno: Some(11),
+                    no_newline_eof: false,
+                },
+                DiffLine {
+                    kind: DiffLineKind::Context,
+                    content: "c\n".to_owned(),
+                    old_lineno: Some(12),
+                    new_lineno: Some(12),
+                    no_newline_eof: false,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn sub_hunk_middle_slice_recomputes_coords() {
+        let parent = fixture_hunk();
+        // Slice [1..3] = [-b, +B] — drop both context lines.
+        let sub = parent.sub_hunk(1, 3).expect("sub_hunk");
+        assert_eq!(sub.old_start, 11, "prefix [a] consumes one old line");
+        assert_eq!(sub.new_start, 11, "prefix [a] consumes one new line");
+        assert_eq!(sub.old_count, 1);
+        assert_eq!(sub.new_count, 1);
+        assert_eq!(sub.header, "@@ -11,1 +11,1 @@");
+        assert_eq!(sub.lines.len(), 2);
+        assert_eq!(sub.lines[0].kind, DiffLineKind::Deletion);
+        assert_eq!(sub.lines[1].kind, DiffLineKind::Addition);
+    }
+
+    #[test]
+    fn sub_hunk_pure_addition_yields_zero_old_count() {
+        let parent = fixture_hunk();
+        // Slice [2..3] = [+B] alone — pure insertion.
+        let sub = parent.sub_hunk(2, 3).expect("sub_hunk");
+        assert_eq!(sub.old_count, 0, "pure addition has no old lines");
+        assert_eq!(sub.new_count, 1);
+        // Prefix [a, -b] consumes two old lines, one new line.
+        assert_eq!(sub.old_start, 12);
+        assert_eq!(sub.new_start, 11);
+        assert_eq!(sub.header, "@@ -12,0 +11,1 @@");
+    }
+
+    #[test]
+    fn sub_hunk_pure_deletion_yields_zero_new_count() {
+        let parent = fixture_hunk();
+        // Slice [1..2] = [-b] alone — pure deletion.
+        let sub = parent.sub_hunk(1, 2).expect("sub_hunk");
+        assert_eq!(sub.old_count, 1);
+        assert_eq!(sub.new_count, 0);
+        assert_eq!(sub.old_start, 11);
+        assert_eq!(sub.new_start, 11);
+        assert_eq!(sub.header, "@@ -11,1 +11,0 @@");
+    }
+
+    #[test]
+    fn sub_hunk_full_range_round_trips() {
+        let parent = fixture_hunk();
+        let sub = parent.sub_hunk(0, parent.lines.len()).expect("sub_hunk");
+        assert_eq!(sub.old_start, parent.old_start);
+        assert_eq!(sub.new_start, parent.new_start);
+        assert_eq!(sub.old_count, parent.old_count);
+        assert_eq!(sub.new_count, parent.new_count);
+        assert_eq!(sub.lines.len(), parent.lines.len());
+    }
+
+    #[test]
+    fn sub_hunk_rejects_empty_range() {
+        let parent = fixture_hunk();
+        assert!(parent.sub_hunk(1, 1).is_err());
+        assert!(parent.sub_hunk(2, 1).is_err());
+    }
+
+    #[test]
+    fn sub_hunk_rejects_out_of_bounds() {
+        let parent = fixture_hunk();
+        let n = parent.lines.len();
+        assert!(parent.sub_hunk(0, n + 1).is_err());
+    }
+
+    #[test]
+    fn sub_hunk_patch_parses_through_git2() {
+        // The whole point of recomputing coords is that the sliced hunk
+        // serializes to a patch git2::Diff::from_buffer accepts.
+        let parent = fixture_hunk();
+        for (start, end) in [(0, 4), (1, 3), (1, 2), (2, 3), (0, 1), (3, 4)] {
+            let sub = parent.sub_hunk(start, end).expect("sub_hunk");
+            let patch = sub.to_patch(Path::new("f.txt")).expect("to_patch");
+            git2::Diff::from_buffer(patch.as_bytes())
+                .unwrap_or_else(|e| panic!("range {start}..{end} did not parse: {e}\n{patch}"));
+        }
+    }
+
+    #[test]
+    fn sub_hunk_applies_partial_hunk_to_index() {
+        // End-to-end: stage one of two changes that live in a single hunk.
+        // Initial: aaa / bbb / ccc.  Modified: AAA / bbb / CCC.
+        // Both edits sit in the same hunk (context=3 default).
+        let (dir, svc) = repo_with_file("h.txt", "aaa\nbbb\nccc\n");
+        fs::write(dir.path().join("h.txt"), "AAA\nbbb\nCCC\n").unwrap();
+
+        let diff = svc.diff_file(Path::new("h.txt")).unwrap().unwrap();
+        assert_eq!(diff.hunks.len(), 1, "edits share a single hunk");
+        let hunk = &diff.hunks[0];
+
+        // The hunk has shape: -aaa +AAA  bbb -ccc +CCC.  Slice out the
+        // leading [-aaa, +AAA] pair (indices 0..2) and stage just that.
+        let leading = hunk.sub_hunk(0, 2).expect("sub_hunk leading change");
+        let patch = leading.to_patch(Path::new("h.txt")).expect("to_patch");
+        let parsed = git2::Diff::from_buffer(patch.as_bytes()).expect("git2 parses sub-hunk patch");
+        svc.repo()
+            .apply(&parsed, git2::ApplyLocation::Index, None)
+            .expect("apply leading sub-hunk to index");
+
+        // Staged diff: should contain ONLY the aaa→AAA change.
+        let staged = svc
+            .diff_staged(Path::new("h.txt"))
+            .unwrap()
+            .expect("staged diff present");
+        let staged_lines: Vec<_> = staged.hunks.iter().flat_map(|h| &h.lines).collect();
+        assert!(
+            staged_lines
+                .iter()
+                .any(|l| l.kind == DiffLineKind::Deletion && l.content.trim() == "aaa"),
+            "staged hunk should delete aaa"
+        );
+        assert!(
+            staged_lines
+                .iter()
+                .any(|l| l.kind == DiffLineKind::Addition && l.content.trim() == "AAA"),
+            "staged hunk should add AAA"
+        );
+        // The ccc→CCC change must NOT be staged.
+        assert!(
+            !staged_lines
+                .iter()
+                .any(|l| l.kind == DiffLineKind::Deletion && l.content.trim() == "ccc"),
+            "ccc→CCC change must remain unstaged"
+        );
+
+        // Workdir-vs-index diff should still show the ccc→CCC change.
+        let workdir = svc.diff_file(Path::new("h.txt")).unwrap();
+        assert!(workdir.is_some(), "trailing edit should still be unstaged");
     }
 
     #[test]
