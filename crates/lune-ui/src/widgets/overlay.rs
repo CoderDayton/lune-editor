@@ -1578,6 +1578,18 @@ pub fn render_overlay(area: Rect, buf: &mut Buffer, overlay: &mut OverlayState, 
     }
 }
 
+/// Render a 1-row dim horizontal divider at `(x, y)` of width `width`.
+///
+/// Uses ratatui's [`Block`] with [`Borders::TOP`] so the glyph (`─`) and
+/// width semantics come from the widget layer instead of a manual
+/// `"─".repeat(n)`.
+fn render_hrule(buf: &mut Buffer, x: u16, y: u16, width: u16) {
+    Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::new().dim())
+        .render(Rect::new(x, y, width, 1), buf);
+}
+
 /// Render the AI client picker overlay.
 #[allow(clippy::cast_possible_truncation)]
 fn render_ai_client_picker(
@@ -1612,9 +1624,7 @@ fn render_ai_client_picker(
 
     // Separator
     if inner.height > 1 {
-        let sep = "─".repeat(inner.width as usize);
-        Line::from(Span::from(sep).dim())
-            .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
+        render_hrule(buf, inner.x, inner.y + 1, inner.width);
     }
 
     // Entry list — or empty state
@@ -1701,8 +1711,7 @@ fn render_language_picker(
     }
 
     // Separator.
-    let sep = "─".repeat(inner.width as usize);
-    Line::from(Span::from(sep).dim()).render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
+    render_hrule(buf, inner.x, inner.y + 1, inner.width);
 
     if inner.height <= 2 {
         return;
@@ -1786,8 +1795,7 @@ fn render_theme_picker(area: Rect, buf: &mut Buffer, state: &ThemePickerState, t
     }
 
     // Separator.
-    let sep = "─".repeat(inner.width as usize);
-    Line::from(Span::from(sep).dim()).render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
+    render_hrule(buf, inner.x, inner.y + 1, inner.width);
 
     if inner.height <= 2 {
         return;
@@ -2318,9 +2326,7 @@ fn render_popup_frame(
 
     // Separator.
     if inner.height > 1 {
-        let sep = "─".repeat(inner.width as usize);
-        Line::from(Span::from(sep).dim())
-            .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
+        render_hrule(buf, inner.x, inner.y + 1, inner.width);
     }
 
     let list_start_y = inner.y + 2;

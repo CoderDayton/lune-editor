@@ -4,7 +4,7 @@
 //! highlighting, dirty indicators, and close buttons. Supports overflow
 //! with scroll indicators and mouse click handling.
 
-use crate::primitives::{Buffer, Line, Rect, Span, Stylize, Widget};
+use crate::primitives::{Buffer, Line, Rect, Span, Stylize, Widget, symbols};
 
 use lune_core::prelude::*;
 
@@ -201,7 +201,7 @@ pub fn render_tab_bar(
 
         // Separator.
         if i + 1 < tab_mgr.tabs.len() {
-            spans.push(Span::from("│").dim());
+            spans.push(Span::from(symbols::line::VERTICAL).dim());
             used_width += 1;
         }
     }

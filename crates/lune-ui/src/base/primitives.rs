@@ -35,6 +35,14 @@ pub use ratatui::widgets::{
     Block, BorderType, Borders, Clear, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs,
 };
 
+// ── Glyph constants (line/block/scrollbar etc.) ───────────────────────
+//
+// Re-exported so widgets can reference ratatui's symbol set
+// (`symbols::line::VERTICAL`, `symbols::block::FULL`, …) instead of
+// hard-coding the same characters as raw string literals.
+
+pub use ratatui_core::symbols;
+
 // ── Crossterm events ──────────────────────────────────────────────────
 
 pub use ratatui_crossterm::crossterm::event::{

@@ -5,7 +5,7 @@
 //! position and a session status header.
 
 use crate::primitives::{
-    Borders, Buffer, Color, Line, Modifier, Rect, Span, Style, Stylize, Widget,
+    Borders, Buffer, Color, Line, Modifier, Rect, Span, Style, Stylize, Widget, symbols,
 };
 
 use lune_ai::session::{AiSessionId, SessionState};
@@ -216,7 +216,8 @@ fn render_session_tabs(
         x += len;
         // Separator
         if x < area.x + area.width {
-            Line::from(Span::from("│").dim()).render(Rect::new(x, area.y, 1, 1), buf);
+            Line::from(Span::from(symbols::line::VERTICAL).dim())
+                .render(Rect::new(x, area.y, 1, 1), buf);
             x += 1;
         }
     }
@@ -364,7 +365,10 @@ fn build_tab_title_spans(
         };
         spans.push(Span::styled(label, style));
         if i + 1 < sessions.len() {
-            spans.push(Span::styled(" │ ".to_string(), Style::default().dim()));
+            spans.push(Span::styled(
+                format!(" {} ", symbols::line::VERTICAL),
+                Style::default().dim(),
+            ));
         }
     }
     spans.push(Span::from(" "));

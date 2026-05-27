@@ -3,7 +3,7 @@
 //! Renders a unified or side-by-side diff for a single file.
 //! Supports navigation between hunks and scrolling.
 
-use crate::primitives::{Buffer, Line, Modifier, Rect, Span, Style, Stylize, Widget};
+use crate::primitives::{Buffer, Line, Modifier, Rect, Span, Style, Stylize, Widget, symbols};
 
 use lune_git::diff::{DiffLineKind, FileDiff};
 
@@ -316,7 +316,8 @@ fn render_side_by_side(
         if half_width as u16 > 0 {
             let sep_x = x + half_width as u16 - 1;
             if sep_x < x + width {
-                Line::from(Span::from("│").dim()).render(Rect::new(sep_x, y, 1, 1), buf);
+                Line::from(Span::from(symbols::line::VERTICAL).dim())
+                    .render(Rect::new(sep_x, y, 1, 1), buf);
             }
         }
 

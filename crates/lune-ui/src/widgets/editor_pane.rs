@@ -9,7 +9,7 @@
 
 use crate::primitives::{
     Buffer, Line, Modifier, Rect, Scrollbar, ScrollbarOrientation, ScrollbarState, Span,
-    StatefulWidget, Style, Stylize, Widget,
+    StatefulWidget, Style, Stylize, Widget, symbols,
 };
 
 use smallvec::SmallVec;
@@ -207,10 +207,12 @@ pub const fn gutter_width(total_lines: usize) -> u16 {
 const GIT_GUTTER_WIDTH: u16 = 1;
 /// Width of the editor scrollbar column (1 character).
 const SCROLLBAR_WIDTH: u16 = 1;
-/// Minimal vertical scrollbar track symbol.
-const SCROLLBAR_TRACK: &str = "│";
-/// High-contrast scrollbar thumb symbol.
-const SCROLLBAR_THUMB: &str = "█";
+/// Minimal vertical scrollbar track symbol — taken from ratatui's
+/// [`symbols::line::VERTICAL`] preset so the glyph stays in lockstep
+/// with the rest of the widget set.
+const SCROLLBAR_TRACK: &str = symbols::line::VERTICAL;
+/// High-contrast scrollbar thumb symbol — ratatui's [`symbols::block::FULL`].
+const SCROLLBAR_THUMB: &str = symbols::block::FULL;
 
 // ── Rendering ─────────────────────────────────────────────────────────
 
@@ -439,9 +441,9 @@ fn render_git_gutter(
         return;
     };
     let (ch, color) = if marks.added.binary_search(&line).is_ok() {
-        ("│", theme.git_added)
+        (symbols::line::VERTICAL, theme.git_added)
     } else if marks.modified.binary_search(&line).is_ok() {
-        ("│", theme.git_modified)
+        (symbols::line::VERTICAL, theme.git_modified)
     } else if marks.deleted.binary_search(&line).is_ok() {
         ("▾", theme.git_deleted)
     } else {
