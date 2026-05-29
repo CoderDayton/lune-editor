@@ -100,8 +100,12 @@ pub enum AppCommand {
     OpenFilePicker,
 
     // ── Tab management ────────────────────────────────────────────
-    /// Close the active tab.
+    /// Close the active tab. Gated on unsaved changes: a dirty buffer
+    /// opens a confirmation dialog instead of closing immediately.
     CloseTab,
+    /// Close the active tab unconditionally, discarding unsaved changes
+    /// (e.g. the Vim `:q!` command).
+    ForceCloseTab,
     /// Switch to the next tab.
     NextTab,
     /// Switch to the previous tab.

@@ -104,6 +104,18 @@ fn gutter_for_render_reads_from_port_snapshot() {
     let hello = tmp.path().join("hello.txt");
     let id = state.open_file(&hello).unwrap();
 
+    // Wait for the git adapter's initial snapshot before dispatching, to avoid
+    // a race where RecomputeGutter runs before the adapter has a repo handle.
+    let reader = state.git_port().status();
+    let start = Instant::now();
+    while reader.load().revision == 0 {
+        assert!(
+            start.elapsed() <= Duration::from_secs(5),
+            "adapter never published"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
     // Dispatch gutter computation with content that differs from HEAD ("hi\n").
     state.git_port().dispatch(GitCommand::RecomputeGutter {
         buffer: id,

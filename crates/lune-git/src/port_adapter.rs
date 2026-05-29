@@ -220,10 +220,16 @@ fn worker_loop(
                     }
                     pending_refresh = true;
                 }
-                GitCommand::ApplyPatch { patch, location } => {
+                GitCommand::ApplyHunk {
+                    path,
+                    parent,
+                    sub,
+                    location,
+                    staged,
+                } => {
                     apply_mut_op(
-                        &apply_patch(&service, &patch, location),
-                        "apply patch",
+                        &apply_hunk(&service, &path, &parent, &sub, location, staged),
+                        "apply hunk",
                         &mut pending_error,
                     );
                     pending_refresh = true;
@@ -277,19 +283,25 @@ fn apply_mut_op<T>(result: &anyhow::Result<T>, label: &str, sink: &mut Option<St
     }
 }
 
-/// Dispatch a unified-diff patch to either the index or the workdir.
-fn apply_patch(service: &GitService, patch: &str, location: PatchLocation) -> anyhow::Result<()> {
-    use anyhow::Context;
-    let diff = git2::Diff::from_buffer(patch.as_bytes()).context("failed to parse hunk patch")?;
-    let loc = match location {
-        PatchLocation::Index => git2::ApplyLocation::Index,
-        PatchLocation::Workdir => git2::ApplyLocation::WorkDir,
-    };
-    service
-        .repo()
-        .apply(&diff, loc, None)
-        .context("failed to apply patch")?;
-    Ok(())
+/// Verify `parent` is still fresh against the live diff, then apply the
+/// `sub` slice. Routes to the verified `GitService` sub-hunk methods so
+/// the staleness guard cannot be bypassed — a stale patch is rejected
+/// rather than applied to the wrong lines.
+fn apply_hunk(
+    service: &GitService,
+    path: &Path,
+    parent: &lune_core::ports::HunkIdentity,
+    sub: &lune_core::ports::HunkIdentity,
+    location: PatchLocation,
+    staged: bool,
+) -> anyhow::Result<()> {
+    let parent_hunk: crate::diff::DiffHunk = parent.into();
+    let sub_hunk: crate::diff::DiffHunk = sub.into();
+    match (location, staged) {
+        (PatchLocation::Index, false) => service.stage_sub_hunk(path, &parent_hunk, &sub_hunk),
+        (PatchLocation::Index, true) => service.unstage_sub_hunk(path, &parent_hunk, &sub_hunk),
+        (PatchLocation::Workdir, _) => service.discard_sub_hunk(path, &parent_hunk, &sub_hunk),
+    }
 }
 
 fn handle_gutter(

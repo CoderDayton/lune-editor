@@ -67,6 +67,84 @@ pub enum DiffLineKind {
     Deletion,
 }
 
+// ── Conversions to/from the git-free `lune_core` carrier ────────────
+//
+// These are pure field copies — no diff/freshness logic lives here.
+// They let a `DiffHunk` cross the `GitCommand` boundary (which is
+// intentionally git2-free) as a `HunkIdentity` and be reconstructed in
+// the adapter so the existing `verify_hunk_fresh` can compare it.
+
+impl From<DiffLineKind> for lune_core::ports::HunkLineKind {
+    fn from(k: DiffLineKind) -> Self {
+        match k {
+            DiffLineKind::Context => Self::Context,
+            DiffLineKind::Addition => Self::Addition,
+            DiffLineKind::Deletion => Self::Deletion,
+        }
+    }
+}
+
+impl From<lune_core::ports::HunkLineKind> for DiffLineKind {
+    fn from(k: lune_core::ports::HunkLineKind) -> Self {
+        match k {
+            lune_core::ports::HunkLineKind::Context => Self::Context,
+            lune_core::ports::HunkLineKind::Addition => Self::Addition,
+            lune_core::ports::HunkLineKind::Deletion => Self::Deletion,
+        }
+    }
+}
+
+impl From<&DiffHunk> for lune_core::ports::HunkIdentity {
+    fn from(h: &DiffHunk) -> Self {
+        Self {
+            old_start: h.old_start,
+            old_count: h.old_count,
+            new_start: h.new_start,
+            new_count: h.new_count,
+            lines: h
+                .lines
+                .iter()
+                .map(|l| lune_core::ports::HunkLine {
+                    kind: l.kind.into(),
+                    content: l.content.clone(),
+                    no_newline_eof: l.no_newline_eof,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<&lune_core::ports::HunkIdentity> for DiffHunk {
+    fn from(h: &lune_core::ports::HunkIdentity) -> Self {
+        let header = format!(
+            "@@ -{},{} +{},{} @@",
+            h.old_start, h.old_count, h.new_start, h.new_count
+        );
+        Self {
+            header,
+            old_start: h.old_start,
+            old_count: h.old_count,
+            new_start: h.new_start,
+            new_count: h.new_count,
+            lines: h
+                .lines
+                .iter()
+                .map(|l| DiffLine {
+                    kind: l.kind.into(),
+                    content: l.content.clone(),
+                    // `old_lineno`/`new_lineno` are not part of the
+                    // freshness identity (`hunks_equivalent` ignores
+                    // them) nor used by `to_patch`, so reconstruct as
+                    // `None`.
+                    old_lineno: None,
+                    new_lineno: None,
+                    no_newline_eof: l.no_newline_eof,
+                })
+                .collect(),
+        }
+    }
+}
+
 impl GitService {
     /// Compute the diff for a single file between the working tree and HEAD.
     #[inline]

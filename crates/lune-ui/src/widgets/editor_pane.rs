@@ -25,7 +25,7 @@ use crate::highlight::theme::SyntaxTheme;
 use crate::theme::Theme;
 use crate::vim::VimMode;
 
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 // ── Unicode display-width helpers ─────────────────────────────────────
 //
@@ -63,6 +63,29 @@ fn chars_to_display_cols(s: &str, char_col: usize) -> usize {
     }
     // `char_col` past EOL — pad with single-cell virtual columns.
     cells + (char_col - chars_seen)
+}
+
+/// Char column reached by consuming at most `width_cells` display cells
+/// starting from char column `start`.
+///
+/// Mirrors [`char_window`]'s cell-budget walk but returns the end char
+/// column instead of a `&str` slice — the unit `Position::col` /
+/// `ViewportState::left_col` are expressed in. Chars beyond EOL count as
+/// one cell each (matching the buffer's virtual-column convention), so for
+/// pure-ASCII text this returns exactly `start + width_cells`.
+fn cols_within_cells(s: &str, start: usize, width_cells: usize) -> usize {
+    let mut acc = 0usize;
+    let mut col = start;
+    for ch in s.chars().skip(start) {
+        let w = char_cell_width(ch);
+        if acc + w > width_cells {
+            return col;
+        }
+        acc += w;
+        col += 1;
+    }
+    // Past EOL — each virtual column is one cell wide.
+    col + (width_cells - acc)
 }
 
 // ── Viewport state ────────────────────────────────────────────────────
@@ -154,6 +177,7 @@ impl ViewportState {
         &mut self,
         cursor_line: usize,
         cursor_col: usize,
+        cursor_line_text: &str,
         height: usize,
         width: usize,
     ) {
@@ -168,14 +192,55 @@ impl ViewportState {
                 cursor_line.saturating_sub(height.saturating_sub(scroll_margin).saturating_sub(1));
         }
 
-        // Horizontal scrolling.
+        // Horizontal scrolling. `width` is a cell budget but `left_col` /
+        // `cursor_col` are CHAR columns, so the right-edge threshold and
+        // scroll target are derived from the cell budget via the same
+        // per-char width walk used at render time. For pure-ASCII lines
+        // (char == cell everywhere) this reduces to the original
+        // char-arithmetic and leaves behavior identical.
         let h_margin = 5.min(width / 4);
 
         if cursor_col < self.left_col + h_margin {
             self.left_col = cursor_col.saturating_sub(h_margin);
-        } else if cursor_col >= self.left_col + width.saturating_sub(h_margin) {
-            self.left_col =
-                cursor_col.saturating_sub(width.saturating_sub(h_margin).saturating_sub(1));
+        } else {
+            // Char column one cell past the rightmost visible margin from
+            // the current left edge; the cursor scrolls into view once it
+            // reaches it.
+            let right_threshold = cols_within_cells(
+                cursor_line_text,
+                self.left_col,
+                width.saturating_sub(h_margin),
+            );
+            if cursor_col >= right_threshold {
+                // Pull `left_col` rightward until the cursor sits within the
+                // last `width - h_margin - 1` cells, walking char widths back
+                // from the cursor so wide chars are accounted for.
+                let budget = width.saturating_sub(h_margin).saturating_sub(1);
+                let mut acc = 0usize;
+                let mut col = cursor_col;
+                // Account for any virtual columns past EOL first (one cell
+                // each), then walk real chars back from the line end.
+                let line_chars = cursor_line_text.chars().count();
+                while col > line_chars && acc < budget {
+                    acc += 1;
+                    col -= 1;
+                }
+                if col <= line_chars {
+                    // `Take<Chars>` is not a DoubleEndedIterator, so the prefix
+                    // must be collected before it can be walked in reverse.
+                    #[allow(clippy::needless_collect)]
+                    let prefix: Vec<char> = cursor_line_text.chars().take(col).collect();
+                    for ch in prefix.into_iter().rev() {
+                        let w = char_cell_width(ch).max(1);
+                        if acc + w > budget {
+                            break;
+                        }
+                        acc += w;
+                        col -= 1;
+                    }
+                }
+                self.left_col = col;
+            }
         }
     }
 
@@ -278,7 +343,19 @@ pub fn render_editor_pane(
     // Keep viewport snapped to cursor only when requested by the caller.
     let cursor = &text_buf.cursor.primary.head;
     if follow_cursor {
-        viewport.scroll_to_cursor(cursor.line, cursor.col, viewport_height, content_width);
+        // Horizontal scroll math is cell-aware, so the cursor's line text is
+        // needed to map the cell budget onto char columns.
+        let cursor_line_text = text_buf.line(cursor.line).unwrap_or_default();
+        let cursor_line_text = cursor_line_text
+            .trim_end_matches('\n')
+            .trim_end_matches('\r');
+        viewport.scroll_to_cursor(
+            cursor.line,
+            cursor.col,
+            cursor_line_text,
+            viewport_height,
+            content_width,
+        );
     }
 
     // Prepare the line cache: re-fetches only if revision or viewport changed.
@@ -741,7 +818,11 @@ fn build_styled_line<'a>(
     spans: &[StyledSpan],
     theme: &SyntaxTheme,
 ) -> Vec<Span<'a>> {
-    let right_col = left_col + width;
+    // `width` is a cell budget; `right_col` must be a CHAR column. Walk
+    // per-char display widths from `left_col` until the budget is spent —
+    // mirrors `char_window`/`cols_within_cells` so wide chars don't make
+    // spans over-extend past the visible viewport edge.
+    let right_col = cols_within_cells(line_text, left_col, width);
 
     // Build a char→byte offset lookup from char_indices, avoiding Vec<char> allocation.
     // PERF: SmallVec<128> avoids heap allocation for lines ≤ 127 chars (~90% of code).
@@ -1169,7 +1250,7 @@ fn render_welcome(area: Rect, buf: &mut Buffer, theme: &Theme, info: Option<&Wel
     // ── Tagline + version ───────────────────────────────────────
     let tagline = format!("a minimal terminal editor · v{}", env!("CARGO_PKG_VERSION"));
     let tagline_y = start_y + BANNER_HEIGHT + 1;
-    let tagline_w = tagline.chars().count() as u16;
+    let tagline_w = UnicodeWidthStr::width(tagline.as_str()) as u16;
     let tagline_x = area.x + area.width.saturating_sub(tagline_w) / 2;
     Line::from(Span::styled(tagline, Style::new().fg(theme.fg_muted)))
         .render(Rect::new(tagline_x, tagline_y, tagline_w, 1), buf);
@@ -1208,7 +1289,7 @@ fn render_welcome(area: Rect, buf: &mut Buffer, theme: &Theme, info: Option<&Wel
         let tip_text = format!("tip · {tip}");
         let max_tip_w = area.width.saturating_sub(4);
         let tip_text = truncate_to_cells(&tip_text, max_tip_w as usize);
-        let tip_w = tip_text.chars().count() as u16;
+        let tip_w = UnicodeWidthStr::width(tip_text.as_str()) as u16;
         let tip_y = panel_y + panel_height + 1;
         let tip_x = area.x + area.width.saturating_sub(tip_w) / 2;
         Line::from(Span::styled(
@@ -1282,8 +1363,10 @@ fn render_shortcuts_panel(area: Rect, buf: &mut Buffer, theme: &Theme) {
         if inner.width < key_col_w + 1 {
             continue;
         }
-        Line::from(Span::styled(*k, key_style))
-            .render(Rect::new(inner.x + 1, y, k.chars().count() as u16, 1), buf);
+        Line::from(Span::styled(*k, key_style)).render(
+            Rect::new(inner.x + 1, y, UnicodeWidthStr::width(*k) as u16, 1),
+            buf,
+        );
         let v_x = inner.x + 1 + key_col_w;
         let v_w = inner.width.saturating_sub(2 + key_col_w);
         let v_trunc = truncate_to_cells(v, v_w as usize);
@@ -1673,6 +1756,45 @@ mod tests {
     }
 
     #[test]
+    fn cols_within_cells_ascii_is_start_plus_width() {
+        // ASCII: char == cell everywhere, so the end column is exactly
+        // `start + width_cells` — matching the pre-fix `left_col + width`.
+        assert_eq!(cols_within_cells("hello world", 0, 5), 5);
+        assert_eq!(cols_within_cells("hello world", 6, 5), 11);
+        // Past EOL pads single-cell virtual columns.
+        assert_eq!(cols_within_cells("ab", 0, 5), 5);
+    }
+
+    #[test]
+    fn cols_within_cells_drops_overflowing_wide_char() {
+        // a(1)+b(1)+你(2) = 4 cells; 'c' would push to 5 > 4, so the end
+        // column stops at 3 instead of the naive `start + width` = 4.
+        assert_eq!(cols_within_cells("ab你cd", 0, 4), 3);
+        // 5 cells fits through the wide char.
+        assert_eq!(cols_within_cells("ab你cd", 0, 5), 4);
+    }
+
+    #[test]
+    fn build_styled_line_clips_wide_char_at_right_edge() {
+        use lune_core::highlight::HighlightStyle;
+
+        // Line: a(1) b(1) 你(2) c(1) d(1).  A 4-cell viewport from col 0
+        // fits "ab你" (4 cells); 'c' would overflow.  The pre-fix code used
+        // right_col = left_col + width = 4 (chars), which would have emitted
+        // char 'c' too, bleeding a styled cell past the visible edge.
+        let line = "ab你cd";
+        let theme = SyntaxTheme::default();
+        // One span covering the whole line.
+        let spans = [StyledSpan::new(0, 5, HighlightStyle::Keyword)];
+
+        let result = build_styled_line(line, 0, 4, &spans, &theme);
+        let rendered: String = result.iter().map(|s| s.content.as_ref()).collect();
+
+        // Only the chars that fit within the 4-cell budget are emitted.
+        assert_eq!(rendered, "ab你");
+    }
+
+    #[test]
     fn cursor_screen_col_ascii() {
         assert_eq!(cursor_screen_col("hello", 3, 0), Some(3));
         assert_eq!(cursor_screen_col("hello", 3, 1), Some(2));
@@ -1805,7 +1927,7 @@ mod tests {
     fn viewport_scroll_to_cursor_vertical() {
         let mut vp = ViewportState::default();
         // viewport height 20, cursor at line 25 => should scroll down.
-        vp.scroll_to_cursor(25, 0, 20, 80);
+        vp.scroll_to_cursor(25, 0, "", 20, 80);
         assert!(vp.top_line > 0);
         assert!(25 >= vp.top_line && 25 < vp.top_line + 20);
     }
@@ -1814,7 +1936,7 @@ mod tests {
     fn viewport_scroll_to_cursor_horizontal() {
         let mut vp = ViewportState::default();
         // content width 80, cursor at col 100 => should scroll right.
-        vp.scroll_to_cursor(0, 100, 20, 80);
+        vp.scroll_to_cursor(0, 100, &"x".repeat(200), 20, 80);
         assert!(vp.left_col > 0);
         assert!(100 >= vp.left_col && 100 < vp.left_col + 80);
     }

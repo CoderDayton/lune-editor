@@ -18,6 +18,7 @@ use crate::primitives::KeyModifiers;
 use crate::primitives::{Buffer, KeyCode, KeyEvent, Line, Modifier, Rect, Span, Style, Widget};
 use crate::theme::Theme;
 use crate::widgets::modal::{Modal, ModalState};
+use unicode_width::UnicodeWidthStr;
 
 /// Outcome of a confirm dialog interaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,7 +160,7 @@ impl ConfirmDialogState {
         // Size the modal to fit the message (clamped). 4 inner rows is
         // the minimum: message + blank + buttons + blank padding row
         // at top, plus we add a row for the title border.
-        let msg_w = self.message.chars().count() as u16;
+        let msg_w = UnicodeWidthStr::width(self.message.as_str()) as u16;
         let want_w = msg_w.max(self.button_row_width()).saturating_add(6);
         let want_w = want_w.max(40).min(area.width.saturating_sub(2));
         let want_h: u16 = 7;

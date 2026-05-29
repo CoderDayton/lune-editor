@@ -85,13 +85,15 @@ impl Highlighter for RegexHighlighter {
         let old_count = self.lines.len();
 
         if new_count == old_count {
-            // Same line count: only replace lines whose content changed.
-            // This avoids re-allocating Strings for unchanged lines (the
-            // common case during single-line edits).
+            // Same line count: only replace lines whose content changed and
+            // re-highlight just those lines. This avoids re-allocating
+            // Strings and re-running every regex rule over every line on
+            // each keystroke (the common case during single-line edits).
             for i in 0..new_count {
                 let new_line = buffer.line(i).unwrap_or_default();
                 if self.lines[i] != new_line {
                     self.lines[i] = new_line;
+                    self.cached[i] = self.build_cached_line(i);
                 }
             }
         } else {
@@ -101,14 +103,14 @@ impl Highlighter for RegexHighlighter {
             for i in 0..new_count {
                 self.lines.push(buffer.line(i).unwrap_or_default());
             }
-        }
 
-        // Rebuild the entire highlight cache in lock-step with `lines`
-        // so `highlight_lines` is a cheap slice on every frame.
-        self.cached.clear();
-        self.cached.reserve(self.lines.len());
-        for i in 0..self.lines.len() {
-            self.cached.push(self.build_cached_line(i));
+            // Rebuild the entire highlight cache in lock-step with `lines`
+            // so `highlight_lines` is a cheap slice on every frame.
+            self.cached.clear();
+            self.cached.reserve(self.lines.len());
+            for i in 0..self.lines.len() {
+                self.cached.push(self.build_cached_line(i));
+            }
         }
     }
 
@@ -158,7 +160,7 @@ fn markdown_rules() -> Vec<Rule> {
     vec![
         rule(r"^#{1,6}\s.*", HighlightStyle::Keyword),
         rule(r"`[^`]+`", HighlightStyle::String),
-        rule(r"```[\s\S]*?```", HighlightStyle::String),
+        rule(r"^\s*```[\w-]*\s*$", HighlightStyle::String),
         rule(r"\*\*[^*]+\*\*", HighlightStyle::Keyword),
         rule(r"\*[^*]+\*", HighlightStyle::Attribute),
         rule(r"\[([^\]]+)\]\([^)]+\)", HighlightStyle::Function),
@@ -276,6 +278,58 @@ mod tests {
                 .iter()
                 .any(|s| s.style == HighlightStyle::String)
         );
+    }
+
+    #[test]
+    fn markdown_fence_line_gets_styled() {
+        let buf = TextBuffer::from_text("```rust\nlet x = 1;\n```\n");
+        let mut hl = RegexHighlighter::for_language(lang::MARKDOWN).unwrap();
+        hl.update(&buf, None);
+
+        let result = hl.highlight_lines(0..3);
+        // Opening fence line carries a non-default style.
+        assert!(!result[0].is_plain());
+        assert!(
+            result[0]
+                .spans
+                .iter()
+                .any(|s| s.style == HighlightStyle::String)
+        );
+        // Closing fence line too.
+        assert!(
+            result[2]
+                .spans
+                .iter()
+                .any(|s| s.style == HighlightStyle::String)
+        );
+    }
+
+    #[test]
+    fn update_single_line_change_leaves_others_intact() {
+        let buf = TextBuffer::from_text("# title\nplain text\nmore text\n");
+        let mut hl = RegexHighlighter::for_language(lang::MARKDOWN).unwrap();
+        hl.update(&buf, None);
+
+        // Snapshot the spans of all lines before the edit.
+        let before: Vec<Vec<StyledSpan>> = hl
+            .highlight_lines(0..3)
+            .iter()
+            .map(|l| l.spans.to_vec())
+            .collect();
+
+        // Change only line 1; line count stays the same.
+        let buf2 = TextBuffer::from_text("# title\nedited text\nmore text\n");
+        hl.update(&buf2, Some((1, 1)));
+
+        let after: Vec<Vec<StyledSpan>> = hl
+            .highlight_lines(0..3)
+            .iter()
+            .map(|l| l.spans.to_vec())
+            .collect();
+
+        // Lines 0 and 2 are byte-identical; only line 1 may differ.
+        assert_eq!(before[0], after[0]);
+        assert_eq!(before[2], after[2]);
     }
 
     #[test]

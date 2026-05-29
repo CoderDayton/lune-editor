@@ -103,6 +103,71 @@ impl GitService {
         Ok(())
     }
 
+    /// Stage a sub-hunk (a `sub_hunk` slice of `parent`) after verifying
+    /// `parent` is still fresh against the live working-tree diff.
+    ///
+    /// The freshness check is on `parent` (the full live hunk the slice
+    /// was derived from), not `sub`: `sub`'s shrunken coordinates never
+    /// appear verbatim in the diff. For a full-hunk stage pass the same
+    /// hunk as both `parent` and `sub`.
+    ///
+    /// Without this guard a stale `sub` patch could stage the wrong
+    /// lines if the file changed since the snapshot, corrupting content.
+    pub fn stage_sub_hunk(
+        &self,
+        rel_path: &Path,
+        parent: &crate::diff::DiffHunk,
+        sub: &crate::diff::DiffHunk,
+    ) -> Result<()> {
+        self.verify_hunk_fresh(rel_path, parent, false)?;
+        let patch = sub.to_patch(rel_path)?;
+        let diff =
+            git2::Diff::from_buffer(patch.as_bytes()).context("failed to parse sub-hunk patch")?;
+        self.repo()
+            .apply(&diff, git2::ApplyLocation::Index, None)
+            .context("failed to apply sub-hunk to index")?;
+        Ok(())
+    }
+
+    /// Unstage a sub-hunk after verifying `parent` is still fresh against
+    /// the live staged (index-vs-HEAD) diff. See [`Self::stage_sub_hunk`].
+    pub fn unstage_sub_hunk(
+        &self,
+        rel_path: &Path,
+        parent: &crate::diff::DiffHunk,
+        sub: &crate::diff::DiffHunk,
+    ) -> Result<()> {
+        self.verify_hunk_fresh(rel_path, parent, true)?;
+        let patch = sub.to_reverse_patch(rel_path)?;
+        let diff = git2::Diff::from_buffer(patch.as_bytes())
+            .context("failed to parse reverse sub-hunk patch")?;
+        self.repo()
+            .apply(&diff, git2::ApplyLocation::Index, None)
+            .context("failed to apply reverse sub-hunk to index")?;
+        Ok(())
+    }
+
+    /// Discard a sub-hunk from the working tree after verifying `parent`
+    /// is still fresh against the live workdir diff.
+    ///
+    /// **Destructive** — caller should confirm with user before calling.
+    /// See [`Self::stage_sub_hunk`].
+    pub fn discard_sub_hunk(
+        &self,
+        rel_path: &Path,
+        parent: &crate::diff::DiffHunk,
+        sub: &crate::diff::DiffHunk,
+    ) -> Result<()> {
+        self.verify_hunk_fresh(rel_path, parent, false)?;
+        let patch = sub.to_reverse_patch(rel_path)?;
+        let diff = git2::Diff::from_buffer(patch.as_bytes())
+            .context("failed to parse reverse sub-hunk patch")?;
+        self.repo()
+            .apply(&diff, git2::ApplyLocation::WorkDir, None)
+            .context("failed to apply reverse sub-hunk to workdir")?;
+        Ok(())
+    }
+
     /// Verify that `hunk` is still byte-identical to the corresponding
     /// live diff hunk for `rel_path` before applying it.
     ///
@@ -359,6 +424,84 @@ mod tests {
         assert!(
             err.to_string().contains("different content"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn stage_sub_hunk_applies_partial_when_fresh() {
+        // Two edits in one hunk: aaa→AAA and ccc→CCC. Slice out the
+        // leading [-aaa,+AAA] pair and stage only that via the verified
+        // path. The parent (full hunk) is fresh, so it must succeed and
+        // stage ONLY the leading change.
+        let (dir, svc) = repo_with_file("h.txt", "aaa\nbbb\nccc\n");
+        fs::write(dir.path().join("h.txt"), "AAA\nbbb\nCCC\n").unwrap();
+
+        let diff = svc.diff_file(Path::new("h.txt")).unwrap().unwrap();
+        assert_eq!(diff.hunks.len(), 1, "edits share a single hunk");
+        let parent = diff.hunks[0].clone();
+        let sub = parent.sub_hunk(0, 2).expect("leading slice");
+
+        svc.stage_sub_hunk(Path::new("h.txt"), &parent, &sub)
+            .expect("fresh parent → sub-hunk stages");
+
+        let staged = svc
+            .diff_staged(Path::new("h.txt"))
+            .unwrap()
+            .expect("staged diff present");
+        let staged_lines: Vec<_> = staged.hunks.iter().flat_map(|h| &h.lines).collect();
+        assert!(
+            staged_lines
+                .iter()
+                .any(|l| l.kind == crate::diff::DiffLineKind::Addition
+                    && l.content.trim() == "AAA"),
+            "leading change should be staged"
+        );
+        assert!(
+            !staged_lines
+                .iter()
+                .any(|l| l.kind == crate::diff::DiffLineKind::Deletion
+                    && l.content.trim() == "ccc"),
+            "trailing ccc→CCC change must remain unstaged"
+        );
+    }
+
+    #[test]
+    fn stage_sub_hunk_rejects_stale_parent() {
+        // Snapshot a hunk + sub-slice, then mutate the working tree so
+        // the live hunk has the same header coordinates but different
+        // content. The verified sub-hunk path must REJECT the stale
+        // parent rather than apply the slice to the wrong lines.
+        let (dir, svc) = repo_with_file("h.txt", "alpha\nbeta\ngamma\n");
+        fs::write(dir.path().join("h.txt"), "alpha\nbravo\ngamma\n").unwrap();
+
+        let stale_diff = svc.diff_file(Path::new("h.txt")).unwrap().unwrap();
+        assert_eq!(stale_diff.hunks.len(), 1);
+        let stale_parent = stale_diff.hunks[0].clone();
+        let stale_sub = stale_parent
+            .sub_hunk(0, stale_parent.lines.len())
+            .expect("full slice");
+
+        // Working tree drifts: same shape, different replacement line.
+        fs::write(dir.path().join("h.txt"), "alpha\ndelta\ngamma\n").unwrap();
+        let fresh = svc.diff_file(Path::new("h.txt")).unwrap().unwrap();
+        assert_eq!(fresh.hunks[0].old_start, stale_parent.old_start);
+        assert_eq!(fresh.hunks[0].old_count, stale_parent.old_count);
+        assert_eq!(fresh.hunks[0].new_start, stale_parent.new_start);
+        assert_eq!(fresh.hunks[0].new_count, stale_parent.new_count);
+
+        let err = svc
+            .stage_sub_hunk(Path::new("h.txt"), &stale_parent, &stale_sub)
+            .expect_err("stale parent must be rejected");
+        assert!(
+            err.to_string().contains("different content"),
+            "unexpected error: {err}"
+        );
+
+        // The index must be untouched — nothing staged.
+        let staged = svc.diff_staged(Path::new("h.txt")).unwrap();
+        assert!(
+            staged.is_none(),
+            "rejected op must not have staged anything"
         );
     }
 

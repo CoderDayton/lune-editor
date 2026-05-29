@@ -282,6 +282,12 @@ pub struct AppState {
     /// Opened by [`AppCommand::Quit`] when dirty buffers exist;
     /// Confirm emits [`AppCommand::ForceQuit`], Cancel just closes.
     pub quit_confirm: ConfirmDialogState,
+    /// "Discard unsaved changes?" confirmation for closing a single
+    /// dirty tab. Opened by [`AppCommand::CloseTab`], the tab close
+    /// button, and `Ctrl+W`; Confirm closes [`Self::pending_close`].
+    pub close_confirm: ConfirmDialogState,
+    /// Buffer awaiting a decision while [`Self::close_confirm`] is open.
+    pending_close: Option<BufferId>,
     /// Timestamp of the last successful state-db save (for debounce).
     last_state_save: Instant,
 
@@ -435,6 +441,14 @@ impl AppState {
             .confirm_label("Discard & quit")
             .cancel_label("Keep editing")
             .destructive(true),
+            close_confirm: ConfirmDialogState::new(
+                "Discard unsaved changes?",
+                "This buffer has unsaved edits.",
+            )
+            .confirm_label("Discard & close")
+            .cancel_label("Keep editing")
+            .destructive(true),
+            pending_close: None,
             last_state_save: Instant::now(),
             last_scroll_render: Instant::now(),
             viewport_scroll_target: None,
@@ -941,6 +955,19 @@ impl AppState {
                 Some((path, buf.text()))
             })
             .collect()
+    }
+
+    /// True if any open buffer has unsaved edits, regardless of whether
+    /// it has a file path yet. Unlike [`Self::collect_dirty_buffers`]
+    /// this includes unnamed scratch buffers, so the quit/close guards
+    /// never silently discard a dirty buffer that was never saved.
+    #[must_use]
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.session
+            .tabs
+            .iter()
+            .filter_map(|&id| self.session.registry.get(id))
+            .any(TextBuffer::is_dirty)
     }
 
     /// Persist undo/redo history for all open buffers to the state DB.
@@ -1611,6 +1638,7 @@ pub fn render(
     // The quit confirmation modal sits above all other overlays so
     // backdrop dimming covers them too.
     state.quit_confirm.render(area, buf, &state.theme);
+    state.close_confirm.render(area, buf, &state.theme);
 
     Ok(())
 }
@@ -1938,6 +1966,36 @@ const fn point_in_rect(col: u16, row: u16, r: Rect) -> bool {
 }
 
 /// Close a specific tab by buffer ID (used by mouse click and keyboard).
+/// Close the active tab, deferring to the discard-confirmation dialog
+/// when its buffer has unsaved edits. See [`request_close_tab`].
+fn request_close_active_tab(state: &mut AppState) -> Control<AppEvent> {
+    state
+        .session
+        .active_buffer
+        .map_or(Control::Changed, |bid| request_close_tab(state, bid))
+}
+
+/// Close the tab backing `bid`. A dirty buffer defers the close behind
+/// the [`AppState::close_confirm`] dialog (recording `bid` in
+/// [`AppState::pending_close`]); a clean buffer closes immediately. This
+/// is the single chokepoint that prevents silent loss of unsaved edits
+/// for every interactive close path (`:q`, `Ctrl+W`, the tab ✕ button).
+fn request_close_tab(state: &mut AppState, bid: BufferId) -> Control<AppEvent> {
+    let dirty = state
+        .session
+        .registry
+        .get(bid)
+        .is_some_and(TextBuffer::is_dirty);
+    if dirty {
+        state.pending_close = Some(bid);
+        state.close_confirm.open();
+    } else {
+        close_tab_by_id(state, bid);
+        state.viewport_follow_cursor = true;
+    }
+    Control::Changed
+}
+
 fn close_tab_by_id(state: &mut AppState, bid: BufferId) {
     if let Some(idx) = state.session.tabs.iter().position(|&id| id == bid) {
         state.session.tabs.remove(idx);
@@ -2195,15 +2253,16 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
 
     match cmd {
         AppCommand::Quit => {
-            if state.collect_dirty_buffers().is_empty() {
-                Control::Quit
-            } else {
+            if state.has_unsaved_changes() {
                 state.quit_confirm.open();
                 Control::Changed
+            } else {
+                Control::Quit
             }
         }
         AppCommand::ForceQuit => Control::Quit,
-        AppCommand::CloseTab => {
+        AppCommand::CloseTab => request_close_active_tab(state),
+        AppCommand::ForceCloseTab => {
             state.close_active_tab();
             state.viewport_follow_cursor = true;
             Control::Changed
@@ -3029,6 +3088,64 @@ mod tests {
         let (mut state, _files) = state_with_tabs(2);
         let _ = handle_command(&AppCommand::CloseTab, &mut state);
         assert_eq!(state.session.tabs.len(), 1);
+    }
+
+    #[test]
+    fn command_close_tab_with_dirty_buffer_defers_to_confirm() {
+        let (mut state, _tmp) = state_with_file();
+        if let Some(buf) = state.active_buf_mut() {
+            buf.insert(Position::new(0, 0), "x");
+        }
+        let before = state.session.tabs.len();
+        let result = handle_command(&AppCommand::CloseTab, &mut state);
+        assert!(matches!(result, Control::Changed));
+        assert!(
+            state.close_confirm.is_open(),
+            "closing a dirty tab must open the discard confirmation"
+        );
+        assert_eq!(
+            state.session.tabs.len(),
+            before,
+            "the tab must not close until the user confirms"
+        );
+    }
+
+    #[test]
+    fn command_force_close_tab_discards_dirty_buffer() {
+        let (mut state, _tmp) = state_with_file();
+        if let Some(buf) = state.active_buf_mut() {
+            buf.insert(Position::new(0, 0), "x");
+        }
+        let before = state.session.tabs.len();
+        let result = handle_command(&AppCommand::ForceCloseTab, &mut state);
+        assert!(matches!(result, Control::Changed));
+        assert_eq!(state.session.tabs.len(), before - 1);
+        assert!(!state.close_confirm.is_open());
+    }
+
+    #[test]
+    fn quit_guard_includes_dirty_scratch_buffer() {
+        // Regression: a dirty unnamed scratch buffer (no file path) must
+        // still gate quit. The old path-based `collect_dirty_buffers`
+        // missed it, silently discarding the edits on quit.
+        let mut state = state_with_scratch_buffer();
+        if let Some(buf) = state.active_buf_mut() {
+            buf.insert(Position::new(0, 0), "scratch edit");
+        }
+        assert!(
+            state.collect_dirty_buffers().is_empty(),
+            "scratch buffer has no path, so the path-based collector misses it"
+        );
+        assert!(
+            state.has_unsaved_changes(),
+            "the path-independent guard must see the dirty scratch buffer"
+        );
+        let result = handle_command(&AppCommand::Quit, &mut state);
+        assert!(matches!(result, Control::Changed));
+        assert!(
+            state.quit_confirm.is_open(),
+            "a dirty scratch buffer must gate quit behind the confirm dialog"
+        );
     }
 
     #[test]

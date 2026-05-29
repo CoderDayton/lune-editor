@@ -70,10 +70,13 @@ fn handle_key_hints_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEven
             Control::Changed
         }
         KeyCode::Backspace => {
-            state.overlay.key_hints.pop_filter();
-            Control::Changed
+            if state.overlay.key_hints.pop_filter() {
+                Control::Changed
+            } else {
+                Control::Continue
+            }
         }
-        KeyCode::Char(ch) => {
+        KeyCode::Char(ch) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {
             state.overlay.key_hints.push_filter(ch);
             Control::Changed
         }
@@ -669,6 +672,32 @@ mod tests {
         );
         assert!(matches!(r, Control::Changed));
         assert_eq!(state.overlay.key_hints.filter, "sav");
+    }
+
+    #[test]
+    fn key_hints_modified_char_does_not_filter() {
+        let mut state = key_hints_state();
+
+        let r = handle_key_hints_key(
+            &KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+            &mut state,
+        );
+        assert!(
+            matches!(r, Control::Continue),
+            "Ctrl+char must fall through"
+        );
+        assert_eq!(state.overlay.key_hints.filter, "");
+    }
+
+    #[test]
+    fn key_hints_backspace_on_empty_filter_continues() {
+        let mut state = key_hints_state();
+
+        let r = handle_key_hints_key(
+            &KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            &mut state,
+        );
+        assert!(matches!(r, Control::Continue));
     }
 
     // ── Markdown preview overlay ───────────────────────────────────

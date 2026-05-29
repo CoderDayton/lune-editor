@@ -148,7 +148,9 @@ pub fn blend(from: Color, to: Color, t: f32) -> Color {
         return from;
     };
     let Some(c_to) = to_coolor(to) else {
-        return to;
+        // `to` has no concrete RGB (e.g. `Color::Reset`); blending toward
+        // nothing would erase the source, so keep `from` visible instead.
+        return from;
     };
     from_coolor(CoolColor::blend(c_from, 1.0 - t, c_to, t))
 }
@@ -203,7 +205,7 @@ pub fn relative_luminance(color: Color) -> Option<f32> {
     let (r, g, b) = to_rgb_u8(color)?;
     let linearize = |c: u8| -> f32 {
         let c = f32::from(c) / 255.0;
-        if c <= 0.039_28 {
+        if c <= 0.040_45 {
             c / 12.92
         } else {
             ((c + 0.055) / 1.055).powf(2.4)
@@ -370,7 +372,7 @@ mod tests {
     #[test]
     fn blend_handles_reset_gracefully() {
         assert_eq!(blend(Color::Reset, Color::Red, 0.5), Color::Reset);
-        assert_eq!(blend(Color::Red, Color::Reset, 0.5), Color::Reset);
+        assert_eq!(blend(Color::Red, Color::Reset, 0.5), Color::Red);
     }
 
     #[test]

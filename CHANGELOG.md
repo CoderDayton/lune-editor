@@ -18,6 +18,11 @@ All notable changes to Lune Editor are documented here.
 ### Changed
 - Git panel now exposes per-hunk diff view with stage/discard actions
 - Notification system now auto-dismisses with visual vitality decay
+- Theme colors: bare hex must now be the full 6-digit form; the 3-digit
+  shorthand requires an explicit `#` prefix (`#abc`), so short words made
+  of hex digits (`add`, `dad`) are no longer misread as colors
+- Markdown highlighting: fenced code blocks now style the ``` delimiter
+  lines rather than the whole block body
 
 ## [0.1.0] — Initial release
 

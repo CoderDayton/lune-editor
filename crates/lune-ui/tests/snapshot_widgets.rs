@@ -684,7 +684,20 @@ fn snapshot_overlay_key_hints() {
     overlay.open_key_hints();
 
     render_overlay(area, &mut buf, &mut overlay, &theme);
-    insta::assert_snapshot!("overlay_key_hints", buffer_to_text(&buf));
+    let text = buffer_to_text(&buf);
+    assert!(
+        text.contains("Keybindings"),
+        "key hints overlay must show 'Keybindings' title"
+    );
+    assert!(
+        text.contains("Ctrl+S"),
+        "key hints overlay must show Ctrl+S binding"
+    );
+    assert!(
+        text.contains("Save"),
+        "key hints overlay must show 'Save' label"
+    );
+    insta::assert_snapshot!("overlay_key_hints", text);
 }
 
 #[test]
@@ -700,7 +713,16 @@ fn snapshot_overlay_key_hints_filtered() {
     }
 
     render_overlay(area, &mut buf, &mut overlay, &theme);
-    insta::assert_snapshot!("overlay_key_hints_filtered", buffer_to_text(&buf));
+    let text = buffer_to_text(&buf);
+    assert!(
+        text.contains("filter: save"),
+        "filtered key hints must show filter query in title"
+    );
+    assert!(
+        text.contains("Save all"),
+        "filtered key hints must include 'Save all' match"
+    );
+    insta::assert_snapshot!("overlay_key_hints_filtered", text);
 }
 
 #[test]
@@ -717,7 +739,20 @@ fn snapshot_overlay_markdown_preview() {
     );
 
     render_overlay(area, &mut buf, &mut overlay, &theme);
-    insta::assert_snapshot!("overlay_markdown_preview", buffer_to_text(&buf));
+    let text = buffer_to_text(&buf);
+    assert!(
+        text.contains("README.md (preview)"),
+        "markdown preview must show filename in title"
+    );
+    assert!(
+        text.contains("# Title"),
+        "markdown preview must render the heading"
+    );
+    assert!(
+        text.contains("- one"),
+        "markdown preview must render list items"
+    );
+    insta::assert_snapshot!("overlay_markdown_preview", text);
 }
 
 #[test]
@@ -735,7 +770,16 @@ fn snapshot_overlay_image_loading() {
     overlay.active = Some(lune_ui::widgets::overlay::OverlayKind::ImagePreview);
 
     render_overlay(area, &mut buf, &mut overlay, &theme);
-    insta::assert_snapshot!("overlay_image_loading", buffer_to_text(&buf));
+    let text = buffer_to_text(&buf);
+    assert!(
+        text.contains("lune-loading.png"),
+        "image loading overlay must show filename in title"
+    );
+    assert!(
+        text.contains("Decoding"),
+        "image loading overlay must show decoding status"
+    );
+    insta::assert_snapshot!("overlay_image_loading", text);
 }
 
 #[test]
@@ -752,7 +796,20 @@ fn snapshot_overlay_image_failed() {
     overlay.active = Some(lune_ui::widgets::overlay::OverlayKind::ImagePreview);
 
     render_overlay(area, &mut buf, &mut overlay, &theme);
-    insta::assert_snapshot!("overlay_image_failed", buffer_to_text(&buf));
+    let text = buffer_to_text(&buf);
+    assert!(
+        text.contains("lune-broken.png"),
+        "image failed overlay must show filename in title"
+    );
+    assert!(
+        text.contains("Failed to render image"),
+        "image failed overlay must show failure message"
+    );
+    assert!(
+        text.contains("decode: invalid magic bytes"),
+        "image failed overlay must include the error detail"
+    );
+    insta::assert_snapshot!("overlay_image_failed", text);
 }
 
 #[test]

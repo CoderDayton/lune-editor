@@ -109,21 +109,22 @@ fn dispatch_hunk(
         return Control::Continue;
     };
     let path = path.to_path_buf();
-    let diff_patch = if reverse {
-        hunk.to_reverse_patch(&path)
-    } else {
-        hunk.to_patch(&path)
-    };
-    let diff_patch = match diff_patch {
-        Ok(p) => p,
-        Err(e) => {
-            state.status_message = format!("{label} hunk failed: {e}");
-            return Control::Changed;
-        }
-    };
-    state.git_port().dispatch(GitCommand::ApplyPatch {
-        patch: diff_patch,
+    // Full-hunk op: the live hunk is both the freshness parent and the
+    // slice to apply. (Partial "stage selected lines" will pass the live
+    // hunk as `parent` and a `sub_hunk` slice as `sub`.) Routing through
+    // `ApplyHunk` makes the worker re-verify `parent` against the live
+    // diff before applying, so a stale snapshot is rejected — not applied
+    // to the wrong lines.
+    let identity: lune_core::ports::HunkIdentity = hunk.into();
+    // Verify against the staged diff only for unstage-hunk; discard
+    // (Workdir) and stage both verify against the workdir diff.
+    let staged = matches!(location, PatchLocation::Index) && reverse;
+    state.git_port().dispatch(GitCommand::ApplyHunk {
+        path: path.clone(),
+        parent: identity.clone(),
+        sub: identity,
         location,
+        staged,
     });
     state.status_message = format!("{label} hunk: {}", path.display());
     Control::Changed

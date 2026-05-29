@@ -74,6 +74,39 @@ pub enum PatchLocation {
     Workdir,
 }
 
+/// Kind of a single diff line. Git-free mirror of `lune_git`'s
+/// `DiffLineKind` so the core port layer carries no git2 dependency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HunkLineKind {
+    Context,
+    Addition,
+    Deletion,
+}
+
+/// One line of a hunk, carrying only the fields a staleness check
+/// compares. Git-free mirror of `lune_git`'s `DiffLine`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HunkLine {
+    pub kind: HunkLineKind,
+    pub content: String,
+    pub no_newline_eof: bool,
+}
+
+/// A hunk's freshness-relevant identity: header coordinates plus the
+/// `(kind, content, no_newline_eof)` triple of every line.
+///
+/// This is the exact data the adapter's staleness check compares against
+/// the live diff before applying a patch. It is git-free so it can travel
+/// inside a [`GitCommand`] without leaking a git2 dependency into core.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HunkIdentity {
+    pub old_start: usize,
+    pub old_count: usize,
+    pub new_start: usize,
+    pub new_count: usize,
+    pub lines: Vec<HunkLine>,
+}
+
 /// Per-line gutter annotations for a single buffer.
 #[derive(Clone, Debug, Default)]
 pub struct GutterSnapshot {
@@ -95,13 +128,23 @@ pub enum GitCommand {
     Commit {
         message: String,
     },
-    /// Apply a pre-computed unified-diff patch. UI uses this for
-    /// hunk-level stage / unstage / discard — it serializes the
-    /// `DiffHunk` to a patch string and the worker hands it to
-    /// `Repository::apply`.
-    ApplyPatch {
-        patch: String,
+    /// Apply a (possibly partial) hunk for stage / unstage / discard.
+    ///
+    /// `parent` identifies the live hunk the UI derived the change from;
+    /// the worker re-verifies it against the current diff and rejects the
+    /// op if the working tree drifted (staleness guard). `sub` is the
+    /// actual slice to apply — equal to `parent` for a full-hunk op, or a
+    /// `sub_hunk` slice for "stage selected lines". Applying without the
+    /// freshness check on `parent` could stage the wrong lines if the
+    /// file changed since the snapshot, corrupting unrelated content.
+    ApplyHunk {
+        path: PathBuf,
+        parent: HunkIdentity,
+        sub: HunkIdentity,
         location: PatchLocation,
+        /// Verify `parent` against the staged (index-vs-HEAD) diff rather
+        /// than the workdir diff — used for unstage-hunk.
+        staged: bool,
     },
     /// Recompute the gutter snapshot for a buffer against its HEAD blob.
     ///

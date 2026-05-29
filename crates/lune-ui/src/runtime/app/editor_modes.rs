@@ -175,8 +175,10 @@ fn execute_vim_command(cmd: &str, state: &mut AppState) -> Control<AppEvent> {
     match trimmed {
         "w" | "write" => Control::Event(AppEvent::Command(AppCommand::Save)),
         "wa" | "wall" => Control::Event(AppEvent::Command(AppCommand::SaveAll)),
-        "q" | "quit" | "q!" => Control::Event(AppEvent::Command(AppCommand::CloseTab)),
-        "qa" | "qall" | "qa!" => Control::Event(AppEvent::Command(AppCommand::Quit)),
+        "q" | "quit" => Control::Event(AppEvent::Command(AppCommand::CloseTab)),
+        "q!" => Control::Event(AppEvent::Command(AppCommand::ForceCloseTab)),
+        "qa" | "qall" => Control::Event(AppEvent::Command(AppCommand::Quit)),
+        "qa!" => Control::Event(AppEvent::Command(AppCommand::ForceQuit)),
         "wq" | "x" => {
             let _ = handle_save(state);
             Control::Event(AppEvent::Command(AppCommand::CloseTab))

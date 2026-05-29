@@ -25,6 +25,24 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         };
     }
 
+    // The close-tab confirmation modal also owns input while open.
+    if state.close_confirm.is_open() {
+        return match state.close_confirm.handle_key(key) {
+            Some(ConfirmChoice::Confirm) => {
+                if let Some(bid) = state.pending_close.take() {
+                    close_tab_by_id(state, bid);
+                    state.viewport_follow_cursor = true;
+                }
+                Control::Changed
+            }
+            Some(ConfirmChoice::Cancel) => {
+                state.pending_close = None;
+                Control::Changed
+            }
+            None => Control::Changed,
+        };
+    }
+
     if state.overlay.is_active() {
         return handle_overlay_key(key, state);
     }
@@ -535,17 +553,17 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
         // the block's top border). With ALL borders, the strip is
         // also inset by 1 column on each side (the block's vertical
         // sides), so the clickable region is `center.x + 1 .. center.x + width - 1`.
-        if row == splits.center.y + 1 && splits.center.width >= 2 {
+        if row == splits.center.y.saturating_add(1) && splits.center.width >= 2 {
             let tab_area = Rect::new(
-                splits.center.x + 1,
-                splits.center.y + 1,
-                splits.center.width - 2,
+                splits.center.x.saturating_add(1),
+                splits.center.y.saturating_add(1),
+                splits.center.width.saturating_sub(2),
                 1,
             );
             if let Some((idx, is_close)) = state.tab_mgr.hit_test(col, tab_area.x, tab_area.width) {
                 if is_close {
                     if let Some(bid) = state.tab_mgr.buffer_at(idx) {
-                        close_tab_by_id(state, bid);
+                        return request_close_tab(state, bid);
                     }
                 } else if let Some(bid) = state.tab_mgr.buffer_at(idx) {
                     state.session.active_buffer = Some(bid);
@@ -947,6 +965,41 @@ mod tests {
             !state.quit_confirm.is_open(),
             "dialog must close on confirm"
         );
+    }
+
+    #[test]
+    fn close_confirm_confirm_closes_pending_tab() {
+        let mut state = state_with_text("hello");
+        let bid = state.session.active_buffer.unwrap();
+        // state_with_text inserts text, so the buffer is dirty: the close
+        // defers to the confirmation dialog instead of closing outright.
+        let _ = request_close_tab(&mut state, bid);
+        assert!(state.close_confirm.is_open(), "dirty close opens confirm");
+        assert_eq!(state.pending_close, Some(bid));
+        let result = handle_key_event(
+            &KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            &mut state,
+        );
+        assert!(matches!(result, Control::Changed));
+        assert!(!state.close_confirm.is_open());
+        assert!(!state.session.tabs.contains(&bid), "confirm closes the tab");
+        assert!(state.pending_close.is_none());
+    }
+
+    #[test]
+    fn close_confirm_cancel_keeps_tab() {
+        let mut state = state_with_text("hello");
+        let bid = state.session.active_buffer.unwrap();
+        let _ = request_close_tab(&mut state, bid);
+        assert!(state.close_confirm.is_open());
+        let result = handle_key_event(
+            &KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+            &mut state,
+        );
+        assert!(matches!(result, Control::Changed));
+        assert!(!state.close_confirm.is_open());
+        assert!(state.session.tabs.contains(&bid), "cancel keeps the tab");
+        assert!(state.pending_close.is_none(), "cancel clears pending");
     }
 
     #[test]

@@ -137,9 +137,10 @@ pub fn render_status_bar(
         right_segments.push(fixed_segment(&cursor_text, CURSOR_SEGMENT_WIDTH, true));
     }
     if !status.git_branch.trim().is_empty() {
-        // Reserve 2 leading cells for the throbber glyph (BRAILLE_SIX_DOUBLE
-        // renders 2-wide) when the git op is busy; otherwise the spinner
-        // would overwrite the first characters of the branch name.
+        // Reserve 2 leading cells for the throbber when the git op is
+        // busy: the BRAILLE_SIX_DOUBLE throbber renders as a glyph plus a
+        // trailing cell, so a single space would let it eat the first
+        // character of the branch name (verified by snapshot).
         let branch = if status.git_busy {
             format!("  {}", status.git_branch)
         } else {
@@ -169,8 +170,9 @@ pub fn render_status_bar(
         ));
     }
     if !status.ai_status.trim().is_empty() {
-        // Reserve 2 leading cells for the throbber glyph when busy
-        // (BRAILLE_SIX_DOUBLE renders 2-wide).
+        // Reserve 2 leading cells for the throbber when busy: it renders
+        // as a glyph plus a trailing cell, so a single space would let it
+        // eat the first character of the AI status label.
         let ai_label = if status.ai_busy {
             format!("  {}", status.ai_status)
         } else {

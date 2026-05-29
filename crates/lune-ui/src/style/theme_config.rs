@@ -76,9 +76,14 @@ fn parse_color(s: &str) -> Option<Color> {
     }
 }
 
-/// Whether `s` looks like a bare (no-`#`) 3- or 6-digit hex triplet.
+/// Whether `s` looks like a bare (no-`#`) 6-digit hex triplet.
+///
+/// Only the full 6-digit form is accepted without a leading `#`. The
+/// 3-digit bare form is deliberately excluded so short English words made
+/// of hex digits (`add`, `dad`, ...) are not silently read as colors;
+/// `#abc` still works via the explicit `#` prefix.
 fn is_bare_hex(s: &str) -> bool {
-    (s.len() == 3 || s.len() == 6) && s.chars().all(|c| c.is_ascii_hexdigit())
+    s.len() == 6 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Parse CSS-style `rgb(r, g, b)` with integer components in `[0, 255]`.

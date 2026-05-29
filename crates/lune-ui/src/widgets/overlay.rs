@@ -35,14 +35,7 @@ use unicode_width::UnicodeWidthStr;
 /// Falls back to a single-codepoint pop when no graphemes are found,
 /// which would only happen for an already-empty string.
 fn pop_grapheme(s: &mut String) {
-    if s.is_empty() {
-        return;
-    }
-    if let Some((idx, _)) = s.grapheme_indices(true).next_back() {
-        s.truncate(idx);
-    } else {
-        s.pop();
-    }
+    let _ = pop_grapheme_returning(s);
 }
 
 // ── Overlay kinds ─────────────────────────────────────────────────────
