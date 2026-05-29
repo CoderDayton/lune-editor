@@ -3,10 +3,10 @@ source: crates/lune-ui/tests/snapshot_widgets.rs
 expression: buffer_to_text(&buf)
 ---
 ┌ SOURCE CONTROL ─────────────────┐
-│ No changes                      │
 │                                 │
 │                                 │
 │                                 │
+│      Not a git repository       │
 │                                 │
 │                                 │
 └─────────────────────────────────┘

@@ -271,6 +271,22 @@ fn handle_git_panel_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEven
             state.git_panel.select_prev();
             Control::Changed
         }
+        KeyCode::Char('g') | KeyCode::Home => {
+            state.git_panel.select_first();
+            Control::Changed
+        }
+        KeyCode::Char('G') | KeyCode::End => {
+            state.git_panel.select_last();
+            Control::Changed
+        }
+        KeyCode::PageUp => {
+            state.git_panel.page_up();
+            Control::Changed
+        }
+        KeyCode::PageDown => {
+            state.git_panel.page_down();
+            Control::Changed
+        }
         KeyCode::Char('s') => Control::Event(AppEvent::Command(AppCommand::GitStage)),
         KeyCode::Char('u') => Control::Event(AppEvent::Command(AppCommand::GitUnstage)),
         KeyCode::Char('d') => Control::Event(AppEvent::Command(AppCommand::GitDiscard)),
