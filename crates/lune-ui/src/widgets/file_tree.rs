@@ -9,7 +9,10 @@
 
 use std::path::Path;
 
-use crate::primitives::{Borders, Buffer, Line, Modifier, Rect, Span, Style, Widget};
+use crate::primitives::{
+    Borders, Buffer, Line, Modifier, Rect, Scrollbar, ScrollbarOrientation, ScrollbarState, Span,
+    StatefulWidget, Style, Widget, symbols,
+};
 
 use lune_core::workspace::{DirEntry, EntryKind, FileStatus, Workspace, flatten_tree};
 
@@ -46,6 +49,9 @@ pub struct FileTreeState {
     pub selected: usize,
     /// Scroll offset (first visible row).
     pub scroll_offset: usize,
+    /// Last visible content height, recorded by [`Self::ensure_visible`]
+    /// so page-wise navigation jumps by a full screenful.
+    page_height: usize,
     /// Display configuration.
     pub config: FileTreeConfig,
 }
@@ -58,6 +64,7 @@ impl FileTreeState {
             entries: Vec::new(),
             selected: 0,
             scroll_offset: 0,
+            page_height: 0,
             config: FileTreeConfig::default(),
         }
     }
@@ -86,6 +93,50 @@ impl FileTreeState {
     pub fn select_next(&mut self, n: usize) {
         if !self.entries.is_empty() {
             self.selected = (self.selected + n).min(self.entries.len() - 1);
+        }
+    }
+
+    /// Jump selection to the first entry.
+    pub const fn select_first(&mut self) {
+        self.selected = 0;
+    }
+
+    /// Jump selection to the last entry.
+    pub fn select_last(&mut self) {
+        self.selected = self.entries.len().saturating_sub(1);
+    }
+
+    /// Move selection up by one screenful, keeping one row of overlap.
+    pub const fn page_up(&mut self) {
+        self.select_prev(self.page_step());
+    }
+
+    /// Move selection down by one screenful, keeping one row of overlap.
+    pub fn page_down(&mut self) {
+        self.select_next(self.page_step());
+    }
+
+    /// Rows moved per page jump: a screenful minus one row of overlap, so
+    /// the entry at the fold stays on screen for context. At least 1.
+    const fn page_step(&self) -> usize {
+        match self.page_height.saturating_sub(1) {
+            0 => 1,
+            step => step,
+        }
+    }
+
+    /// Move selection to the directory enclosing the current entry — the
+    /// nearest preceding entry at a shallower depth. No-op for a
+    /// top-level entry (nothing encloses it).
+    pub fn select_parent(&mut self) {
+        let Some(&(depth, _)) = self.entries.get(self.selected) else {
+            return;
+        };
+        if let Some(idx) = self.entries[..self.selected]
+            .iter()
+            .rposition(|(d, _)| *d < depth)
+        {
+            self.selected = idx;
         }
     }
 
@@ -120,6 +171,7 @@ impl FileTreeState {
         if visible_height == 0 {
             return;
         }
+        self.page_height = visible_height;
         if self.selected < self.scroll_offset {
             self.scroll_offset = self.selected;
         } else if self.selected >= self.scroll_offset + visible_height {
@@ -247,6 +299,26 @@ pub fn render_file_tree(
     let content_height = content_area.height as usize;
     state.ensure_visible(content_height);
 
+    // Empty-state hint: a blank panel reads as "broken"; show a muted
+    // centered cue instead.
+    if state.entries.is_empty() {
+        let hint = "No files";
+        let hint_w = hint.chars().count() as u16;
+        if hint_w <= content_area.width {
+            let x = content_area.x + (content_area.width - hint_w) / 2;
+            let y = content_area.y + content_area.height / 2;
+            Line::from(Span::styled(hint, Style::default().fg(theme.fg_muted)))
+                .render(Rect::new(x, y, hint_w, 1), buf);
+        }
+        return;
+    }
+
+    // Reserve the last interior column for a scrollbar when the tree is
+    // taller than the panel, so there is a visible cue that more entries
+    // exist above or below the fold.
+    let show_scrollbar = state.entries.len() > content_height;
+    let list_width = content_width.saturating_sub(u16::from(show_scrollbar));
+
     let visible_entries = state
         .entries
         .iter()
@@ -260,7 +332,7 @@ pub fn render_file_tree(
         }
 
         let is_selected = state.scroll_offset + i == state.selected;
-        let line_area = Rect::new(content_area.x, y, content_width, 1);
+        let line_area = Rect::new(content_area.x, y, list_width, 1);
 
         render_entry(
             line_area,
@@ -268,20 +340,55 @@ pub fn render_file_tree(
             entry,
             *depth,
             is_selected,
+            is_focused,
             &state.config,
             theme,
         );
     }
+
+    if show_scrollbar {
+        render_tree_scrollbar(content_area, state, content_height, buf, theme);
+    }
+}
+
+/// Render a vertical scrollbar in the rightmost column of `area`. The
+/// scroll domain is expressed as scroll-offset positions so the thumb is
+/// proportional to visible/total and reaches the end at the last row.
+fn render_tree_scrollbar(
+    area: Rect,
+    state: &FileTreeState,
+    viewport_height: usize,
+    buf: &mut Buffer,
+    theme: &Theme,
+) {
+    let viewport_len = viewport_height.max(1);
+    let max_top = state.entries.len().saturating_sub(viewport_len);
+    let scroll_domain_len = max_top.saturating_add(1).max(1);
+
+    let mut sb_state = ScrollbarState::new(scroll_domain_len)
+        .position(state.scroll_offset.min(max_top))
+        .viewport_content_length(viewport_len);
+
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(Some(symbols::line::VERTICAL))
+        .thumb_symbol(symbols::block::FULL)
+        .track_style(Style::new().fg(theme.fg_dim))
+        .thumb_style(Style::new().fg(theme.accent).add_modifier(Modifier::BOLD));
+
+    StatefulWidget::render(scrollbar, area, buf, &mut sb_state);
 }
 
 /// Render a single file tree entry.
-#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
 fn render_entry(
     area: Rect,
     buf: &mut Buffer,
     entry: &DirEntry,
     depth: usize,
     is_selected: bool,
+    is_focused: bool,
     config: &FileTreeConfig,
     theme: &Theme,
 ) {
@@ -289,7 +396,7 @@ fn render_entry(
         return;
     }
 
-    let indent = " ".repeat(depth * config.indent_size as usize);
+    let indent = build_indent_guides(depth, config.indent_size);
 
     let (prefix, base_name_style) = match &entry.kind {
         EntryKind::Directory { expanded } => {
@@ -305,40 +412,66 @@ fn render_entry(
         EntryKind::Symlink => ("@ ", Style::default().fg(theme.tree_symlink_fg)),
     };
 
-    // Derive git-related display data in a single lookup.
-    let (name_style, git_suffix, git_color) =
-        entry
-            .git_status
-            .map_or((base_name_style, "", theme.fg_dim), |status| {
-                let (suffix, color) = match status {
-                    FileStatus::Modified => (" M", theme.git_modified),
-                    FileStatus::Added => (" A", theme.git_added),
-                    FileStatus::Deleted => (" D", theme.git_deleted),
-                    FileStatus::Renamed => (" R", theme.git_renamed),
-                    FileStatus::Untracked => (" ?", theme.git_untracked),
-                    FileStatus::Conflicted => (" !", theme.git_conflicted),
-                    FileStatus::Ignored => (" I", theme.git_ignored),
-                };
-                (base_name_style.fg(color), suffix, color)
-            });
+    // Derive git-related display data in a single lookup: the styled name
+    // colour and a single-char status marker pinned to the right edge.
+    let (name_style, git_marker) = entry.git_status.map_or((base_name_style, None), |status| {
+        let (marker, color) = match status {
+            FileStatus::Modified => ("M", theme.git_modified),
+            FileStatus::Added => ("A", theme.git_added),
+            FileStatus::Deleted => ("D", theme.git_deleted),
+            FileStatus::Renamed => ("R", theme.git_renamed),
+            FileStatus::Untracked => ("?", theme.git_untracked),
+            FileStatus::Conflicted => ("!", theme.git_conflicted),
+            FileStatus::Ignored => ("I", theme.git_ignored),
+        };
+        (base_name_style.fg(color), Some((marker, color)))
+    });
 
-    let mut spans = vec![
-        Span::raw(indent),
+    // Truncate the name so a long filename can never push the git marker
+    // (the key at-a-glance signal) off the right edge. Reserve 2 cells on
+    // the right for the marker plus a 1-cell gap when a marker is shown.
+    // Optional file-type icon, rendered between the prefix and the name.
+    let icon_part = if config.icons {
+        format!("{} ", icon_for(entry))
+    } else {
+        String::new()
+    };
+    let icon_cells = unicode_width::UnicodeWidthStr::width(icon_part.as_str());
+
+    let reserved = if git_marker.is_some() { 2 } else { 0 };
+    let indent_cells = depth * config.indent_size as usize;
+    let prefix_cells = 2; // every prefix ("▼ ", "  ", "@ ") is 2 cells wide.
+    let name_budget =
+        (area.width as usize).saturating_sub(indent_cells + prefix_cells + icon_cells + reserved);
+    let display_name = truncate_to_cells(&entry.name, name_budget);
+
+    let spans = vec![
+        Span::styled(indent, Style::default().fg(theme.fg_dim)),
         Span::raw(prefix),
-        Span::styled(&entry.name, name_style),
+        Span::styled(icon_part, name_style),
+        Span::styled(display_name, name_style),
     ];
 
-    if !git_suffix.is_empty() {
-        spans.push(Span::styled(git_suffix, Style::default().fg(git_color)));
-    }
-
     let bg = if is_selected {
-        theme.tree_selected_bg
+        if is_focused {
+            theme.tree_selected_bg
+        } else {
+            // Dim the selection bar when the panel isn't focused so the
+            // active pane is unambiguous.
+            crate::style::color::blend(theme.bg, theme.tree_selected_bg, 0.5)
+        }
     } else {
         theme.bg
     };
 
     Line::from(spans).render(area, buf);
+
+    // Right-align the git marker in the final column.
+    if let Some((marker, color)) = git_marker {
+        let mx = area.x + area.width.saturating_sub(1);
+        Line::from(Span::styled(marker, Style::default().fg(color)))
+            .render(Rect::new(mx, area.y, 1, 1), buf);
+    }
 
     // Apply selection background over rendered cells (single pass).
     if is_selected {
@@ -348,6 +481,87 @@ fn render_entry(
             }
         }
     }
+}
+
+/// Nerd-font icon for an entry, used only when [`FileTreeConfig::icons`]
+/// is enabled. Directories and symlinks get a fixed glyph; files are
+/// keyed off their extension with a generic fallback.
+fn icon_for(entry: &DirEntry) -> &'static str {
+    match entry.kind {
+        EntryKind::Directory { expanded } => {
+            if expanded {
+                "\u{f07c}" // open folder
+            } else {
+                "\u{f07b}" // closed folder
+            }
+        }
+        EntryKind::Symlink => "\u{f481}", // link
+        EntryKind::File => icon_for_extension(&entry.name),
+    }
+}
+
+/// Map a filename's extension to a nerd-font glyph.
+fn icon_for_extension(name: &str) -> &'static str {
+    let ext = Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    match ext {
+        "rs" => "\u{e7a8}",                             // rust
+        "md" | "markdown" => "\u{f48a}",                // markdown
+        "toml" | "yaml" | "yml" | "json" => "\u{e615}", // config
+        "js" | "jsx" | "ts" | "tsx" => "\u{e74e}",      // js/ts
+        "py" => "\u{e73c}",                             // python
+        "lock" => "\u{f023}",                           // lock
+        _ => "\u{f15b}",                                // generic file
+    }
+}
+
+/// Build the indent prefix with vertical guide rails, one `│` per
+/// nesting level followed by `indent_size - 1` spaces. Returns an empty
+/// string for top-level (depth 0) entries.
+fn build_indent_guides(depth: usize, indent_size: u16) -> String {
+    if depth == 0 {
+        return String::new();
+    }
+    let pad = (indent_size as usize).saturating_sub(1);
+    let mut s = String::with_capacity(depth * indent_size as usize);
+    for _ in 0..depth {
+        s.push('│');
+        for _ in 0..pad {
+            s.push(' ');
+        }
+    }
+    s
+}
+
+/// Truncate `s` to at most `max` display cells, appending `…` when cut.
+/// Mirrors the editor pane's helper; kept local so the file-tree widget
+/// stays self-contained.
+fn truncate_to_cells(s: &str, max: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    if max == 0 {
+        return String::new();
+    }
+    let mut width = 0usize;
+    let mut out = String::new();
+    for ch in s.chars() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + w > max {
+            while width > max - 1 {
+                if let Some(c) = out.pop() {
+                    width -= UnicodeWidthChar::width(c).unwrap_or(0);
+                } else {
+                    break;
+                }
+            }
+            out.push('…');
+            return out;
+        }
+        out.push(ch);
+        width += w;
+    }
+    out
 }
 
 #[cfg(test)]
@@ -545,10 +759,304 @@ mod tests {
     }
 
     #[test]
+    fn overflowing_tree_renders_scrollbar() {
+        let mut state = FileTreeState::new();
+        state.entries = (0..30)
+            .map(|i| {
+                (
+                    0usize,
+                    DirEntry {
+                        path: PathBuf::from(format!("/ws/f{i}.rs")),
+                        name: format!("f{i}.rs"),
+                        kind: EntryKind::File,
+                        git_status: None,
+                    },
+                )
+            })
+            .collect();
+
+        let area = Rect::new(0, 0, 24, 8); // content height 6 < 30 entries
+        let theme = Theme::dark();
+        let mut buf = Buffer::empty(area);
+        render_file_tree(area, &mut buf, &mut state, "p", true, &theme);
+
+        // Scrollbar sits in the last interior column (x = width - 2; the
+        // right border is at width - 1).
+        let sb_x = area.width - 2;
+        let col: String = (1..area.height - 1)
+            .filter_map(|y| buf.cell((sb_x, y)).map(|c| c.symbol().to_string()))
+            .collect();
+        assert!(
+            col.contains('█'),
+            "an overflowing tree should render a scrollbar thumb: {col:?}"
+        );
+    }
+
+    #[test]
+    fn nested_entries_render_guide_rails() {
+        let mut state = FileTreeState::new();
+        state.entries = make_test_entries(); // index 1 = main.rs at depth 1
+        let area = Rect::new(0, 0, 30, 8);
+        let theme = Theme::dark();
+        let mut buf = Buffer::empty(area);
+        render_file_tree(area, &mut buf, &mut state, "p", true, &theme);
+
+        // main.rs is the second content row → y = 2 (inside the top border).
+        // Its first interior indent column (x = 1) should carry a rail,
+        // not a blank space. (Scanning the whole row would falsely match
+        // the block's own border `│`.)
+        let guide = buf.cell((1, 2)).unwrap().symbol().to_string();
+        assert_eq!(
+            guide, "│",
+            "a depth-1 entry should render a vertical guide rail in its indent"
+        );
+    }
+
+    #[test]
+    fn long_name_keeps_git_marker_visible() {
+        let mut state = FileTreeState::new();
+        state.entries = vec![(
+            0usize,
+            DirEntry {
+                path: PathBuf::from("/ws/a_very_long_file_name_that_overflows.rs"),
+                name: "a_very_long_file_name_that_overflows.rs".to_string(),
+                kind: EntryKind::File,
+                git_status: Some(FileStatus::Modified),
+            },
+        )];
+
+        let area = Rect::new(0, 0, 20, 4); // inner width 18
+        let theme = Theme::dark();
+        let mut buf = Buffer::empty(area);
+        render_file_tree(area, &mut buf, &mut state, "p", true, &theme);
+
+        // First content row is y = 1 (inside the top border).
+        let row: String = (0..area.width)
+            .filter_map(|x| buf.cell((x, 1)).map(|c| c.symbol().to_string()))
+            .collect();
+        assert!(
+            row.contains('M'),
+            "git marker must stay visible despite a long name: {row:?}"
+        );
+        assert!(
+            row.contains('…'),
+            "an overflowing name should be ellipsis-truncated: {row:?}"
+        );
+    }
+
+    #[test]
+    fn unfocused_selection_bar_is_dimmer() {
+        let area = Rect::new(0, 0, 30, 8);
+        let theme = Theme::dark();
+
+        // Selected row is content row 0 (src) → y = 1, inside the top border.
+        let mut s1 = FileTreeState::new();
+        s1.entries = make_test_entries();
+        let mut focused = Buffer::empty(area);
+        render_file_tree(area, &mut focused, &mut s1, "p", true, &theme);
+
+        let mut s2 = FileTreeState::new();
+        s2.entries = make_test_entries();
+        let mut unfocused = Buffer::empty(area);
+        render_file_tree(area, &mut unfocused, &mut s2, "p", false, &theme);
+
+        let fbg = focused.cell((2, 1)).unwrap().bg;
+        let ubg = unfocused.cell((2, 1)).unwrap().bg;
+        assert_eq!(
+            fbg, theme.tree_selected_bg,
+            "focused selection uses the full selection bg"
+        );
+        assert_ne!(
+            ubg, fbg,
+            "unfocused selection bar should be dimmer than focused"
+        );
+    }
+
+    #[test]
+    fn empty_tree_shows_hint() {
+        let mut state = FileTreeState::new();
+        let area = Rect::new(0, 0, 30, 8);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::dark();
+        render_file_tree(area, &mut buf, &mut state, "proj", true, &theme);
+
+        let text: String = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("No files"),
+            "empty tree should render a hint, got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn icon_for_distinguishes_kinds_and_extensions() {
+        let dir = DirEntry {
+            path: PathBuf::from("/d"),
+            name: "d".into(),
+            kind: EntryKind::Directory { expanded: false },
+            git_status: None,
+        };
+        let rs = DirEntry {
+            path: PathBuf::from("/a.rs"),
+            name: "a.rs".into(),
+            kind: EntryKind::File,
+            git_status: None,
+        };
+        let md = DirEntry {
+            path: PathBuf::from("/b.md"),
+            name: "b.md".into(),
+            kind: EntryKind::File,
+            git_status: None,
+        };
+        assert!(!icon_for(&dir).is_empty(), "every entry has an icon");
+        assert_ne!(
+            icon_for(&dir),
+            icon_for(&rs),
+            "directory and file icons differ"
+        );
+        assert_ne!(
+            icon_for(&rs),
+            icon_for(&md),
+            "different file extensions map to different icons"
+        );
+    }
+
+    #[test]
+    fn icons_render_when_enabled() {
+        let entry = DirEntry {
+            path: PathBuf::from("/ws/main.rs"),
+            name: "main.rs".into(),
+            kind: EntryKind::File,
+            git_status: None,
+        };
+        let expected = icon_for(&entry); // &'static str, independent of `entry`
+
+        let mut state = FileTreeState::new();
+        state.config.icons = true;
+        state.entries = vec![(0usize, entry)];
+
+        let area = Rect::new(0, 0, 30, 4);
+        let theme = Theme::dark();
+        let mut buf = Buffer::empty(area);
+        render_file_tree(area, &mut buf, &mut state, "p", true, &theme);
+
+        let row: String = (0..area.width)
+            .filter_map(|x| buf.cell((x, 1)).map(|c| c.symbol().to_string()))
+            .collect();
+        assert!(
+            row.contains(expected),
+            "the file-type icon should render when config.icons is set: {row:?}"
+        );
+    }
+
+    #[test]
+    fn icons_and_git_marker_coexist() {
+        let entry = DirEntry {
+            path: PathBuf::from("/ws/main.rs"),
+            name: "main.rs".into(),
+            kind: EntryKind::File,
+            git_status: Some(FileStatus::Modified),
+        };
+        let icon = icon_for(&entry); // &'static str, independent of `entry`
+
+        let mut state = FileTreeState::new();
+        state.config.icons = true;
+        state.entries = vec![(0usize, entry)];
+
+        let area = Rect::new(0, 0, 20, 4); // inner width 18
+        let theme = Theme::dark();
+        let mut buf = Buffer::empty(area);
+        render_file_tree(area, &mut buf, &mut state, "p", true, &theme);
+
+        let row: String = (0..area.width)
+            .filter_map(|x| buf.cell((x, 1)).map(|c| c.symbol().to_string()))
+            .collect();
+        assert!(
+            row.contains(icon),
+            "icon should render alongside a git marker: {row:?}"
+        );
+        // The marker is pinned to the final interior column (just inside the
+        // right border), regardless of the icon column ahead of the name.
+        let marker = buf.cell((area.width - 2, 1)).unwrap().symbol().to_string();
+        assert_eq!(
+            marker, "M",
+            "git marker stays in the final content column: {row:?}"
+        );
+    }
+
+    #[test]
     fn config_default() {
         let config = FileTreeConfig::default();
         assert_eq!(config.indent_size, 2);
         assert!(!config.icons);
         assert!(config.sort_dirs_first);
+    }
+
+    #[test]
+    fn select_first_and_last() {
+        let mut state = FileTreeState::new();
+        state.entries = make_test_entries(); // 5 entries
+        state.selected = 2;
+
+        state.select_first();
+        assert_eq!(state.selected, 0);
+
+        state.select_last();
+        assert_eq!(state.selected, 4);
+    }
+
+    #[test]
+    fn page_nav_uses_recorded_height() {
+        let mut state = FileTreeState::new();
+        state.entries = make_test_entries(); // 5 entries
+        // ensure_visible records the page height the next page jump uses.
+        state.ensure_visible(3);
+
+        state.select_first();
+        state.page_down();
+        assert_eq!(
+            state.selected, 2,
+            "page down jumps by a screenful minus overlap"
+        );
+
+        state.page_up();
+        assert_eq!(
+            state.selected, 0,
+            "page up jumps back by a screenful minus overlap"
+        );
+    }
+
+    #[test]
+    fn select_parent_moves_to_enclosing_dir() {
+        let mut state = FileTreeState::new();
+        state.entries = make_test_entries();
+
+        // lib.rs (index 2, depth 1) → parent is src (index 0, depth 0).
+        state.selected = 2;
+        state.select_parent();
+        assert_eq!(state.selected, 0);
+
+        // A top-level entry has no parent: selection stays put.
+        state.selected = 4;
+        state.select_parent();
+        assert_eq!(state.selected, 4);
+    }
+
+    #[test]
+    fn nav_methods_safe_on_empty() {
+        let mut state = FileTreeState::new();
+        assert!(state.entries.is_empty());
+
+        state.select_first();
+        state.select_last();
+        state.page_down();
+        state.page_up();
+        assert_eq!(state.selected, 0, "navigation on empty tree stays at 0");
     }
 }

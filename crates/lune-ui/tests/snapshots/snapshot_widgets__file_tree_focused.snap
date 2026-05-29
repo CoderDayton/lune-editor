@@ -4,11 +4,11 @@ expression: buffer_to_text(&buf)
 ---
 ┌ lune-editor ───────────────┐
 │▼ src                       │
-│    main.rs M               │
-│    lib.rs                  │
-│    utils.rs A              │
+││   main.rs                M│
+││   lib.rs                  │
+││   utils.rs               A│
 │▶ tests                     │
-│  Cargo.toml ?              │
+│  Cargo.toml               ?│
 │  README.md                 │
 │                            │
 └────────────────────────────┘

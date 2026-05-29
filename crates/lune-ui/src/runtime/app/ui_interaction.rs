@@ -158,9 +158,25 @@ fn handle_file_tree_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEven
             state.file_tree.select_prev(1);
             Control::Changed
         }
+        KeyCode::Home => {
+            state.file_tree.select_first();
+            Control::Changed
+        }
+        KeyCode::End => {
+            state.file_tree.select_last();
+            Control::Changed
+        }
+        KeyCode::PageUp => {
+            state.file_tree.page_up();
+            Control::Changed
+        }
+        KeyCode::PageDown => {
+            state.file_tree.page_down();
+            Control::Changed
+        }
         KeyCode::Enter => handle_file_tree_enter(state),
         KeyCode::Char('l') | KeyCode::Right => handle_file_tree_set_expanded(state, true),
-        KeyCode::Char('h') | KeyCode::Left => handle_file_tree_set_expanded(state, false),
+        KeyCode::Char('h') | KeyCode::Left => handle_file_tree_collapse(state),
         KeyCode::Char('H') if key.modifiers.contains(KeyModifiers::SHIFT) => {
             Control::Event(AppEvent::Command(AppCommand::ToggleHiddenFiles))
         }
@@ -182,6 +198,21 @@ fn handle_file_tree_enter(state: &mut AppState) -> Control<AppEvent> {
             Control::Event(AppEvent::Command(AppCommand::OpenFile(entry.path)))
         }
         EntryKind::Directory { .. } => toggle_selected_dir(state),
+    }
+}
+
+/// Handle the collapse key (`h`/Left): collapse an expanded directory,
+/// otherwise move the selection to the enclosing parent directory.
+fn handle_file_tree_collapse(state: &mut AppState) -> Control<AppEvent> {
+    let is_expanded_dir = state
+        .file_tree
+        .selected_entry()
+        .is_some_and(|(_, e)| matches!(e.kind, EntryKind::Directory { expanded: true }));
+    if is_expanded_dir {
+        handle_file_tree_set_expanded(state, false)
+    } else {
+        state.file_tree.select_parent();
+        Control::Changed
     }
 }
 
@@ -1482,5 +1513,150 @@ mod tests {
         };
         let result = handle_mouse_event(ev, &mut state);
         assert!(matches!(result, Control::Continue));
+    }
+
+    fn state_with_tree_files(n: usize) -> AppState {
+        use lune_core::workspace::{DirEntry, EntryKind};
+        use std::path::PathBuf;
+        let mut state = state_with_text("content");
+        state.focus.focus(PanelId::FileTree);
+        state.file_tree.entries = (0..n)
+            .map(|i| {
+                (
+                    0usize,
+                    DirEntry {
+                        path: PathBuf::from(format!("/ws/f{i}.rs")),
+                        name: format!("f{i}.rs"),
+                        kind: EntryKind::File,
+                        git_status: None,
+                    },
+                )
+            })
+            .collect();
+        state.file_tree.selected = 0;
+        state
+    }
+
+    #[test]
+    fn end_key_jumps_to_last_tree_entry() {
+        let mut state = state_with_tree_files(5);
+        let r = handle_key_event(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE), &mut state);
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(state.file_tree.selected, 4);
+    }
+
+    #[test]
+    fn home_key_jumps_to_first_tree_entry() {
+        let mut state = state_with_tree_files(5);
+        state.file_tree.selected = 4;
+        let r = handle_key_event(
+            &KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+            &mut state,
+        );
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(state.file_tree.selected, 0);
+    }
+
+    #[test]
+    fn left_on_file_jumps_to_parent_dir() {
+        use lune_core::workspace::{DirEntry, EntryKind};
+        use std::path::PathBuf;
+        let mut state = state_with_text("content");
+        state.focus.focus(PanelId::FileTree);
+        state.file_tree.entries = vec![
+            (
+                0usize,
+                DirEntry {
+                    path: PathBuf::from("/ws/src"),
+                    name: "src".into(),
+                    kind: EntryKind::Directory { expanded: true },
+                    git_status: None,
+                },
+            ),
+            (
+                1usize,
+                DirEntry {
+                    path: PathBuf::from("/ws/src/main.rs"),
+                    name: "main.rs".into(),
+                    kind: EntryKind::File,
+                    git_status: None,
+                },
+            ),
+        ];
+        state.file_tree.selected = 1; // main.rs (a file)
+
+        let r = handle_key_event(
+            &KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            &mut state,
+        );
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(
+            state.file_tree.selected, 0,
+            "Left on a file selects its enclosing directory"
+        );
+    }
+
+    #[test]
+    fn page_down_jumps_by_recorded_height() {
+        let mut state = state_with_tree_files(20);
+        state.file_tree.ensure_visible(8); // record page height
+        let r = handle_key_event(
+            &KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+            &mut state,
+        );
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(state.file_tree.selected, 7); // one screenful (8) minus one overlap row
+    }
+
+    #[test]
+    fn page_up_jumps_by_recorded_height() {
+        let mut state = state_with_tree_files(20);
+        state.file_tree.ensure_visible(8); // record page height
+        state.file_tree.selected = 19;
+        let r = handle_key_event(
+            &KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+            &mut state,
+        );
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(state.file_tree.selected, 12); // 19 - (8 - 1 overlap)
+    }
+
+    #[test]
+    fn left_on_expanded_dir_collapses_without_moving_selection() {
+        use lune_core::workspace::{DirEntry, EntryKind};
+        use std::path::PathBuf;
+        let mut state = state_with_text("content");
+        state.focus.focus(PanelId::FileTree);
+        state.file_tree.entries = vec![
+            (
+                0usize,
+                DirEntry {
+                    path: PathBuf::from("/ws/src"),
+                    name: "src".into(),
+                    kind: EntryKind::Directory { expanded: true },
+                    git_status: None,
+                },
+            ),
+            (
+                1usize,
+                DirEntry {
+                    path: PathBuf::from("/ws/src/sub"),
+                    name: "sub".into(),
+                    kind: EntryKind::Directory { expanded: true },
+                    git_status: None,
+                },
+            ),
+        ];
+        state.file_tree.selected = 1; // sub: an expanded directory
+
+        let r = handle_key_event(
+            &KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            &mut state,
+        );
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(
+            state.file_tree.selected, 1,
+            "Left on an expanded dir collapses it in place, not jump to parent"
+        );
     }
 }

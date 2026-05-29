@@ -6,7 +6,7 @@ expression: buffer_to_text(&buf)
 │                            │
 │                            │
 │                            │
-│                            │
+│          No files          │
 │                            │
 │                            │
 └────────────────────────────┘
