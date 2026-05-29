@@ -68,6 +68,7 @@ fn snapshot_status_bar_normal_mode() {
 
     let status = StatusLineState {
         mode: VimMode::Normal,
+        vim_enabled: true,
         file_path: "src/main.rs".to_string(),
         dirty: false,
         cursor_line: 42,
@@ -84,6 +85,38 @@ fn snapshot_status_bar_normal_mode() {
 }
 
 #[test]
+fn status_bar_hides_mode_label_when_vim_disabled() {
+    // With vim disabled the editor has no modal state, so the mode segment
+    // must be hidden — even though `mode` still holds a value internally.
+    let area = Rect::new(0, 0, 80, 1);
+    let mut buf = Buffer::empty(area);
+    let theme = Theme::dark();
+
+    let status = StatusLineState {
+        mode: VimMode::Normal,
+        vim_enabled: false,
+        file_path: "src/main.rs".to_string(),
+        cursor_line: 1,
+        cursor_col: 1,
+        encoding: "UTF-8",
+        ..StatusLineState::default()
+    };
+
+    let mut throbber = ThrobberState::default();
+    render_status_bar(area, &mut buf, &status, &theme, &mut throbber);
+    let text = buffer_to_text(&buf);
+    assert!(
+        !text.contains("NORMAL") && !text.contains("INSERT"),
+        "mode label must be hidden when vim is off, got {text:?}"
+    );
+    // The bar itself still renders its other segments.
+    assert!(
+        text.contains("UTF-8"),
+        "status bar should still render, got {text:?}"
+    );
+}
+
+#[test]
 fn snapshot_status_bar_insert_dirty() {
     let area = Rect::new(0, 0, 80, 1);
     let mut buf = Buffer::empty(area);
@@ -91,6 +124,7 @@ fn snapshot_status_bar_insert_dirty() {
 
     let status = StatusLineState {
         mode: VimMode::Insert,
+        vim_enabled: true,
         file_path: "lib.rs".to_string(),
         dirty: true,
         cursor_line: 100,
@@ -115,6 +149,7 @@ fn snapshot_status_bar_with_message() {
 
     let status = StatusLineState {
         mode: VimMode::Normal,
+        vim_enabled: true,
         file_path: "ignored_because_message_set.rs".to_string(),
         message: "File saved successfully".to_string(),
         cursor_line: 10,
@@ -820,6 +855,7 @@ fn snapshot_status_bar_ai_busy() {
 
     let status = StatusLineState {
         mode: VimMode::Normal,
+        vim_enabled: true,
         file_path: "src/main.rs".to_string(),
         dirty: false,
         cursor_line: 10,
@@ -846,6 +882,7 @@ fn snapshot_status_bar_light_theme() {
 
     let status = StatusLineState {
         mode: VimMode::Normal,
+        vim_enabled: true,
         file_path: "src/main.rs".to_string(),
         cursor_line: 1,
         cursor_col: 1,

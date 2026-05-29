@@ -642,8 +642,8 @@ impl AppState {
         if self.vim_enabled {
             self.vim.enter_normal();
         } else {
-            // Non-vim mode: start in Insert so keystrokes type text by default.
-            // User can still Escape → Normal to block typing, then `i` to resume.
+            // Non-vim mode: the editor is always in direct-input (Insert)
+            // state — keystrokes type text and there is no Normal mode.
             self.vim.enter_insert();
         }
 
@@ -1360,6 +1360,7 @@ impl AppState {
         let git_busy = false;
         StatusLineState {
             mode: self.vim.mode,
+            vim_enabled: self.vim_enabled,
             file_path,
             dirty,
             cursor_line,
@@ -2312,7 +2313,10 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             Control::Changed
         }
         AppCommand::EnterNormalMode => {
-            state.vim.enter_normal();
+            // Normal mode only exists when vim keybindings are enabled.
+            if state.vim_enabled {
+                state.vim.enter_normal();
+            }
             Control::Changed
         }
         AppCommand::EnterInsertMode => {
@@ -2320,7 +2324,10 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
             Control::Changed
         }
         AppCommand::EnterVisualMode => {
-            state.vim.enter_visual();
+            // Visual mode only exists when vim keybindings are enabled.
+            if state.vim_enabled {
+                state.vim.enter_visual();
+            }
             Control::Changed
         }
         AppCommand::ToggleVimMode => {
@@ -3186,6 +3193,8 @@ mod tests {
     #[test]
     fn command_enter_modes() {
         let mut state = AppState::new();
+        // Normal/Visual mode commands are gated on vim keybindings.
+        state.vim_enabled = true;
         let _ = handle_command(&AppCommand::EnterInsertMode, &mut state);
         assert_eq!(state.vim.mode, VimMode::Insert);
         let _ = handle_command(&AppCommand::EnterNormalMode, &mut state);
@@ -3671,7 +3680,9 @@ mod tests {
         render_agents_tab(area, &mut buf, &mut state);
 
         let bottom = row_text(&buf, area, area.height - 1);
-        assert!(bottom.contains("NORMAL"), "bottom row was {bottom:?}");
+        // Vim is off by default, so the mode label is hidden; the encoding
+        // segment is a stable proof the status bar still renders.
+        assert!(bottom.contains("UTF-8"), "bottom row was {bottom:?}");
     }
 
     #[test]
@@ -3747,7 +3758,9 @@ mod tests {
         render_agents_tab(area, &mut buf, &mut state);
 
         let bottom = row_text(&buf, area, area.height - 1);
-        assert!(bottom.contains("NORMAL"), "bottom row was {bottom:?}");
+        // Vim is off by default, so the mode label is hidden; the encoding
+        // segment is a stable proof the status bar still renders.
+        assert!(bottom.contains("UTF-8"), "bottom row was {bottom:?}");
     }
 
     #[test]

@@ -36,10 +36,16 @@ const AI_SEGMENT_WIDTH: usize = 12;
 ///
 /// Uses `&'static str` for the encoding field to avoid a per-frame heap
 /// allocation for a constant value.
+// A flat per-frame view-model: grouping these independent display flags
+// into sub-structs would only add indirection.
 #[derive(Clone, Debug, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct StatusLineState {
     /// Vim mode label ("NORMAL", "INSERT", "VISUAL", etc.).
     pub mode: VimMode,
+    /// Whether vim keybindings are enabled. When `false`, the editor has no
+    /// modal state and the mode indicator is hidden entirely.
+    pub vim_enabled: bool,
     /// File path display string (or empty).
     pub file_path: String,
     /// Whether the current buffer is dirty.
@@ -105,10 +111,14 @@ pub fn render_status_bar(
         cell.set_style(theme.status_bg);
     }
 
-    // Always show Normal/Insert indicator so users know when typing is
-    // blocked.  The full mode set (VISUAL, V-LINE, COMMAND) is only
-    // reachable when vim keybindings are enabled.
-    let mode_label: &str = mode_string(status.mode);
+    // The mode indicator only makes sense in vim mode. With vim disabled the
+    // editor is always in direct-input state, so the label is hidden — the
+    // rest of the bar already handles an empty mode segment gracefully.
+    let mode_label: &str = if status.vim_enabled {
+        mode_string(status.mode)
+    } else {
+        ""
+    };
     let dirty_mark = if status.dirty { " [+]" } else { "" };
 
     let mut left_text = if status.message.is_empty() {

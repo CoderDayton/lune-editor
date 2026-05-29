@@ -13,6 +13,7 @@ pub(super) fn handle_terminal_event(ct_event: &CtEvent, state: &mut AppState) ->
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
     // Quit-confirmation modal owns input while it's open. It sits
     // above all other overlays, so dispatch keys to it first.
@@ -48,10 +49,13 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
     }
 
     if state.root_tab == RootTab::Editor && key.code == KeyCode::Tab && key.modifiers.is_empty() {
-        // Tab cycles focus when not in insert mode, or any time the editor
-        // has no buffer to indent (so Tab isn't a silent no-op on an empty
-        // editor — it pulls you to the file tree instead).
-        if !state.vim.mode.is_insert() || state.session.active_buffer.is_none() {
+        // Tab cycles focus only when there is nothing to indent: in a vim
+        // motion mode (Normal/Visual), or on an empty editor (so Tab pulls
+        // you to the file tree instead of being a silent no-op). With vim
+        // disabled the editor is always in direct-input mode, so Tab indents
+        // like a normal editor and focus moves via dedicated shortcuts.
+        let vim_motion_mode = state.vim_enabled && !state.vim.mode.is_insert();
+        if vim_motion_mode || state.session.active_buffer.is_none() {
             handle_focus_next_pane(state);
             return Control::Changed;
         }
@@ -74,8 +78,13 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
             state.focus.focus(PanelId::Editor);
             return Control::Changed;
         }
-        state.vim.enter_normal();
-        state.vim.cmdline_clear();
+        // With vim enabled, Escape returns to Normal mode. With vim
+        // disabled the editor has no modal state — Escape only dismisses
+        // the transient status message and never blocks typing.
+        if state.vim_enabled {
+            state.vim.enter_normal();
+            state.vim.cmdline_clear();
+        }
         state.status_message.clear();
         return Control::Changed;
     }
@@ -122,13 +131,16 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         });
     }
 
+    // Vim motion/command modes are reachable only when vim keybindings are
+    // enabled. With vim disabled the editor is always in Insert (direct
+    // input); the catch-all coerces any stray mode back to Insert.
     match state.vim.mode {
-        VimMode::Insert => handle_insert_mode(key, state),
-        VimMode::Normal => handle_normal_mode(key, state),
+        VimMode::Normal if state.vim_enabled => handle_normal_mode(key, state),
         VimMode::Visual | VimMode::VisualLine if state.vim_enabled => {
             handle_visual_mode(key, state)
         }
         VimMode::Command if state.vim_enabled => handle_vim_command_key(key, state),
+        VimMode::Insert => handle_insert_mode(key, state),
         _ => {
             state.vim.enter_insert();
             handle_insert_mode(key, state)
@@ -981,6 +993,27 @@ mod tests {
         // displayed (first arg = top entry).
         state.recent_files.entries.reverse();
         state
+    }
+
+    #[test]
+    fn esc_does_not_enter_normal_when_vim_disabled() {
+        let mut state = state_with_text("hello");
+        state.vim_enabled = false;
+        state.vim.enter_insert();
+        let result = handle_key_event(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut state);
+        assert!(matches!(result, Control::Changed));
+        // With vim off there is no Normal mode — typing must stay unblocked.
+        assert_eq!(state.vim.mode, VimMode::Insert);
+    }
+
+    #[test]
+    fn esc_enters_normal_when_vim_enabled() {
+        let mut state = state_with_text("hello");
+        state.vim_enabled = true;
+        state.vim.enter_insert();
+        let result = handle_key_event(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut state);
+        assert!(matches!(result, Control::Changed));
+        assert_eq!(state.vim.mode, VimMode::Normal);
     }
 
     #[test]

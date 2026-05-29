@@ -99,20 +99,9 @@ pub(super) fn handle_insert_mode(key: &KeyEvent, state: &mut AppState) -> Contro
 }
 
 pub(super) fn handle_normal_mode(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    // Only reached when vim keybindings are enabled — the dispatcher routes
+    // non-vim input straight to Insert handling.
     if let KeyCode::Char(ch) = key.code {
-        if !state.vim_enabled {
-            return match ch {
-                'i' => {
-                    state.vim.enter_insert();
-                    Control::Changed
-                }
-                'h' => apply_motion(state, |buf| buf.move_left(false)),
-                'j' => apply_motion(state, |buf| buf.move_down(false)),
-                'k' => apply_motion(state, |buf| buf.move_up(false)),
-                'l' => apply_motion(state, |buf| buf.move_right(false)),
-                _ => Control::Continue,
-            };
-        }
         let dummy = TextBuffer::new();
         let buf = state
             .session
