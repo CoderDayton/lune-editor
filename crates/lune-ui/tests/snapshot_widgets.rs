@@ -13,6 +13,8 @@ use lune_core::ports::{FileEntry, FileState, StatusSnapshot};
 use lune_core::workspace::{DirEntry, EntryKind, FileStatus};
 use lune_git::diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 
+use lune_core::settings::CursorStyle;
+
 use lune_ui::highlight::theme::SyntaxTheme;
 use lune_ui::primitives::{Buffer, Rect};
 use lune_ui::theme::Theme;
@@ -269,7 +271,7 @@ fn snapshot_editor_pane_welcome() {
         None, // No buffer → welcome screen
         &mut viewport,
         true,
-        VimMode::Normal,
+        CursorStyle::Block,
         None,
         &syntax_theme,
         None,
@@ -298,7 +300,7 @@ fn snapshot_editor_pane_with_content() {
         Some(&text_buf),
         &mut viewport,
         true,
-        VimMode::Normal,
+        CursorStyle::Block,
         None,
         &syntax_theme,
         None,
@@ -327,7 +329,7 @@ fn snapshot_editor_pane_insert_mode() {
         Some(&text_buf),
         &mut viewport,
         true,
-        VimMode::Insert,
+        CursorStyle::Underline,
         None,
         &syntax_theme,
         None,

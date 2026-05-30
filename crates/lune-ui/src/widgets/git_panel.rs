@@ -33,6 +33,9 @@ pub struct GitPanelState {
     pub diff_view: DiffViewState,
     /// List viewport height from the last render, for page navigation.
     page_height: usize,
+    /// List region from the last render, for hit-testing mouse clicks.
+    /// `None` until the entry list is drawn (e.g. empty/clean state).
+    list_area: Option<Rect>,
 }
 
 /// A single entry in the git panel (section header or file).
@@ -64,6 +67,7 @@ impl GitPanelState {
             scroll: 0,
             diff_view: DiffViewState::default(),
             page_height: 0,
+            list_area: None,
         }
     }
 
@@ -126,6 +130,28 @@ impl GitPanelState {
     /// Number of entries (including headers).
     pub fn entry_count(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Whether the entry at `idx` is a file (as opposed to a section
+    /// header). Headers are not selectable, so a click landing on one
+    /// must not move the selection.
+    #[must_use]
+    pub fn entry_is_file(&self, idx: usize) -> bool {
+        matches!(self.entries.get(idx), Some(PanelEntry::File { .. }))
+    }
+
+    /// Map a terminal row to the entry index drawn there, using the list
+    /// region recorded on the last render. Returns `None` for rows
+    /// outside the list (branch header, footer, padding) or past the
+    /// last entry.
+    #[must_use]
+    pub fn hit_test(&self, row: u16) -> Option<usize> {
+        let area = self.list_area?;
+        if row < area.y || row >= area.y + area.height {
+            return None;
+        }
+        let idx = self.scroll + (row - area.y) as usize;
+        (idx < self.entries.len()).then_some(idx)
     }
 
     /// Jump to the first file entry.
@@ -250,6 +276,9 @@ pub fn render_git_panel(
     if area.height == 0 || area.width < 2 {
         return;
     }
+    // Cleared here and only set once the entry list is actually drawn,
+    // so a stale rect can't make clicks select rows on an empty panel.
+    state.list_area = None;
 
     let block = panel_block(theme, is_focused, Borders::ALL).title(panel_title(
         "SOURCE CONTROL",
@@ -298,6 +327,11 @@ pub fn render_git_panel(
     // Reserve the rightmost column for a scrollbar when entries overflow.
     let show_scrollbar = state.entries.len() > list_height;
     let list_width = body.width.saturating_sub(u16::from(show_scrollbar));
+
+    // Record the list region so mouse clicks can be mapped back to
+    // entries (`hit_test`). Includes the scrollbar column, which is fine
+    // since hit-testing only uses the row.
+    state.list_area = Some(body);
 
     for row in 0..list_height {
         let entry_idx = state.scroll + row;
@@ -575,6 +609,42 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let theme = Theme::dark();
         render_git_panel(area, &mut buf, &mut state, false, &theme);
+    }
+
+    #[test]
+    fn hit_test_maps_rows_to_entries_after_render() {
+        let mut state = GitPanelState::new();
+        state.update_status(make_status());
+
+        // Borders::ALL inset (1) + branch-header row (1) put the first
+        // list row at y=2; a footer row is reserved at the bottom.
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::dark();
+        render_git_panel(area, &mut buf, &mut state, false, &theme);
+
+        // entries: [Header, staged.rs, Header, unstaged.rs, new_file.rs]
+        assert_eq!(state.hit_test(2), Some(0), "first list row");
+        assert!(!state.entry_is_file(0), "row 0 is a section header");
+        assert_eq!(state.hit_test(3), Some(1));
+        assert!(state.entry_is_file(1), "staged.rs is a file");
+        assert_eq!(state.hit_test(6), Some(4), "last file row");
+        assert!(state.entry_is_file(4));
+
+        // Branch-header row, the row past the last entry, and the footer
+        // are all outside the list.
+        assert_eq!(state.hit_test(1), None, "branch-header row");
+        assert_eq!(state.hit_test(7), None, "past last entry");
+    }
+
+    #[test]
+    fn hit_test_is_none_on_empty_panel() {
+        let mut state = GitPanelState::new();
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::dark();
+        render_git_panel(area, &mut buf, &mut state, false, &theme);
+        assert_eq!(state.hit_test(3), None);
     }
 
     #[test]

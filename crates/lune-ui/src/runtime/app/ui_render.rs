@@ -1,6 +1,7 @@
 #![allow(clippy::wildcard_imports)]
 
 use super::*;
+use lune_core::settings::CursorStyle;
 
 pub(super) fn render_root_tabs(area: Rect, buf: &mut Buffer, state: &AppState) {
     let tabs = Tabs::new(ROOT_TAB_TITLES)
@@ -162,6 +163,20 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         .cached_settings
         .as_ref()
         .map_or(4, |s| s.editor.tab_size);
+    // In vim mode the cursor shape tracks the active mode (block in
+    // Normal/Visual/Command, underline in Insert); otherwise it follows
+    // the configured `editor.cursor_style` (default block).
+    let cursor_style = if state.vim_enabled {
+        match state.vim.mode {
+            VimMode::Insert => CursorStyle::Underline,
+            _ => CursorStyle::Block,
+        }
+    } else {
+        state
+            .cached_settings
+            .as_ref()
+            .map_or(CursorStyle::Block, |s| s.editor.cursor_style)
+    };
     let welcome = editor_pane::WelcomeInfo {
         recent_files: &recent_paths,
         selected: welcome_selected,
@@ -172,7 +187,7 @@ fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused:
         text_buf,
         &mut state.viewport,
         state.viewport_follow_cursor,
-        state.vim.mode,
+        cursor_style,
         highlighted,
         &state.syntax_theme,
         active_gutter,

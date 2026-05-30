@@ -76,6 +76,9 @@ pub struct EditorSettings {
     pub mouse_enabled: bool,
     /// Lines to keep above/below cursor when scrolling.
     pub scroll_margin: usize,
+    /// Shape of the editor cursor (when vim mode is off). In vim mode the
+    /// cursor still tracks the active mode and this is ignored.
+    pub cursor_style: CursorStyle,
 }
 
 impl Default for EditorSettings {
@@ -91,8 +94,26 @@ impl Default for EditorSettings {
             vim_mode: false,
             mouse_enabled: true,
             scroll_margin: 5,
+            cursor_style: CursorStyle::default(),
         }
     }
+}
+
+/// Editor cursor shape. Serialized in `config.toml` as a lowercase
+/// string (`"block"`, `"bar"`, `"underline"`).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CursorStyle {
+    /// Filled block covering the whole cell (the glyph shows through,
+    /// inverted). The default.
+    #[default]
+    Block,
+    /// Thin vertical bar on the left edge of the cell. The terminal has
+    /// no sub-cell rendering, so the bar overdraws (hides) the glyph in
+    /// the cursor cell, unlike `Block`/`Underline` which keep it.
+    Bar,
+    /// Underline beneath the cell.
+    Underline,
 }
 
 // ── UI settings ───────────────────────────────────────────────────────

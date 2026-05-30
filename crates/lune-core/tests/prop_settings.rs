@@ -23,6 +23,11 @@ fn arb_editor_settings() -> impl Strategy<Value = EditorSettings> {
         any::<bool>(),               // vim_mode
         any::<bool>(),               // mouse_enabled
         (0usize..20),                // scroll_margin
+        prop_oneof![
+            Just(CursorStyle::Block),
+            Just(CursorStyle::Bar),
+            Just(CursorStyle::Underline),
+        ], // cursor_style
     )
         .prop_map(
             |(
@@ -36,6 +41,7 @@ fn arb_editor_settings() -> impl Strategy<Value = EditorSettings> {
                 vim_mode,
                 mouse_enabled,
                 scroll_margin,
+                cursor_style,
             )| {
                 EditorSettings {
                     tab_size,
@@ -48,6 +54,7 @@ fn arb_editor_settings() -> impl Strategy<Value = EditorSettings> {
                     vim_mode,
                     mouse_enabled,
                     scroll_margin,
+                    cursor_style,
                 }
             },
         )

@@ -304,18 +304,23 @@ fn handle_git_panel_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEven
         KeyCode::Char('d') => Control::Event(AppEvent::Command(AppCommand::GitDiscard)),
         KeyCode::Char('c') => Control::Event(AppEvent::Command(AppCommand::GitCommit)),
         KeyCode::Char('r') => Control::Event(AppEvent::Command(AppCommand::GitRefresh)),
-        KeyCode::Enter => {
-            if let Some(file) = state.git_panel.selected_file().cloned() {
-                let snap = state.git_port().status().load();
-                if let Some(ref root) = snap.workdir_root {
-                    let abs_path = root.join(&file.path);
-                    return Control::Event(AppEvent::Command(AppCommand::OpenFile(abs_path)));
-                }
-            }
-            Control::Continue
-        }
+        KeyCode::Enter => handle_git_panel_open(state),
         _ => Control::Continue,
     }
+}
+
+/// Open the file under the git-panel selection in the editor. Shared by
+/// the `Enter` key and a double-click. No-op when a header is selected
+/// or the workdir root is unknown.
+fn handle_git_panel_open(state: &AppState) -> Control<AppEvent> {
+    if let Some(file) = state.git_panel.selected_file().cloned() {
+        let snap = state.git_port().status().load();
+        if let Some(ref root) = snap.workdir_root {
+            let abs_path = root.join(&file.path);
+            return Control::Event(AppEvent::Command(AppCommand::OpenFile(abs_path)));
+        }
+    }
+    Control::Continue
 }
 
 fn toggle_selected_dir(state: &mut AppState) -> Control<AppEvent> {
@@ -602,6 +607,18 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             if let Some(right_area) = splits.right {
                 if point_in_rect(col, row, right_area) {
                     state.focus.focus(PanelId::GitPanel);
+                    let click_count = register_click(state, col, row, 500);
+                    if let Some(idx) = state.git_panel.hit_test(row) {
+                        // Headers aren't selectable; clicking one only
+                        // focuses the panel.
+                        if state.git_panel.entry_is_file(idx) {
+                            state.git_panel.selected = idx;
+                            if click_count >= 2 {
+                                state.last_click = None;
+                                return handle_git_panel_open(state);
+                            }
+                        }
+                    }
                     return Control::Changed;
                 }
             }

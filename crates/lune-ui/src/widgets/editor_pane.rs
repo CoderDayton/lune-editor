@@ -20,10 +20,10 @@ use smallvec::SmallVec;
 use lune_core::highlight::{HighlightedLine, StyledSpan};
 use lune_core::ports::GutterSnapshot;
 use lune_core::prelude::*;
+use lune_core::settings::CursorStyle;
 
 use crate::highlight::theme::SyntaxTheme;
 use crate::theme::Theme;
-use crate::vim::VimMode;
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -303,7 +303,7 @@ pub fn render_editor_pane(
     text_buf: Option<&TextBuffer>,
     viewport: &mut ViewportState,
     follow_cursor: bool,
-    vim_mode: VimMode,
+    cursor_style: CursorStyle,
     highlighted: Option<&[HighlightedLine]>,
     syntax_theme: &SyntaxTheme,
     gutter_marks: Option<&GutterSnapshot>,
@@ -439,7 +439,7 @@ pub fn render_editor_pane(
                 cursor,
                 &secondary_cursors,
                 &secondary_selections,
-                vim_mode,
+                cursor_style,
                 selection.as_ref(),
                 search_matches,
                 hl_line,
@@ -746,7 +746,7 @@ fn render_line_content(
     cursor: &Position,
     secondary_cursors: &[Position],
     secondary_selections: &[(Position, Position)],
-    vim_mode: VimMode,
+    cursor_style: CursorStyle,
     selection: Option<&(Position, Position)>,
     search_matches: Option<&lune_core::search::SearchState>,
     hl_line: Option<&HighlightedLine>,
@@ -794,14 +794,30 @@ fn render_line_content(
     // Render cursor.
     if cursor.line == line_idx {
         render_cursor(
-            x, y, width, cursor, left_col, vim_mode, buf, ui_theme, line_text,
+            x,
+            y,
+            width,
+            cursor,
+            left_col,
+            cursor_style,
+            buf,
+            ui_theme,
+            line_text,
         );
     }
 
     for secondary in secondary_cursors {
         if secondary.line == line_idx {
             render_secondary_cursor(
-                x, y, width, secondary, left_col, vim_mode, buf, ui_theme, line_text,
+                x,
+                y,
+                width,
+                secondary,
+                left_col,
+                cursor_style,
+                buf,
+                ui_theme,
+                line_text,
             );
         }
     }
@@ -921,7 +937,7 @@ fn render_cursor(
     width: usize,
     cursor: &Position,
     left_col: usize,
-    vim_mode: VimMode,
+    cursor_style: CursorStyle,
     buf: &mut Buffer,
     theme: &Theme,
     line_text: &str,
@@ -933,18 +949,26 @@ fn render_cursor(
         let cx = x + screen_col as u16;
         let cell = &mut buf[(cx, y)];
 
-        match vim_mode {
-            VimMode::Normal | VimMode::Visual | VimMode::VisualLine | VimMode::Command => {
-                // Block cursor: reverse the cell.
+        match cursor_style {
+            CursorStyle::Block => {
+                // Filled block: reverse the cell so the glyph shows inverted.
                 cell.set_style(theme.editor_cursor_normal);
             }
-            VimMode::Insert => {
-                // Line cursor: underline the cell.
+            CursorStyle::Underline => {
                 cell.set_style(theme.editor_cursor_insert);
+            }
+            CursorStyle::Bar => {
+                // Thin vertical bar on the cell's left edge. The cursor
+                // color is the `bg` of the block style (the text color).
+                let bar = theme.editor_cursor_normal.bg.unwrap_or(theme.fg);
+                cell.set_symbol(CURSOR_BAR).set_style(Style::new().fg(bar));
             }
         }
     }
 }
+
+/// Glyph for the [`CursorStyle::Bar`] cursor — a left one-eighth block.
+const CURSOR_BAR: &str = "\u{258f}";
 
 /// Render a secondary cursor on a line cell.
 #[allow(clippy::cast_possible_truncation)]
@@ -955,7 +979,7 @@ fn render_secondary_cursor(
     width: usize,
     cursor: &Position,
     left_col: usize,
-    vim_mode: VimMode,
+    cursor_style: CursorStyle,
     buf: &mut Buffer,
     theme: &Theme,
     line_text: &str,
@@ -969,16 +993,27 @@ fn render_secondary_cursor(
 
     let cx = x + screen_col as u16;
     let cell = &mut buf[(cx, y)];
-    let style = match vim_mode {
-        VimMode::Normal | VimMode::Visual | VimMode::VisualLine | VimMode::Command => Style::new()
-            .fg(theme.bg)
-            .bg(theme.accent)
-            .add_modifier(Modifier::BOLD),
-        VimMode::Insert => Style::new()
-            .fg(theme.accent)
-            .add_modifier(Modifier::UNDERLINED | Modifier::BOLD),
-    };
-    cell.set_style(style);
+    match cursor_style {
+        CursorStyle::Block => {
+            cell.set_style(
+                Style::new()
+                    .fg(theme.bg)
+                    .bg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+        CursorStyle::Underline => {
+            cell.set_style(
+                Style::new()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::UNDERLINED | Modifier::BOLD),
+            );
+        }
+        CursorStyle::Bar => {
+            cell.set_symbol(CURSOR_BAR)
+                .set_style(Style::new().fg(theme.accent).add_modifier(Modifier::BOLD));
+        }
+    }
 }
 
 /// Paint background-only style onto every screen cell whose underlying
@@ -2043,7 +2078,7 @@ mod tests {
             Some(&text_buf),
             &mut viewport,
             false,
-            VimMode::Normal,
+            CursorStyle::Block,
             None,
             &SyntaxTheme::dark(),
             None,
@@ -2083,7 +2118,7 @@ mod tests {
             Some(&text_buf),
             &mut viewport,
             false,
-            VimMode::Normal,
+            CursorStyle::Block,
             None,
             &SyntaxTheme::dark(),
             None,
@@ -2097,5 +2132,58 @@ mod tests {
         let cell = &render_buf[(area.x + gw + 2, area.y)];
         assert_eq!(cell.style().bg, Some(theme.accent));
         assert_eq!(cell.style().fg, Some(theme.bg));
+    }
+
+    /// Render a single-line buffer ("abc") under the given cursor style
+    /// and return `(symbol, fg, bg, modifier)` of the cell under the
+    /// primary cursor at char column 0.
+    fn render_cursor_cell(style: CursorStyle) -> (String, Color, Color, Modifier) {
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+        let mut viewport = ViewportState::default();
+        let text_buf = TextBuffer::from_text("abc");
+        let theme = Theme::dark();
+        render_editor_pane(
+            area,
+            &mut buf,
+            Some(&text_buf),
+            &mut viewport,
+            false,
+            style,
+            None,
+            &SyntaxTheme::dark(),
+            None,
+            None,
+            &theme,
+            4,
+            None,
+        );
+        let gw = gutter_width(text_buf.line_count());
+        let cell = &buf[(area.x + gw, area.y)];
+        (cell.symbol().to_string(), cell.fg, cell.bg, cell.modifier)
+    }
+
+    #[test]
+    fn bar_cursor_draws_left_edge_glyph() {
+        let (symbol, _, _, _) = render_cursor_cell(CursorStyle::Bar);
+        assert_eq!(symbol, CURSOR_BAR);
+    }
+
+    #[test]
+    fn block_cursor_keeps_glyph_and_inverts_cell() {
+        let theme = Theme::dark();
+        let (symbol, fg, bg, _) = render_cursor_cell(CursorStyle::Block);
+        // Block keeps the underlying glyph (no bar substitution) and
+        // paints the reverse-video style.
+        assert_eq!(symbol, "a");
+        assert_eq!(Some(fg), theme.editor_cursor_normal.fg);
+        assert_eq!(Some(bg), theme.editor_cursor_normal.bg);
+    }
+
+    #[test]
+    fn underline_cursor_keeps_glyph() {
+        let (symbol, _, _, modifier) = render_cursor_cell(CursorStyle::Underline);
+        assert_eq!(symbol, "a");
+        assert!(modifier.contains(Modifier::UNDERLINED));
     }
 }

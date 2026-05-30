@@ -170,6 +170,7 @@ line_numbers = true
 relative_line_numbers = false
 auto_save_interval_secs = 60
 scroll_margin = 5
+cursor_style = "block"   # block | bar | underline (ignored in vim mode)
 
 [ui]
 show_file_tree = true
