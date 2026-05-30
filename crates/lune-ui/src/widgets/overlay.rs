@@ -332,18 +332,34 @@ impl OverlayState {
     /// Enforces the queue cap from [`NotificationConfig::max_queue`]:
     /// when exceeded, the oldest entry is dropped.
     pub fn notify(&mut self, message: impl Into<String>, level: NotificationLevel) {
+        self.notify_at(message, level, Instant::now());
+    }
+
+    /// [`notify`](Self::notify) with an injectable timestamp so the
+    /// entrance/TTL clocks can be driven deterministically in tests.
+    ///
+    /// On dedup only `created` (the TTL clock) is reset; `spawned` (the
+    /// entrance clock) is preserved so the toast doesn't replay its
+    /// slide-in animation on every repeat.
+    pub fn notify_at(
+        &mut self,
+        message: impl Into<String>,
+        level: NotificationLevel,
+        now: Instant,
+    ) {
         let message = message.into();
         if let Some(last) = self.notifications.last_mut() {
             if last.level == level && last.message == message {
                 last.count = last.count.saturating_add(1);
-                last.created = Instant::now();
+                last.created = now;
                 return;
             }
         }
         self.notifications.push(Notification {
             message,
             level,
-            created: Instant::now(),
+            created: now,
+            spawned: now,
             count: 1,
         });
         while self.notifications.len() > self.notification_config.max_queue {
@@ -381,6 +397,14 @@ impl OverlayState {
     /// dismiss-all keybinding.
     pub fn dismiss_all_notifications(&mut self) {
         self.notifications.clear();
+    }
+
+    /// Whether any toast is currently queued. Drives registration of the
+    /// notification animation timer so toasts prune and fade on a quiet
+    /// terminal without waiting for unrelated input.
+    #[must_use]
+    pub fn has_active_notifications(&self) -> bool {
+        !self.notifications.is_empty()
     }
 }
 
@@ -2145,6 +2169,8 @@ pub struct NotificationConfig {
     pub ttl_error: Duration,
     /// Duration of the fade-out right before expiry.
     pub fade: Duration,
+    /// Duration of the slide-and-fade-in entrance when a toast appears.
+    pub enter: Duration,
 }
 
 impl Default for NotificationConfig {
@@ -2159,6 +2185,7 @@ impl Default for NotificationConfig {
             ttl_warning: Duration::from_millis(6000),
             ttl_error: Duration::from_millis(10_000),
             fade: Duration::from_millis(700),
+            enter: Duration::from_millis(180),
         }
     }
 }
@@ -2187,6 +2214,11 @@ pub struct Notification {
     /// When the notification was (last) created. Reset on dedup so a
     /// repeated message refreshes its TTL instead of expiring early.
     pub created: Instant,
+    /// When the notification first appeared. Unlike `created`, this is
+    /// *not* reset on dedup — so the entrance animation plays exactly
+    /// once and a rapidly-repeated message doesn't re-slide on each
+    /// `×N` bump.
+    pub spawned: Instant,
     /// How many times this message has been pushed consecutively.
     /// Rendered as a trailing `×N` suffix when > 1.
     pub count: u32,
@@ -2215,6 +2247,19 @@ impl Notification {
         let remaining = ttl.saturating_sub(elapsed).as_secs_f32();
         let fade_secs = cfg.fade.as_secs_f32().max(f32::EPSILON);
         (remaining / fade_secs).clamp(0.0, 1.0)
+    }
+
+    /// Entrance progress in `[0.0, 1.0]`, eased out (cubic) over
+    /// `cfg.enter` from `spawned`. `0.0` the instant the toast appears,
+    /// `1.0` once it has fully slid and faded in. Decoupled from
+    /// `vitality` (the exit fade) so the two animations never interfere.
+    #[must_use]
+    pub fn entrance(&self, cfg: &NotificationConfig) -> f32 {
+        let elapsed = self.spawned.elapsed().as_secs_f32();
+        let dur = cfg.enter.as_secs_f32().max(f32::EPSILON);
+        let t = (elapsed / dur).clamp(0.0, 1.0);
+        // Ease-out cubic: fast start, gentle settle.
+        1.0 - (1.0 - t).powi(3)
     }
 }
 
@@ -3164,6 +3209,25 @@ fn blend_toward(color: Color, tr: u8, tg: u8, tb: u8, t: f32) -> Color {
     color_util::blend(color, Color::Rgb(tr, tg, tb), t)
 }
 
+/// Horizontal offset (columns) a toast is pushed toward the right edge
+/// given its `presence` in `[0.0, 1.0]`. Full presence sits flush at the
+/// anchor (`0`); zero presence is shoved `max_shift` columns right so it
+/// clips off-screen. Drives the slide-in entrance and slide-out exit.
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+fn toast_x_shift(presence: f32, max_shift: u16) -> u16 {
+    let p = presence.clamp(0.0, 1.0);
+    ((1.0 - p) * f32::from(max_shift)).round() as u16
+}
+
+/// Vertical rows a toast contributes to the stack as it enters, ramping
+/// from `0` to `full` with `entrance`. Lets the stack settle into place
+/// instead of snapping when a new toast pushes the others up.
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+fn slot_advance(entrance: f32, full: u16) -> u16 {
+    let e = entrance.clamp(0.0, 1.0);
+    (e * f32::from(full)).round() as u16
+}
+
 fn truncate_inline_text(text: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
@@ -3576,19 +3640,47 @@ fn render_notifications(
     let visible_count = notifications.len().min(config.max_visible);
     let hidden = notifications.len().saturating_sub(visible_count);
 
+    // Horizontal travel for the slide-in / slide-out, capped so a toast
+    // mid-animation still shows something rather than vanishing.
+    let max_shift = (toast_w / 4).max(2);
+
     // Render from newest (end of vec) upward.
-    let top_of_stack_y = {
+    let (top_of_stack_y, top_shift) = {
         let mut top = next_bottom;
+        let mut top_shift = 0u16;
         for notif in notifications.iter().rev().take(visible_count) {
             if next_bottom < area.y + TOAST_H {
                 break;
             }
-            let rect = Rect::new(x, next_bottom.saturating_sub(TOAST_H), toast_w, TOAST_H);
-            render_single_toast(rect, buf, notif, config, theme);
+            let entrance = notif.entrance(config);
+            let vitality = notif.vitality(config);
+            let presence = entrance.min(vitality);
+            // Slide horizontally by shoving toward the right edge, then
+            // clip to the visible area so off-screen cells are never
+            // written (direct buffer indexing would otherwise panic).
+            let shift = toast_x_shift(presence, max_shift);
+            let toast_x = (x + shift).min(area.x + area.width.saturating_sub(1));
+            let avail_w = (area.x + area.width).saturating_sub(toast_x);
+            let draw_w = toast_w.min(avail_w);
+            let rect = Rect::new(
+                toast_x,
+                next_bottom.saturating_sub(TOAST_H),
+                draw_w,
+                TOAST_H,
+            );
+            render_single_toast(rect, buf, notif, theme, presence, vitality);
             top = rect.y;
-            next_bottom = next_bottom.saturating_sub(SLOT_H);
+            // Topmost visible toast wins the slide offset for the
+            // overflow label below, so the label tracks it instead of
+            // the static anchor.
+            top_shift = shift;
+            // The newest toast's slot grows from collapsed to full over
+            // its entrance, so the stack above rises into place smoothly
+            // instead of snapping up the instant the toast appears.
+            let advance = slot_advance(entrance, SLOT_H).max(1);
+            next_bottom = next_bottom.saturating_sub(advance);
         }
-        top
+        (top, top_shift)
     };
 
     // "+N more" overflow indicator above the topmost visible toast.
@@ -3597,7 +3689,10 @@ fn render_notifications(
         let label_w = u16::try_from(label.chars().count())
             .unwrap_or(u16::MAX)
             .min(toast_w);
-        let label_x = x + toast_w.saturating_sub(label_w);
+        // Pin the label to the topmost toast's right edge as it slides,
+        // clamped so it never writes past the visible area.
+        let label_x = (x + top_shift + toast_w.saturating_sub(label_w))
+            .min(area.x + area.width.saturating_sub(label_w));
         let label_y = top_of_stack_y.saturating_sub(1);
         let label_rect = Rect::new(label_x, label_y, label_w, 1);
         Clear.render(label_rect, buf);
@@ -3610,8 +3705,9 @@ fn render_single_toast(
     rect: Rect,
     buf: &mut Buffer,
     notif: &Notification,
-    config: &NotificationConfig,
     theme: &Theme,
+    presence: f32,
+    vitality: f32,
 ) {
     if rect.width < 8 || rect.height < 3 {
         return;
@@ -3624,10 +3720,12 @@ fn render_single_toast(
         NotificationLevel::Error => theme.notif_error,
     };
 
-    let vitality = notif.vitality(config);
+    // `presence` folds the entrance ramp into the exit fade so the toast
+    // fades in on arrival and out on expiry through one blend factor;
+    // `vitality` (the raw exit fade) still drives the progress bar below.
     let (br, bg, bb) = color_util::to_rgb_u8(theme.bg).unwrap_or((0, 0, 0));
-    let border_fg = blend_toward(base_fg, br, bg, bb, 1.0 - vitality);
-    let body_fg = blend_toward(theme.fg, br, bg, bb, (1.0 - vitality) * 0.85);
+    let border_fg = blend_toward(base_fg, br, bg, bb, 1.0 - presence);
+    let body_fg = blend_toward(theme.fg, br, bg, bb, (1.0 - presence) * 0.85);
 
     // 1) Clear the rect so nothing shows through from behind.
     Clear.render(rect, buf);
@@ -3778,6 +3876,7 @@ mod tests {
             message: "Clipboard was dropped very quickly after writing (9ms)\nConsider keeping `Clipboard` in more persistent state somewhere.".to_string(),
             level: NotificationLevel::Error,
             created: Instant::now(),
+            spawned: Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
             count: 1,
         };
 
@@ -4823,6 +4922,7 @@ mod tests {
             message: "test".to_string(),
             level: NotificationLevel::Info,
             created: Instant::now(),
+            spawned: Instant::now(),
             count: 1,
         };
         assert!((notif.vitality(&cfg) - 1.0).abs() < 0.01);
@@ -4837,6 +4937,7 @@ mod tests {
             created: Instant::now()
                 .checked_sub(std::time::Duration::from_secs(30))
                 .unwrap(),
+            spawned: Instant::now(),
             count: 1,
         };
         assert!(notif.vitality(&cfg) <= 0.0);
@@ -4852,6 +4953,7 @@ mod tests {
             message: "test".to_string(),
             level: NotificationLevel::Info,
             created: Instant::now().checked_sub(fade_midpoint).unwrap(),
+            spawned: Instant::now(),
             count: 1,
         };
         let v = notif.vitality(&cfg);
@@ -4963,6 +5065,7 @@ mod tests {
             created: Instant::now()
                 .checked_sub(cfg.ttl_for(NotificationLevel::Success) + Duration::from_secs(1))
                 .unwrap(),
+            spawned: Instant::now(),
             count: 1,
         });
         // An Error message created at the same ancient timestamp should
@@ -4974,11 +5077,121 @@ mod tests {
             message: "still-live error".to_string(),
             level: NotificationLevel::Error,
             created: ancient,
+            spawned: ancient,
             count: 1,
         });
         overlay.prune_notifications();
         assert_eq!(overlay.notifications.len(), 1);
         assert_eq!(overlay.notifications[0].level, NotificationLevel::Error);
+    }
+
+    // ── Animation: stable entrance clock ───────────────────────────
+
+    #[test]
+    fn notify_at_sets_spawned_equal_to_created_on_new() {
+        let mut overlay = OverlayState::default();
+        let t0 = Instant::now();
+        overlay.notify_at("Hi", NotificationLevel::Info, t0);
+        let n = &overlay.notifications[0];
+        assert_eq!(n.spawned, t0);
+        assert_eq!(n.created, t0);
+    }
+
+    #[test]
+    fn notify_dedup_preserves_spawned_resets_created() {
+        let mut overlay = OverlayState::default();
+        let t0 = Instant::now();
+        overlay.notify_at("Saved", NotificationLevel::Success, t0);
+        let t1 = t0 + Duration::from_millis(500);
+        overlay.notify_at("Saved", NotificationLevel::Success, t1);
+        assert_eq!(overlay.notifications.len(), 1);
+        let n = &overlay.notifications[0];
+        assert_eq!(n.count, 2);
+        assert_eq!(n.spawned, t0, "entrance clock must survive dedup");
+        assert_eq!(n.created, t1, "TTL clock must reset on dedup");
+    }
+
+    // ── Animation: entrance easing ─────────────────────────────────
+
+    #[test]
+    fn entrance_is_zero_when_fresh() {
+        let cfg = NotificationConfig::default();
+        let notif = Notification {
+            message: "x".to_string(),
+            level: NotificationLevel::Info,
+            created: Instant::now(),
+            spawned: Instant::now(),
+            count: 1,
+        };
+        assert!(notif.entrance(&cfg) < 0.05, "fresh toast starts hidden");
+    }
+
+    #[test]
+    fn entrance_completes_after_enter_window() {
+        let cfg = NotificationConfig::default();
+        let notif = Notification {
+            message: "x".to_string(),
+            level: NotificationLevel::Info,
+            created: Instant::now(),
+            spawned: Instant::now()
+                .checked_sub(cfg.enter + Duration::from_millis(50))
+                .unwrap(),
+            count: 1,
+        };
+        assert!((notif.entrance(&cfg) - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn entrance_midway_is_eased_past_half() {
+        let cfg = NotificationConfig::default();
+        let notif = Notification {
+            message: "x".to_string(),
+            level: NotificationLevel::Info,
+            created: Instant::now(),
+            spawned: Instant::now().checked_sub(cfg.enter / 2).unwrap(),
+            count: 1,
+        };
+        let e = notif.entrance(&cfg);
+        assert!(
+            e > 0.5 && e < 1.0,
+            "ease-out: halfway in time should be past halfway in progress, got {e}"
+        );
+    }
+
+    // ── Animation: toast geometry helpers ──────────────────────────
+
+    #[test]
+    fn toast_x_shift_full_presence_is_flush() {
+        assert_eq!(toast_x_shift(1.0, 8), 0);
+    }
+
+    #[test]
+    fn toast_x_shift_zero_presence_is_max() {
+        assert_eq!(toast_x_shift(0.0, 8), 8);
+    }
+
+    #[test]
+    fn toast_x_shift_is_proportional_and_clamped() {
+        assert_eq!(toast_x_shift(0.5, 8), 4);
+        assert_eq!(toast_x_shift(-1.0, 8), 8);
+        assert_eq!(toast_x_shift(2.0, 8), 0);
+    }
+
+    #[test]
+    fn slot_advance_grows_with_entrance() {
+        assert_eq!(slot_advance(0.0, 4), 0);
+        assert_eq!(slot_advance(1.0, 4), 4);
+        assert_eq!(slot_advance(0.5, 4), 2);
+    }
+
+    #[test]
+    fn has_active_notifications_tracks_queue() {
+        let mut overlay = OverlayState::default();
+        assert!(!overlay.has_active_notifications());
+        overlay.notify_info("hi");
+        assert!(overlay.has_active_notifications());
+        overlay.dismiss_all_notifications();
+        assert!(!overlay.has_active_notifications());
     }
 
     #[test]

@@ -353,6 +353,13 @@ pub struct AppState {
     /// and stops waking on a fixed cadence. Synced after every event
     /// in [`sync_spinner_timer`].
     spinner_timer: Option<TimerHandle>,
+
+    /// Active notification animation timer handle, registered while any
+    /// toast is on screen so the loop wakes on a fixed ~30 fps cadence to
+    /// prune and animate toasts. `None` when no toast is queued, so an
+    /// idle terminal stops waking. Synced after every event in
+    /// [`sync_notification_timer`].
+    notif_timer: Option<TimerHandle>,
 }
 
 /// Which border is being dragged by the mouse.
@@ -475,6 +482,7 @@ impl AppState {
             },
             image_decode_wake: Arc::new(AtomicBool::new(false)),
             spinner_timer: None,
+            notif_timer: None,
         };
         // Wire the real image decode pipeline: a single channel pair
         // shared between the cloneable `ImageDecoder` handle (which
@@ -1663,15 +1671,20 @@ pub fn event(
             // Debounced reactive state persistence (~2 s).
             maybe_persist_state(state);
 
-            // Prune notifications on timer ticks.
-            let had = !state.overlay.notifications.is_empty();
+            // Prune expired notifications, then decide whether this tick
+            // needs a repaint. Toasts have their own animation timer (see
+            // `sync_notification_timer`), so this now runs on a quiet
+            // terminal too — which is what finally lets a toast fade out
+            // and disappear with no user input. While any toast is on
+            // screen we redraw every tick to advance its slide/fade.
+            let before = state.overlay.notifications.len();
             state.overlay.prune_notifications();
-            let notif_changed = had && state.overlay.notifications.is_empty();
-            // While the spinner timer is registered, every tick must
-            // result in a render so `throbber.calc_next()` advances —
-            // otherwise the spinner freezes on a quiet terminal
-            // between user events.
-            if notif_changed || state.spinner_timer.is_some() {
+            let notif_changed = state.overlay.notifications.len() != before;
+            if notification_tick_needs_render(
+                notif_changed,
+                state.spinner_timer.is_some(),
+                state.overlay.has_active_notifications(),
+            ) {
                 Ok(Control::Changed)
             } else {
                 Ok(Control::Continue)
@@ -1684,6 +1697,7 @@ pub fn event(
         AppEvent::ImageDecodeReady => Ok(handle_image_decode_ready(state)),
     };
     sync_spinner_timer(state, global);
+    sync_notification_timer(state, global);
     result
 }
 
@@ -1710,6 +1724,54 @@ fn sync_spinner_timer(state: &mut AppState, global: &LuneGlobal) {
         }
         (Some(_), false) => {
             if let Some(h) = state.spinner_timer.take() {
+                global.remove_timer(h);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Tick interval for the notification animation timer. ~30 fps — fine
+/// enough for a smooth slide/fade, coarse enough to stay cheap, and only
+/// running while toasts are actually on screen.
+const NOTIF_TICK_INTERVAL: Duration = Duration::from_millis(33);
+
+/// Whether a notification timer tick should force a render.
+///
+/// We redraw while any toast is visible (to advance its slide/fade) or
+/// while the spinner timer is running (to advance the throbber); the
+/// `notif_changed` flag covers the final frame that clears the last
+/// toast the instant it expires.
+const fn notification_tick_needs_render(
+    notif_changed: bool,
+    spinner_running: bool,
+    has_notifications: bool,
+) -> bool {
+    notif_changed || spinner_running || has_notifications
+}
+
+/// Register or remove the notification animation timer so it matches the
+/// presence of on-screen toasts.
+///
+/// Toasts expire on a wall-clock TTL and animate their slide/fade over
+/// time, but the rat-salsa loop only repaints in response to events.
+/// Without a timer, a toast raised on an otherwise-idle terminal would
+/// hang on screen — frozen at full opacity — until the next unrelated
+/// key/mouse/FS event happened to wake the loop. Registering a
+/// repeat-forever ~30 fps timer while any toast is queued guarantees the
+/// periodic `Timer` events that drive `prune_notifications` and the fade
+/// animation; removing it once the queue drains returns the loop to its
+/// idle blocked-on-input state so we don't burn CPU on an empty screen.
+fn sync_notification_timer(state: &mut AppState, global: &LuneGlobal) {
+    let active = state.overlay.has_active_notifications();
+    match (&state.notif_timer, active) {
+        (None, true) => {
+            let handle =
+                global.add_timer(TimerDef::new().repeat_forever().timer(NOTIF_TICK_INTERVAL));
+            state.notif_timer = Some(handle);
+        }
+        (Some(_), false) => {
+            if let Some(h) = state.notif_timer.take() {
                 global.remove_timer(h);
             }
         }
@@ -2643,6 +2705,18 @@ pub fn run(state: &mut AppState) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_tick_renders_while_toasts_or_spinner_present() {
+        // Quiet terminal, nothing on screen -> stay idle (no wasted frame).
+        assert!(!notification_tick_needs_render(false, false, false));
+        // A toast is visible -> redraw every tick to advance its animation.
+        assert!(notification_tick_needs_render(false, false, true));
+        // Spinner running -> redraw to advance the throbber.
+        assert!(notification_tick_needs_render(false, true, false));
+        // The last toast just expired this tick -> one redraw to clear it.
+        assert!(notification_tick_needs_render(true, false, false));
+    }
     use crate::runtime::tiling;
     use ratatui_core::layout::Rect;
 
