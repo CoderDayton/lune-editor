@@ -684,6 +684,35 @@ fn snapshot_overlay_command_palette_filtered() {
 }
 
 #[test]
+fn snapshot_overlay_project_search() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(
+        root.join("alpha.rs"),
+        "fn alpha() {\n    let value = compute();\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("beta.rs"),
+        "fn beta() {\n    let value = other();\n}\n",
+    )
+    .unwrap();
+
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buf = Buffer::empty(area);
+    let theme = Theme::dark();
+
+    let mut overlay = OverlayState::default();
+    overlay.open_project_search(root);
+    overlay.project_search.type_char('v');
+    overlay.project_search.type_char('a');
+    overlay.project_search.type_char('l');
+
+    render_overlay(area, &mut buf, &mut overlay, &theme);
+    insta::assert_snapshot!("overlay_project_search", buffer_to_text(&buf));
+}
+
+#[test]
 fn snapshot_overlay_confirm_dialog() {
     let area = Rect::new(0, 0, 80, 24);
     let mut buf = Buffer::empty(area);

@@ -10,6 +10,9 @@ pub(super) fn handle_workspace_command(
         AppCommand::Save => handle_save(state),
         AppCommand::SaveAll => handle_save_all(state),
         AppCommand::OpenFile(path) => handle_open_file(path, state),
+        AppCommand::OpenFileAtLine { path, line, col } => {
+            handle_open_file_at_line(path, *line, *col, state)
+        }
         AppCommand::ToggleHiddenFiles
         | AppCommand::RevealInFileTree(_)
         | AppCommand::NewFile
@@ -27,6 +30,30 @@ pub(super) fn handle_workspace_command(
         _ => return None,
     };
     Some(control)
+}
+
+/// Open `path` and move the cursor to `line`/`col` (zero-based, each
+/// clamped to the file). Used by project search to jump straight to a
+/// match. The cursor is repositioned only when `path` actually opened as
+/// the active text buffer — a failed open (e.g. the file vanished between
+/// the search and Enter) or an image preview must not disturb whatever
+/// buffer is already active.
+fn handle_open_file_at_line(
+    path: &std::path::Path,
+    line: usize,
+    col: usize,
+    state: &mut AppState,
+) -> Control<AppEvent> {
+    let (control, opened) = open_file_routed(path, state);
+    if opened {
+        if let Some(buf) = state.active_buf_mut() {
+            let line = line.min(buf.line_count().saturating_sub(1));
+            let col = col.min(buf.line_len_no_newline(line));
+            buf.cursor = CursorState::at(Position::new(line, col));
+        }
+        state.viewport_follow_cursor = true;
+    }
+    control
 }
 
 pub(super) fn handle_save(state: &mut AppState) -> Control<AppEvent> {
@@ -298,13 +325,22 @@ fn handle_delete(path: &Path, state: &mut AppState) -> Control<AppEvent> {
 }
 
 pub(super) fn handle_open_file(path: &std::path::Path, state: &mut AppState) -> Control<AppEvent> {
+    open_file_routed(path, state).0
+}
+
+/// Open `path`, routing image files to the preview overlay and text files
+/// to a new editor buffer. Returns the redraw control plus `true` when a
+/// text buffer for `path` became the active buffer — a clean success
+/// signal for jump-to-line, which must not move the cursor on a failed
+/// open or an image preview.
+fn open_file_routed(path: &std::path::Path, state: &mut AppState) -> (Control<AppEvent>, bool) {
     // Image files: route to the image preview overlay instead of opening
     // as a text buffer (which would garble binary data into the editor).
     if is_image_path(path) {
         state.overlay.open_image_preview(path, &state.image_decoder);
         state.focus.focus(PanelId::CommandPalette);
         state.status_message = format!("Previewing: {}", path.display());
-        return Control::Changed;
+        return (Control::Changed, false);
     }
     match state.open_file(path) {
         Ok(_) => {
@@ -312,15 +348,16 @@ pub(super) fn handle_open_file(path: &std::path::Path, state: &mut AppState) -> 
             state.focus.focus(PanelId::Editor);
             state.viewport_follow_cursor = true;
             state.status_message = format!("Opened: {}", path.display());
+            (Control::Changed, true)
         }
         Err(e) => {
             state
                 .overlay
                 .notify(format!("Open failed: {e}"), NotificationLevel::Error);
             state.status_message = format!("Open failed: {e}");
+            (Control::Changed, false)
         }
     }
-    Control::Changed
 }
 
 fn handle_open_config_file(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
@@ -436,5 +473,73 @@ mod tests {
                 "expected non-image: {name}"
             );
         }
+    }
+
+    #[test]
+    fn open_file_at_line_places_and_clamps_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sample.rs");
+        std::fs::write(&path, "fn main() {}\nlet value = 1;\nlast\n").unwrap();
+
+        let mut state = AppState::new();
+        handle_workspace_command(
+            &AppCommand::OpenFileAtLine {
+                path: path.clone(),
+                line: 1,
+                col: 4,
+            },
+            &mut state,
+        );
+        assert_eq!(
+            state.active_buf().unwrap().cursor.primary.head,
+            Position::new(1, 4)
+        );
+
+        // A column past the line end is clamped to the line's length.
+        handle_workspace_command(
+            &AppCommand::OpenFileAtLine {
+                path,
+                line: 2,
+                col: 999,
+            },
+            &mut state,
+        );
+        let head = state.active_buf().unwrap().cursor.primary.head;
+        assert_eq!(head, Position::new(2, "last".chars().count()));
+    }
+
+    #[test]
+    fn open_file_at_line_failed_open_leaves_active_cursor_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.rs");
+        std::fs::write(&real, "alpha\nbeta\ngamma\n").unwrap();
+
+        let mut state = AppState::new();
+        handle_workspace_command(
+            &AppCommand::OpenFileAtLine {
+                path: real,
+                line: 0,
+                col: 2,
+            },
+            &mut state,
+        );
+        let before = state.active_buf().unwrap().cursor.primary.head;
+        assert_eq!(before, Position::new(0, 2));
+
+        // Jumping to a hit whose file vanished must not move the active
+        // buffer's cursor (regression: it used to jump anyway).
+        handle_workspace_command(
+            &AppCommand::OpenFileAtLine {
+                path: dir.path().join("vanished.rs"),
+                line: 7,
+                col: 3,
+            },
+            &mut state,
+        );
+        assert_eq!(
+            state.active_buf().unwrap().cursor.primary.head,
+            before,
+            "cursor must stay put on a failed open"
+        );
     }
 }

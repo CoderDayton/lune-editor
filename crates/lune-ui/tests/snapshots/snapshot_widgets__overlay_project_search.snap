@@ -1,0 +1,20 @@
+---
+source: crates/lune-ui/tests/snapshot_widgets.rs
+expression: buffer_to_text(&buf)
+---
+
+
+            ╭────────────────── Search in Files ───────────────────╮
+            │> val                                                 │
+            │──────────────────────────────────────────────────────│
+            │  2 matches                                           │
+            │  alpha.rs:2      let value = compute();              │
+            │  beta.rs:2       let value = other();                │
+            │                                                      │
+            │                                                      │
+            │                                                      │
+            │                                                      │
+            │                                                      │
+            │                                                      │
+            │                                                      │
+            ╰────────  ↑↓ select · Enter open · Esc close  ────────╯

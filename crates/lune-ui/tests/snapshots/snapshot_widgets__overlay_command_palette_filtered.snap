@@ -5,7 +5,7 @@ expression: buffer_to_text(&buf)
 
 
 
-                ┌ Command Palette ─────────────────────────────┐
+                ╭────────────── Command Palette ───────────────╮
                 │> sav                                         │
                 │──────────────────────────────────────────────│
                 │  Agent: Save Current Layout                  │
@@ -13,4 +13,4 @@ expression: buffer_to_text(&buf)
                 │  Save                                        │
                 │  Save All                                    │
                 │                                              │
-                └──────────────────────────────────────────────┘
+                ╰────  ↑↓ select · Enter run · Esc close  ─────╯

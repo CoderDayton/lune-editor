@@ -15,7 +15,7 @@ pub use ratatui_core::buffer::Buffer;
 
 // ── Layout ────────────────────────────────────────────────────────────
 
-pub use ratatui_core::layout::{Constraint, Direction, Layout, Rect};
+pub use ratatui_core::layout::{Alignment, Constraint, Direction, Layout, Rect};
 
 // ── Style ─────────────────────────────────────────────────────────────
 

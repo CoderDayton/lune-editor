@@ -96,6 +96,17 @@ pub enum AppCommand {
     SaveAll,
     /// Open a file by path.
     OpenFile(PathBuf),
+    /// Open a file and place the cursor at the given zero-based line and
+    /// column (e.g. jumping to a project-search hit).
+    OpenFileAtLine {
+        /// Absolute path of the file to open.
+        path: PathBuf,
+        /// Zero-based line to move the cursor to, clamped to the file.
+        line: usize,
+        /// Zero-based character column to move the cursor to, clamped to
+        /// the target line.
+        col: usize,
+    },
     /// Open the interactive file picker overlay.
     OpenFilePicker,
 
@@ -124,6 +135,8 @@ pub enum AppCommand {
     ToggleGitPanel,
     /// Open the command palette overlay.
     OpenCommandPalette,
+    /// Open the project-wide text search ("search in files") overlay.
+    OpenProjectSearch,
     /// Toggle hidden file visibility in the file tree.
     ToggleHiddenFiles,
     /// Reveal a file in the file tree (expand ancestors, scroll to it).

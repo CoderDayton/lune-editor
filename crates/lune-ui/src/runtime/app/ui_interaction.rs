@@ -879,6 +879,14 @@ fn handle_mouse_drag(mouse: MouseEvent, state: &mut AppState) -> Control<AppEven
     Control::Changed
 }
 
+/// The workspace root, or the current directory when no workspace is open.
+fn workspace_root_or_cwd(state: &AppState) -> PathBuf {
+    state.workspace.as_ref().map_or_else(
+        || std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+        |ws| ws.root().to_path_buf(),
+    )
+}
+
 pub(super) fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
     match cmd {
         AppCommand::ToggleFileTree => {
@@ -910,11 +918,14 @@ pub(super) fn handle_panel_command(cmd: &AppCommand, state: &mut AppState) -> Co
             Control::Changed
         }
         AppCommand::OpenFilePicker => {
-            let start_dir = state.workspace.as_ref().map_or_else(
-                || std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
-                |ws| ws.root().to_path_buf(),
-            );
+            let start_dir = workspace_root_or_cwd(state);
             state.overlay.open_file_picker(&start_dir);
+            state.focus.focus(PanelId::CommandPalette);
+            Control::Changed
+        }
+        AppCommand::OpenProjectSearch => {
+            let root = workspace_root_or_cwd(state);
+            state.overlay.open_project_search(&root);
             state.focus.focus(PanelId::CommandPalette);
             Control::Changed
         }

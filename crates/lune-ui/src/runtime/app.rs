@@ -2362,6 +2362,7 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
         | AppCommand::FocusNextPane
         | AppCommand::OpenCommandPalette
         | AppCommand::OpenFilePicker
+        | AppCommand::OpenProjectSearch
         | AppCommand::OpenLanguagePicker
         | AppCommand::OpenThemePicker
         | AppCommand::ToggleMarkdownPreview
@@ -2477,6 +2478,7 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
         | AppCommand::Save
         | AppCommand::SaveAll
         | AppCommand::OpenFile(_)
+        | AppCommand::OpenFileAtLine { .. }
         | AppCommand::ToggleHiddenFiles
         | AppCommand::RevealInFileTree(_)
         | AppCommand::NewFile
@@ -4255,7 +4257,7 @@ mod tests {
         assert!(
             matches!(
                 state.overlay.active,
-                Some(overlay::OverlayKind::ConfirmDialog { .. })
+                Some(overlay::OverlayKind::ConfirmDialog)
             ),
             "overwrite confirmation dialog should be open"
         );

@@ -119,6 +119,8 @@ impl Keymap {
             (Char('h'), CTRL, AppCommand::Replace),
             // Command palette
             (Char('p'), CTRL, AppCommand::OpenCommandPalette),
+            // Project-wide search ("search in files")
+            (Char('F'), CTRL_SHIFT, AppCommand::OpenProjectSearch),
             // File / language picker
             (Char('n'), CTRL, AppCommand::NewFile),
             (Char('l'), CTRL, AppCommand::OpenLanguagePicker),

@@ -177,6 +177,7 @@ impl ConfirmDialogState {
             .size_cells(want_w, want_h)
             .border_style(border_style)
             .title_style(title_style)
+            .footer(" Enter confirm · Esc cancel ")
             .render(area, buf, &mut self.modal, |inner, buf| {
                 render_body(
                     inner,

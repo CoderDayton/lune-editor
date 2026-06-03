@@ -23,9 +23,12 @@ use crate::runtime::terminal_layouts;
 use crate::runtime::tiling::{SavedTileNode, SplitDirection};
 use crate::style::color as color_util;
 use crate::theme::Theme;
+use crate::widgets::confirm_dialog::ConfirmDialogState;
+use crate::widgets::modal::{Anchor, Modal, ModalState};
 use lune_ai::session::AiClientKind;
 use lune_core::buffer::BufferId;
 use lune_core::language::LanguageId;
+use lune_core::project::search::{self, SearchHit, SearchOptions};
 use lune_core::undo::RevisionId;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -45,15 +48,13 @@ fn pop_grapheme(s: &mut String) {
 pub enum OverlayKind {
     /// Command palette with fuzzy search.
     CommandPalette,
+    /// Project-wide text search ("search in files").
+    ProjectSearch,
     /// Find/replace dialog.
     FindReplace,
-    /// Confirm dialog (destructive actions).
-    ConfirmDialog {
-        /// The message to display.
-        message: String,
-        /// The command to execute on confirmation.
-        on_confirm: AppCommand,
-    },
+    /// Confirm dialog. The dialog widget and the command to dispatch on
+    /// confirmation live in [`OverlayState::confirm`].
+    ConfirmDialog,
     /// Interactive file/directory picker.
     FilePicker,
     /// AI client picker (choose which client to launch).
@@ -75,6 +76,139 @@ pub enum OverlayKind {
     KeyHints,
 }
 
+/// State backing an open [`OverlayKind::ConfirmDialog`]: the Modal-based
+/// [`ConfirmDialogState`] that renders and handles input, plus the command
+/// emitted when the user confirms.
+#[derive(Clone, Debug)]
+pub struct ConfirmOverlayState {
+    /// Reusable confirm/cancel dialog widget state.
+    pub dialog: ConfirmDialogState,
+    /// Command dispatched when the dialog resolves to `Confirm`.
+    pub on_confirm: AppCommand,
+}
+
+/// Minimum query length before a project search runs — a single character
+/// would match almost everything and stall the walk.
+const PROJECT_SEARCH_MIN_QUERY: usize = 2;
+
+/// State backing the project-wide search ("search in files") overlay.
+///
+/// File contents are loaded into memory once on [`Self::open`]; each
+/// keystroke re-searches them in memory via [`Self::update_results`], so
+/// typing stays responsive without re-reading the tree.
+#[derive(Clone, Debug, Default)]
+pub struct ProjectSearchState {
+    /// Workspace root, used to show hit paths relative to it.
+    pub root: PathBuf,
+    /// Text file contents loaded once on open (re-searched per keystroke).
+    loaded: Vec<search::LoadedFile>,
+    /// Current query text.
+    pub input: String,
+    /// Matches for the current query.
+    pub results: Vec<SearchHit>,
+    /// Whether the result cap clipped the matches.
+    pub truncated: bool,
+    /// Index of the highlighted result.
+    pub selected: usize,
+    /// Scroll offset into `results`.
+    pub scroll_offset: usize,
+}
+
+impl ProjectSearchState {
+    /// Open at `root`: gather the candidate file list and clear any prior
+    /// query and results.
+    pub fn open(&mut self, root: &Path) {
+        self.root = root.to_path_buf();
+        self.input.clear();
+        self.results.clear();
+        self.truncated = false;
+        self.selected = 0;
+        self.scroll_offset = 0;
+        self.loaded = search::load_files(&search::collect_files(root), SearchOptions::default());
+    }
+
+    /// Re-run the search against the cached file list. Queries shorter than
+    /// [`PROJECT_SEARCH_MIN_QUERY`] clear the results.
+    pub fn update_results(&mut self) {
+        if self.query_len() < PROJECT_SEARCH_MIN_QUERY {
+            self.results.clear();
+            self.truncated = false;
+            self.selected = 0;
+            self.scroll_offset = 0;
+            return;
+        }
+        let outcome = search::search_loaded(&self.loaded, &self.input, SearchOptions::default());
+        self.results = outcome.hits;
+        self.truncated = outcome.truncated;
+        if self.results.is_empty() {
+            self.selected = 0;
+        } else {
+            self.selected = self.selected.min(self.results.len() - 1);
+        }
+        self.scroll_offset = self.scroll_offset.min(self.selected);
+    }
+
+    /// Number of characters typed (the unit the minimum-query gate and the
+    /// status hint speak in — not bytes).
+    #[must_use]
+    fn query_len(&self) -> usize {
+        self.input.chars().count()
+    }
+
+    /// Append a character to the query and re-search.
+    pub fn type_char(&mut self, ch: char) {
+        self.input.push(ch);
+        self.update_results();
+    }
+
+    /// Delete the last query character and re-search. Returns `false` when
+    /// the query was already empty.
+    pub fn backspace(&mut self) -> bool {
+        if self.input.pop().is_some() {
+            self.update_results();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Move the selection up, wrapping to the bottom.
+    pub fn select_prev(&mut self) {
+        if !self.results.is_empty() {
+            self.selected = if self.selected == 0 {
+                self.results.len() - 1
+            } else {
+                self.selected - 1
+            };
+        }
+    }
+
+    /// Move the selection down, wrapping to the top.
+    pub fn select_next(&mut self) {
+        if !self.results.is_empty() {
+            self.selected = (self.selected + 1) % self.results.len();
+        }
+    }
+
+    /// The currently highlighted hit, if any.
+    #[must_use]
+    pub fn selected_hit(&self) -> Option<&SearchHit> {
+        self.results.get(self.selected)
+    }
+
+    /// Scroll so the selection sits within a `viewport_height`-row window.
+    pub const fn ensure_visible(&mut self, viewport_height: usize) {
+        if viewport_height == 0 {
+            return;
+        }
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        } else if self.selected >= self.scroll_offset + viewport_height {
+            self.scroll_offset = self.selected - viewport_height + 1;
+        }
+    }
+}
+
 // ── Overlay state ─────────────────────────────────────────────────────
 
 /// Top-level overlay state.
@@ -86,6 +220,8 @@ pub struct OverlayState {
     pub command_palette: CommandPaletteState,
     /// File picker state (persisted across open/close).
     pub file_picker: FilePickerState,
+    /// Project-wide search ("search in files") state.
+    pub project_search: ProjectSearchState,
     /// Active notifications (toast messages).
     pub notifications: Vec<Notification>,
     /// Tuning (timeouts, queue caps, width) for the notification system.
@@ -108,6 +244,9 @@ pub struct OverlayState {
     pub image_preview: ImagePreviewState,
     /// Keybinding hints overlay state — scroll offset + typed filter.
     pub key_hints: KeyHintsState,
+    /// Active confirm dialog — the Modal-based dialog plus the command to
+    /// dispatch on confirmation. `None` when no confirm overlay is open.
+    pub confirm: Option<ConfirmOverlayState>,
 }
 
 impl OverlayState {
@@ -142,6 +281,12 @@ impl OverlayState {
         self.active = Some(OverlayKind::FilePicker);
     }
 
+    /// Open the project-wide search overlay rooted at `root`.
+    pub fn open_project_search(&mut self, root: &Path) {
+        self.project_search.open(root);
+        self.active = Some(OverlayKind::ProjectSearch);
+    }
+
     /// Close whatever overlay is open.
     pub fn close(&mut self) {
         // Per-kind cleanup for overlays that hold heavy data (rendered
@@ -153,6 +298,12 @@ impl OverlayState {
             }
             Some(OverlayKind::ImagePreview) => {
                 self.image_preview = ImagePreviewState::default();
+            }
+            Some(OverlayKind::ConfirmDialog) => {
+                self.confirm = None;
+            }
+            Some(OverlayKind::ProjectSearch) => {
+                self.project_search = ProjectSearchState::default();
             }
             _ => {}
         }
@@ -166,14 +317,14 @@ impl OverlayState {
     }
 
     /// Open find bar (no replace row).
-    pub fn open_find(&mut self) {
+    pub const fn open_find(&mut self) {
         self.find_replace.show_replace = false;
         self.find_replace.active_field = FindReplaceField::Find;
         self.active = Some(OverlayKind::FindReplace);
     }
 
     /// Open find and replace bar.
-    pub fn open_find_replace(&mut self) {
+    pub const fn open_find_replace(&mut self) {
         self.find_replace.show_replace = true;
         self.find_replace.active_field = FindReplaceField::Find;
         self.active = Some(OverlayKind::FindReplace);
@@ -316,10 +467,10 @@ impl OverlayState {
 
     /// Open a confirmation dialog.
     pub fn open_confirm(&mut self, message: impl Into<String>, on_confirm: AppCommand) {
-        self.active = Some(OverlayKind::ConfirmDialog {
-            message: message.into(),
-            on_confirm,
-        });
+        let mut dialog = ConfirmDialogState::new("Confirm", message);
+        dialog.open();
+        self.confirm = Some(ConfirmOverlayState { dialog, on_confirm });
+        self.active = Some(OverlayKind::ConfirmDialog);
     }
 
     /// Push a notification toast.
@@ -558,6 +709,7 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
         palette_cmd("Save", AppCommand::Save),
         palette_cmd("Save All", AppCommand::SaveAll),
         palette_cmd("Open File", AppCommand::OpenFilePicker),
+        palette_cmd("Search in Files", AppCommand::OpenProjectSearch),
         palette_cmd("Close Tab", AppCommand::CloseTab),
         palette_cmd("Next Tab", AppCommand::NextTab),
         palette_cmd("Previous Tab", AppCommand::PrevTab),
@@ -2285,14 +2437,13 @@ pub fn render_overlay(area: Rect, buf: &mut Buffer, overlay: &mut OverlayState, 
         Some(OverlayKind::FindReplace) => {
             render_find_replace(area, buf, &overlay.find_replace, theme);
         }
-        Some(OverlayKind::ConfirmDialog { message, .. }) => {
-            render_centered_popup(
-                area,
-                buf,
-                "Confirm",
-                &[message, "", "Press Enter to confirm, Esc to cancel"],
-                theme,
-            );
+        Some(OverlayKind::ConfirmDialog) => {
+            if let Some(confirm) = overlay.confirm.as_mut() {
+                confirm.dialog.render(area, buf, theme);
+            }
+        }
+        Some(OverlayKind::ProjectSearch) => {
+            render_project_search(area, buf, &mut overlay.project_search, theme);
         }
         Some(OverlayKind::FilePicker) => {
             render_file_picker(area, buf, &overlay.file_picker, theme);
@@ -3365,7 +3516,7 @@ fn render_popup_frame(
     Some((inner, list_start_y))
 }
 
-/// Render the command palette popup.
+/// Render the command palette popup using the shared [`Modal`] widget.
 #[allow(clippy::cast_possible_truncation)]
 fn render_command_palette(
     area: Rect,
@@ -3373,41 +3524,166 @@ fn render_command_palette(
     state: &mut CommandPaletteState,
     theme: &Theme,
 ) {
-    let Some((inner, list_start_y)) = render_popup_frame(
-        area,
-        buf,
-        " Command Palette ",
-        &state.input,
-        60,
-        40,
-        30,
-        8,
-        theme,
-    ) else {
-        return;
-    };
+    // The overlay enum already gates visibility, so the modal is opened
+    // transiently for this frame; no persistent lifecycle state needed.
+    let mut modal = ModalState::new();
+    modal.open();
+    Modal::new(theme)
+        .title(" Command Palette ")
+        .size_percent(60, 40)
+        .min_size(34, 8)
+        .anchor(Anchor::Top { margin: 3 })
+        .footer(" ↑↓ select · Enter run · Esc close ")
+        .render(area, buf, &mut modal, |inner, buf| {
+            // Input line.
+            let input_line = format!("> {}", state.input);
+            Line::from(Span::from(input_line).bold())
+                .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
 
-    let list_height = inner.height.saturating_sub(2) as usize;
-    state.ensure_visible(list_height);
+            // Separator under the input.
+            if inner.height > 1 {
+                render_hrule(buf, inner.x, inner.y + 1, inner.width);
+            }
 
-    for (vi, i) in (state.scroll_offset..).take(list_height).enumerate() {
-        if i >= state.filtered_commands.len() {
-            break;
-        }
-        let y = list_start_y + vi as u16;
-        if y >= inner.y + inner.height {
-            break;
-        }
+            let list_start_y = inner.y + 2;
+            let list_height = inner.height.saturating_sub(2) as usize;
+            state.ensure_visible(list_height);
 
-        let cmd = &state.filtered_commands[i];
-        let label = format!("  {}", cmd.label);
-        let span = if i == state.selected {
-            Span::styled(label, theme.overlay_selected)
-        } else {
-            Span::from(label)
-        };
-        Line::from(span).render(Rect::new(inner.x, y, inner.width, 1), buf);
-    }
+            for (vi, i) in (state.scroll_offset..).take(list_height).enumerate() {
+                if i >= state.filtered_commands.len() {
+                    break;
+                }
+                let y = list_start_y + vi as u16;
+                if y >= inner.y + inner.height {
+                    break;
+                }
+
+                let cmd = &state.filtered_commands[i];
+                let label = format!("  {}", cmd.label);
+                let span = if i == state.selected {
+                    Span::styled(label, theme.overlay_selected)
+                } else {
+                    Span::from(label)
+                };
+                Line::from(span).render(Rect::new(inner.x, y, inner.width, 1), buf);
+            }
+        });
+}
+
+/// Render the project-wide search popup using the shared [`Modal`] widget.
+#[allow(clippy::cast_possible_truncation)]
+fn render_project_search(
+    area: Rect,
+    buf: &mut Buffer,
+    state: &mut ProjectSearchState,
+    theme: &Theme,
+) {
+    // The overlay enum gates visibility, so the modal opens transiently
+    // for this frame; no persistent lifecycle state is needed.
+    let mut modal = ModalState::new();
+    modal.open();
+    Modal::new(theme)
+        .title(" Search in Files ")
+        .size_percent(70, 60)
+        .min_size(40, 10)
+        .anchor(Anchor::Top { margin: 2 })
+        .footer(" ↑↓ select · Enter open · Esc close ")
+        .render(area, buf, &mut modal, |inner, buf| {
+            // Input line.
+            let input_line = format!("> {}", state.input);
+            Line::from(Span::from(input_line).bold())
+                .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
+
+            // Separator under the input.
+            if inner.height > 1 {
+                render_hrule(buf, inner.x, inner.y + 1, inner.width);
+            }
+
+            // Status line: how many matches, or why there are none.
+            let status = if state.input.chars().count() < PROJECT_SEARCH_MIN_QUERY {
+                "  type at least 2 characters".to_string()
+            } else if state.results.is_empty() {
+                "  no matches".to_string()
+            } else if state.truncated {
+                format!("  {}+ matches", state.results.len())
+            } else if state.results.len() == 1 {
+                "  1 match".to_string()
+            } else {
+                format!("  {} matches", state.results.len())
+            };
+            if inner.height > 2 {
+                Line::from(Span::from(status).style(Style::new().fg(theme.overlay_hint_fg)))
+                    .render(Rect::new(inner.x, inner.y + 2, inner.width, 1), buf);
+            }
+
+            // Results list.
+            let list_start_y = inner.y + 3;
+            let list_height = inner.height.saturating_sub(3) as usize;
+            state.ensure_visible(list_height);
+
+            // Visible window into the results.
+            let visible = (state.scroll_offset..state.results.len()).take(list_height);
+
+            // First pass: widest `path:line` label among the visible rows,
+            // so the code column lines up regardless of label width.
+            let max_loc_w = visible
+                .clone()
+                .map(|i| {
+                    let hit = &state.results[i];
+                    let rel = hit
+                        .path
+                        .strip_prefix(&state.root)
+                        .unwrap_or(hit.path.as_path());
+                    UnicodeWidthStr::width(format!("{}:{}", rel.display(), hit.line + 1).as_str())
+                })
+                .max()
+                .unwrap_or(0);
+
+            for (vi, i) in visible.enumerate() {
+                let y = list_start_y + vi as u16;
+                if y >= inner.y + inner.height {
+                    break;
+                }
+
+                let hit = &state.results[i];
+                let rel = hit
+                    .path
+                    .strip_prefix(&state.root)
+                    .unwrap_or(hit.path.as_path());
+                let label = format!("{}:{}", rel.display(), hit.line + 1);
+                let pad = max_loc_w.saturating_sub(UnicodeWidthStr::width(label.as_str()));
+                // Two-space indent, padded label, two-space gutter.
+                let location = format!("  {label}{:pad$}  ", "");
+
+                // `match_start`/`match_end` are byte offsets into `line_text`;
+                // tab\u2192space replacement is 1:1 byte-wise, so they stay valid.
+                let code = hit.line_text.replace('\t', " ");
+                let ms = hit.match_start.min(code.len());
+                let me = hit.match_end.min(code.len()).max(ms);
+                let selected = i == state.selected;
+                let (loc_style, code_style) = if selected {
+                    (theme.overlay_selected, theme.overlay_selected)
+                } else {
+                    (
+                        Style::new().fg(theme.overlay_hint_fg),
+                        Style::new().fg(theme.overlay_file_fg),
+                    )
+                };
+                // Highlight the matched substring within the code column.
+                let match_style = if selected {
+                    theme.overlay_selected.add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
+                };
+                Line::from(vec![
+                    Span::styled(location, loc_style),
+                    Span::styled(code[..ms].to_string(), code_style),
+                    Span::styled(code[ms..me].to_string(), match_style),
+                    Span::styled(code[me..].to_string(), code_style),
+                ])
+                .render(Rect::new(inner.x, y, inner.width, 1), buf);
+            }
+        });
 }
 
 /// Render the file picker popup.
@@ -3568,44 +3844,6 @@ fn render_find_replace(area: Rect, buf: &mut Buffer, state: &FindReplaceState, t
             ),
         ];
         Line::from(replace_line).render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
-    }
-}
-
-/// Render a generic centered popup with a title and message lines.
-#[allow(clippy::cast_possible_truncation)]
-fn render_centered_popup(
-    area: Rect,
-    buf: &mut Buffer,
-    title: &str,
-    messages: &[&str],
-    theme: &Theme,
-) {
-    let popup_w = (area.width * 50 / 100).max(20).min(area.width);
-    let popup_h = (messages.len() as u16 + 4).min(area.height);
-    let popup_x = area.x + (area.width - popup_w) / 2;
-    let popup_y = area.y + (area.height - popup_h) / 2;
-
-    let popup_rect = Rect::new(popup_x, popup_y, popup_w, popup_h);
-    Clear.render(popup_rect, buf);
-
-    let title_str = format!(" {title} ");
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
-        .title(title_str)
-        .style(Style::new().fg(theme.overlay_border));
-    let inner = block.inner(popup_rect);
-    block.render(popup_rect, buf);
-
-    for (i, msg) in messages.iter().enumerate() {
-        let y = inner.y + i as u16;
-        if y >= inner.y + inner.height {
-            break;
-        }
-        Line::from(Span::from(*msg).dim()).render(
-            Rect::new(inner.x + 1, y, inner.width.saturating_sub(1), 1),
-            buf,
-        );
     }
 }
 
@@ -3913,6 +4151,78 @@ mod tests {
         assert!(overlay.is_active());
         overlay.close();
         assert!(!overlay.is_active());
+    }
+
+    // ── Project search tests ──────────────────────────────────────
+
+    #[test]
+    fn project_search_opens_and_matches_above_min_query() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "needle here\nplain text\n").unwrap();
+
+        let mut overlay = OverlayState::default();
+        overlay.open_project_search(dir.path());
+        assert!(matches!(overlay.active, Some(OverlayKind::ProjectSearch)));
+
+        // One character is below the minimum query length: no results.
+        overlay.project_search.type_char('n');
+        assert!(overlay.project_search.results.is_empty());
+
+        // At the minimum length the match appears.
+        overlay.project_search.type_char('e');
+        assert_eq!(overlay.project_search.results.len(), 1);
+        assert_eq!(overlay.project_search.results[0].line, 0);
+    }
+
+    #[test]
+    fn project_search_navigation_wraps() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "xx\nxx\nxx\n").unwrap();
+
+        let mut ps = ProjectSearchState::default();
+        ps.open(dir.path());
+        ps.type_char('x');
+        ps.type_char('x');
+        assert_eq!(ps.results.len(), 3);
+        assert_eq!(ps.selected, 0);
+
+        ps.select_prev();
+        assert_eq!(ps.selected, 2);
+        ps.select_next();
+        assert_eq!(ps.selected, 0);
+    }
+
+    #[test]
+    fn project_search_backspace_below_min_clears_results() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "abcd\n").unwrap();
+
+        let mut ps = ProjectSearchState::default();
+        ps.open(dir.path());
+        ps.type_char('a');
+        ps.type_char('b');
+        assert_eq!(ps.results.len(), 1);
+
+        ps.backspace();
+        assert_eq!(ps.input, "a");
+        assert!(ps.results.is_empty());
+    }
+
+    #[test]
+    fn project_search_close_resets_state() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "match me\n").unwrap();
+
+        let mut overlay = OverlayState::default();
+        overlay.open_project_search(dir.path());
+        overlay.project_search.type_char('m');
+        overlay.project_search.type_char('a');
+        assert!(!overlay.project_search.results.is_empty());
+
+        overlay.close();
+        assert!(overlay.active.is_none());
+        assert!(overlay.project_search.input.is_empty());
+        assert!(overlay.project_search.results.is_empty());
     }
 
     // ── File picker tests ─────────────────────────────────────────

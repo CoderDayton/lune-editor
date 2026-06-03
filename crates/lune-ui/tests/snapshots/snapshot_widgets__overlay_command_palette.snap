@@ -5,7 +5,7 @@ expression: buffer_to_text(&buf)
 
 
 
-                ┌ Command Palette ─────────────────────────────┐
+                ╭────────────── Command Palette ───────────────╮
                 │>                                             │
                 │──────────────────────────────────────────────│
                 │  Agent: Close Pane                           │
@@ -13,4 +13,4 @@ expression: buffer_to_text(&buf)
                 │  Agent: Focus Previous                       │
                 │  Agent: Save Current Layout                  │
                 │  Agent: Save Layout As…                      │
-                └──────────────────────────────────────────────┘
+                ╰────  ↑↓ select · Enter run · Esc close  ─────╯

@@ -27,9 +27,11 @@
 //! ```
 
 use crate::primitives::{
-    Block, BorderType, Borders, Buffer, Clear, Color, Line, Modifier, Rect, Span, Style, Widget,
+    Alignment, Block, BorderType, Borders, Buffer, Clear, Color, Line, Modifier, Rect, Span, Style,
+    Widget,
 };
 use crate::theme::Theme;
+use unicode_width::UnicodeWidthStr;
 
 /// Lifecycle handle for a [`Modal`].
 ///
@@ -107,6 +109,17 @@ impl Sizing {
     }
 }
 
+/// Vertical placement of the modal within the parent area.
+#[derive(Debug, Clone, Copy)]
+pub enum Anchor {
+    /// Centered vertically (the default).
+    Center,
+    /// `margin` rows below the top edge — e.g. for pickers that
+    /// conventionally sit in the upper third. Clamped so the modal
+    /// stays fully on-screen.
+    Top { margin: u16 },
+}
+
 /// Centered modal config. Combine with [`ModalState`] to render.
 #[derive(Debug, Clone)]
 pub struct Modal<'a> {
@@ -116,6 +129,13 @@ pub struct Modal<'a> {
     title_style: Style,
     body_bg: Color,
     backdrop: Option<Color>,
+    title_alignment: Alignment,
+    border_type: BorderType,
+    padding: (u16, u16),
+    min_size: (u16, u16),
+    anchor: Anchor,
+    footer: Option<&'a str>,
+    footer_style: Style,
 }
 
 impl<'a> Modal<'a> {
@@ -134,10 +154,18 @@ impl<'a> Modal<'a> {
             title_style: Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
             body_bg: theme.bg,
             backdrop: Some(theme.bg),
+            title_alignment: Alignment::Center,
+            border_type: BorderType::Rounded,
+            padding: (0, 0),
+            min_size: (0, 0),
+            anchor: Anchor::Center,
+            footer: None,
+            footer_style: Style::new().fg(theme.fg_muted),
         }
     }
 
-    /// Center-aligned title rendered into the top border.
+    /// Title rendered into the top border. Centered by default; change
+    /// with [`Modal::title_alignment`].
     #[must_use]
     pub const fn title(mut self, title: &'a str) -> Self {
         self.title = Some(title);
@@ -180,6 +208,62 @@ impl<'a> Modal<'a> {
         self
     }
 
+    /// Horizontal alignment of the title within the top border.
+    /// Defaults to centered.
+    #[must_use]
+    pub const fn title_alignment(mut self, alignment: Alignment) -> Self {
+        self.title_alignment = alignment;
+        self
+    }
+
+    /// Override the border line type (defaults to rounded corners).
+    #[must_use]
+    pub const fn border_type(mut self, border_type: BorderType) -> Self {
+        self.border_type = border_type;
+        self
+    }
+
+    /// Inner padding in cells `(horizontal, vertical)` applied to the
+    /// body rect so content doesn't sit flush against the border.
+    /// Defaults to `(0, 0)`.
+    #[must_use]
+    pub const fn padding(mut self, horizontal: u16, vertical: u16) -> Self {
+        self.padding = (horizontal, vertical);
+        self
+    }
+
+    /// Minimum size in cells `(width, height)`, applied after the
+    /// configured sizing and before clamping to the parent area, so a
+    /// percentage modal can't collapse on a small terminal. Defaults to
+    /// `(0, 0)`.
+    #[must_use]
+    pub const fn min_size(mut self, width: u16, height: u16) -> Self {
+        self.min_size = (width, height);
+        self
+    }
+
+    /// Vertical placement within the parent area. Defaults to centered.
+    #[must_use]
+    pub const fn anchor(mut self, anchor: Anchor) -> Self {
+        self.anchor = anchor;
+        self
+    }
+
+    /// A dim hint rendered centered into the bottom border (e.g. key
+    /// hints). Defaults to none.
+    #[must_use]
+    pub const fn footer(mut self, footer: &'a str) -> Self {
+        self.footer = Some(footer);
+        self
+    }
+
+    /// Override the footer style (defaults to muted foreground).
+    #[must_use]
+    pub const fn footer_style(mut self, style: Style) -> Self {
+        self.footer_style = style;
+        self
+    }
+
     /// Render the modal chrome above the existing content in `area`
     /// and call `body` with the inner content rect. Does nothing when
     /// `state` is closed or when the resolved rect is degenerate.
@@ -193,7 +277,9 @@ impl<'a> Modal<'a> {
             return;
         }
 
-        let (w, h) = self.sizing.resolve(area);
+        let (raw_w, raw_h) = self.sizing.resolve(area);
+        let w = raw_w.max(self.min_size.0).min(area.width);
+        let h = raw_h.max(self.min_size.1).min(area.height);
         if w == 0 || h == 0 {
             state.inner_area = None;
             state.overlay_rect = None;
@@ -201,7 +287,10 @@ impl<'a> Modal<'a> {
         }
 
         let x = area.x + (area.width.saturating_sub(w)) / 2;
-        let y = area.y + (area.height.saturating_sub(h)) / 2;
+        let y = match self.anchor {
+            Anchor::Center => area.y + (area.height.saturating_sub(h)) / 2,
+            Anchor::Top { margin } => (area.y + margin).min(area.y + area.height.saturating_sub(h)),
+        };
         let modal_rect = Rect::new(x, y, w, h);
 
         // Backdrop first — dims the surrounding area so the modal
@@ -218,16 +307,23 @@ impl<'a> Modal<'a> {
 
         let mut block = Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_type(self.border_type)
             .border_style(self.border_style)
             .style(Style::new().bg(self.body_bg));
 
         if let Some(t) = self.title {
-            block = block.title(Line::from(Span::styled(t, self.title_style)));
+            block = block.title(
+                Line::from(Span::styled(t, self.title_style)).alignment(self.title_alignment),
+            );
         }
 
-        let inner = block.inner(modal_rect);
+        let inner = pad_rect(block.inner(modal_rect), self.padding);
         block.render(modal_rect, buf);
+
+        // Footer hint sits in the bottom border, below the body.
+        if let Some(footer) = self.footer {
+            render_bottom_label(buf, modal_rect, footer, self.footer_style);
+        }
 
         state.overlay_rect = Some(modal_rect);
         state.inner_area = Some(inner);
@@ -236,6 +332,37 @@ impl<'a> Modal<'a> {
             body(inner, buf);
         }
     }
+}
+
+/// Shrink a rect by `(horizontal, vertical)` padding on each side,
+/// clamped so it never underflows.
+fn pad_rect(rect: Rect, pad: (u16, u16)) -> Rect {
+    let px = pad.0.min(rect.width / 2);
+    let py = pad.1.min(rect.height / 2);
+    Rect::new(
+        rect.x + px,
+        rect.y + py,
+        rect.width - px * 2,
+        rect.height - py * 2,
+    )
+}
+
+/// Render a centered, padded label into the bottom border row of `rect`
+/// (between the corners), clipped to the interior width.
+#[allow(clippy::cast_possible_truncation)]
+fn render_bottom_label(buf: &mut Buffer, rect: Rect, text: &str, style: Style) {
+    if rect.height < 2 || rect.width < 4 {
+        return;
+    }
+    let label = format!(" {text} ");
+    let avail = rect.width - 2; // exclude the two corner cells
+    let label_w = UnicodeWidthStr::width(label.as_str()) as u16;
+    if label_w == 0 || label_w > avail {
+        return;
+    }
+    let x = rect.x + 1 + (avail - label_w) / 2;
+    let y = rect.y + rect.height - 1;
+    Line::from(Span::styled(label, style)).render(Rect::new(x, y, label_w, 1), buf);
 }
 
 /// Dim every cell in `area` *except* those inside `exclude` by setting
@@ -519,5 +646,112 @@ mod tests {
         let rect = state.overlay_rect().expect("rendered");
         assert_eq!(rect.width, 20);
         assert_eq!(rect.height, 10);
+    }
+
+    #[test]
+    fn title_is_centered_by_default() {
+        let theme = Theme::dark();
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let mut state = ModalState::new();
+        state.open();
+
+        Modal::new(&theme).title("Hi").size_cells(20, 6).render(
+            area,
+            &mut buf,
+            &mut state,
+            |_, _| {},
+        );
+
+        let rect = state.overlay_rect().unwrap();
+        // The cell right after the top-left corner is border line, not
+        // the title — proving the title isn't left-aligned.
+        assert_eq!(cell_symbol(&buf, rect.x + 1, rect.y), "─");
+        let top: String = (rect.x..rect.x + rect.width)
+            .map(|x| cell_symbol(&buf, x, rect.y))
+            .collect();
+        assert!(top.contains("Hi"), "title present on top border: {top:?}");
+    }
+
+    #[test]
+    fn footer_renders_in_bottom_border() {
+        let theme = Theme::dark();
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let mut state = ModalState::new();
+        state.open();
+
+        Modal::new(&theme).size_cells(24, 6).footer("Esc").render(
+            area,
+            &mut buf,
+            &mut state,
+            |_, _| {},
+        );
+
+        let rect = state.overlay_rect().unwrap();
+        let bottom: String = (rect.x..rect.x + rect.width)
+            .map(|x| cell_symbol(&buf, x, rect.y + rect.height - 1))
+            .collect();
+        assert!(
+            bottom.contains("Esc"),
+            "footer on bottom border: {bottom:?}"
+        );
+    }
+
+    #[test]
+    fn min_size_raises_percent_below_floor() {
+        let theme = Theme::dark();
+        let area = Rect::new(0, 0, 100, 50);
+        let mut buf = Buffer::empty(area);
+        let mut state = ModalState::new();
+        state.open();
+
+        // 10% → 10x5, floored by min_size to 30x12.
+        Modal::new(&theme)
+            .size_percent(10, 10)
+            .min_size(30, 12)
+            .render(area, &mut buf, &mut state, |_, _| {});
+
+        let rect = state.overlay_rect().unwrap();
+        assert_eq!(rect.width, 30);
+        assert_eq!(rect.height, 12);
+    }
+
+    #[test]
+    fn anchor_top_places_modal_below_top_edge() {
+        let theme = Theme::dark();
+        let area = Rect::new(0, 0, 40, 30);
+        let mut buf = Buffer::empty(area);
+        let mut state = ModalState::new();
+        state.open();
+
+        Modal::new(&theme)
+            .size_cells(20, 6)
+            .anchor(Anchor::Top { margin: 2 })
+            .render(area, &mut buf, &mut state, |_, _| {});
+
+        assert_eq!(state.overlay_rect().unwrap().y, 2);
+    }
+
+    #[test]
+    fn padding_shrinks_inner_body_rect() {
+        let theme = Theme::dark();
+        let area = Rect::new(0, 0, 40, 12);
+        let mut buf = Buffer::empty(area);
+        let mut state = ModalState::new();
+        state.open();
+
+        let mut got: Option<Rect> = None;
+        Modal::new(&theme).size_cells(20, 8).padding(2, 1).render(
+            area,
+            &mut buf,
+            &mut state,
+            |inner, _| got = Some(inner),
+        );
+
+        // Border inset → 18x6; padding (2,1) → 14x4.
+        let inner = got.unwrap();
+        assert_eq!(inner.width, 14);
+        assert_eq!(inner.height, 4);
     }
 }

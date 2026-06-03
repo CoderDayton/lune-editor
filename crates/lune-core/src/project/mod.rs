@@ -1,6 +1,7 @@
 pub mod config;
 pub mod kv_store;
 pub mod recovery;
+pub mod search;
 pub mod settings;
 pub mod state_db;
 pub mod watcher;

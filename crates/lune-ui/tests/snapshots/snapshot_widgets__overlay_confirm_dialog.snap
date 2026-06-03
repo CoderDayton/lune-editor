@@ -10,10 +10,10 @@ expression: buffer_to_text(&buf)
 
 
 
-                    ┌ Confirm ─────────────────────────────┐
-                    │ Discard unsaved changes?             │
-                    │                                      │
-                    │ Press Enter to confirm, Esc to cancel│
+                    ╭────────────── Confirm ───────────────╮
+                    │Discard unsaved changes?              │
                     │                                      │
                     │                                      │
-                    └──────────────────────────────────────┘
+                    │                                      │
+                    │       [ Confirm ]  [ Cancel ]        │
+                    ╰────  Enter confirm · Esc cancel  ────╯

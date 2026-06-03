@@ -218,7 +218,8 @@ Default bindings. All rebindable in `~/.config/lune-editor/keybindings.toml`.
 | `Ctrl+G` | Toggle git panel |
 | `Ctrl+P` | Command palette |
 | `Ctrl+L` | Language selector |
-| `Ctrl+F` | Find |
+| `Ctrl+F` | Find (in buffer) |
+| `Ctrl+Shift+F` | Search in files (project-wide) |
 | `Ctrl+H` | Find & replace |
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` | Redo |

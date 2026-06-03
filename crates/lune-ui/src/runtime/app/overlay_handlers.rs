@@ -5,20 +5,8 @@ use super::*;
 pub(super) fn handle_overlay_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
     match &state.overlay.active {
         Some(overlay::OverlayKind::CommandPalette) => handle_palette_key(key, state),
-        Some(overlay::OverlayKind::ConfirmDialog { on_confirm, .. }) => {
-            let cmd = on_confirm.clone();
-            match key.code {
-                KeyCode::Enter => {
-                    close_overlay(state);
-                    Control::Event(AppEvent::Command(cmd))
-                }
-                KeyCode::Esc => {
-                    close_overlay(state);
-                    Control::Changed
-                }
-                _ => Control::Continue,
-            }
-        }
+        Some(overlay::OverlayKind::ProjectSearch) => handle_project_search_key(key, state),
+        Some(overlay::OverlayKind::ConfirmDialog) => handle_confirm_dialog_key(key, state),
         Some(overlay::OverlayKind::FindReplace) => handle_find_replace_key(key, state),
         Some(overlay::OverlayKind::FilePicker) => handle_file_picker_key(key, state),
         Some(overlay::OverlayKind::AiClientPicker) => handle_ai_client_picker_key(key, state),
@@ -30,6 +18,73 @@ pub(super) fn handle_overlay_key(key: &KeyEvent, state: &mut AppState) -> Contro
         Some(overlay::OverlayKind::ImagePreview) => handle_image_preview_key(key, state),
         Some(overlay::OverlayKind::KeyHints) => handle_key_hints_key(key, state),
         None => Control::Continue,
+    }
+}
+
+/// Drive the Modal-based confirm dialog. On `Confirm` it dispatches the
+/// stored command; on `Cancel` it just closes. A selection toggle returns
+/// `Changed` so the highlighted button redraws.
+fn handle_confirm_dialog_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    let Some(confirm) = state.overlay.confirm.as_mut() else {
+        return Control::Continue;
+    };
+    match confirm.dialog.handle_key(key) {
+        Some(ConfirmChoice::Confirm) => {
+            let cmd = confirm.on_confirm.clone();
+            close_overlay(state);
+            Control::Event(AppEvent::Command(cmd))
+        }
+        Some(ConfirmChoice::Cancel) => {
+            close_overlay(state);
+            Control::Changed
+        }
+        None => Control::Changed,
+    }
+}
+
+/// Drive the project-wide search overlay: type/backspace edits the query
+/// (re-greping the cached file list), arrows move the selection, and Enter
+/// jumps to the highlighted hit's file and line.
+fn handle_project_search_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    match key.code {
+        KeyCode::Esc => {
+            close_overlay(state);
+            Control::Changed
+        }
+        KeyCode::Enter => {
+            let target = state.overlay.project_search.selected_hit().map(|hit| {
+                // `match_start` is a byte offset; the cursor column is a
+                // character offset, so convert before jumping.
+                let col = hit.line_text[..hit.match_start].chars().count();
+                (hit.path.clone(), hit.line, col)
+            });
+            let Some((path, line, col)) = target else {
+                return Control::Continue;
+            };
+            close_overlay(state);
+            Control::Event(AppEvent::Command(AppCommand::OpenFileAtLine {
+                path,
+                line,
+                col,
+            }))
+        }
+        KeyCode::Up => {
+            state.overlay.project_search.select_prev();
+            Control::Changed
+        }
+        KeyCode::Down => {
+            state.overlay.project_search.select_next();
+            Control::Changed
+        }
+        KeyCode::Backspace => {
+            state.overlay.project_search.backspace();
+            Control::Changed
+        }
+        KeyCode::Char(ch) => {
+            state.overlay.project_search.type_char(ch);
+            Control::Changed
+        }
+        _ => Control::Continue,
     }
 }
 

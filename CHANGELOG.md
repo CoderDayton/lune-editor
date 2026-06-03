@@ -5,6 +5,10 @@ All notable changes to Lune Editor are documented here.
 ## [Unreleased]
 
 ### Added
+- Project-wide text search ("search in files") overlay with jump-to-line
+  (Ctrl+Shift+F): literal, case-insensitive substring matching across the
+  workspace, skipping ignored/hidden/binary files; Enter opens the file at
+  the match
 - Per-hunk git staging, unstaging, and discarding via unified diff patches
 - Find & replace overlay with live search highlighting (Ctrl+F / Ctrl+H)
 - File operation inline input dialogs (create file/dir, rename, delete)
