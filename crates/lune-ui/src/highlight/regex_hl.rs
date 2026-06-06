@@ -6,7 +6,9 @@
 
 use std::ops::Range;
 
-use lune_core::highlight::{HighlightStyle, HighlightedLine, Highlighter, SpanVec, StyledSpan};
+use lune_core::highlight::{
+    BufferEdit, HighlightStyle, HighlightedLine, Highlighter, SpanVec, StyledSpan,
+};
 use lune_core::language::{LanguageId, lang};
 use lune_core::prelude::TextBuffer;
 use regex::Regex;
@@ -80,7 +82,7 @@ impl RegexHighlighter {
 }
 
 impl Highlighter for RegexHighlighter {
-    fn update(&mut self, buffer: &TextBuffer, _edit_range: Option<(usize, usize)>) {
+    fn update(&mut self, buffer: &TextBuffer, _edits: &[BufferEdit]) {
         let new_count = buffer.line_count();
         let old_count = self.lines.len();
 
@@ -204,7 +206,7 @@ mod tests {
     fn toml_highlights_comment() {
         let buf = TextBuffer::from_text("# This is a comment\nkey = \"value\"\n");
         let mut hl = RegexHighlighter::for_language(lang::TOML).unwrap();
-        hl.update(&buf, None);
+        hl.update(&buf, &[]);
 
         let result = hl.highlight_lines(0..2);
         assert_eq!(result.len(), 2);
@@ -223,7 +225,7 @@ mod tests {
     fn toml_highlights_string_and_key() {
         let buf = TextBuffer::from_text("[package]\nname = \"lune\"\n");
         let mut hl = RegexHighlighter::for_language(lang::TOML).unwrap();
-        hl.update(&buf, None);
+        hl.update(&buf, &[]);
 
         let result = hl.highlight_lines(0..2);
 
@@ -248,7 +250,7 @@ mod tests {
     fn markdown_highlights_heading() {
         let buf = TextBuffer::from_text("# Hello World\nSome text\n");
         let mut hl = RegexHighlighter::for_language(lang::MARKDOWN).unwrap();
-        hl.update(&buf, None);
+        hl.update(&buf, &[]);
 
         let result = hl.highlight_lines(0..2);
         assert!(
@@ -263,7 +265,7 @@ mod tests {
     fn generic_rules_highlight_comments_and_strings() {
         let buf = TextBuffer::from_text("// a comment\nlet x = \"hello\";\n");
         let mut hl = RegexHighlighter::for_language(lang::LUA).unwrap(); // uses generic rules
-        hl.update(&buf, None);
+        hl.update(&buf, &[]);
 
         let result = hl.highlight_lines(0..2);
         assert!(
@@ -284,7 +286,7 @@ mod tests {
     fn markdown_fence_line_gets_styled() {
         let buf = TextBuffer::from_text("```rust\nlet x = 1;\n```\n");
         let mut hl = RegexHighlighter::for_language(lang::MARKDOWN).unwrap();
-        hl.update(&buf, None);
+        hl.update(&buf, &[]);
 
         let result = hl.highlight_lines(0..3);
         // Opening fence line carries a non-default style.
@@ -308,7 +310,7 @@ mod tests {
     fn update_single_line_change_leaves_others_intact() {
         let buf = TextBuffer::from_text("# title\nplain text\nmore text\n");
         let mut hl = RegexHighlighter::for_language(lang::MARKDOWN).unwrap();
-        hl.update(&buf, None);
+        hl.update(&buf, &[]);
 
         // Snapshot the spans of all lines before the edit.
         let before: Vec<Vec<StyledSpan>> = hl
@@ -317,9 +319,11 @@ mod tests {
             .map(|l| l.spans.to_vec())
             .collect();
 
-        // Change only line 1; line count stays the same.
+        // Re-parse with the edited buffer. The regex highlighter ignores
+        // `edits` and fully re-parses, so unchanged lines must still
+        // produce identical spans.
         let buf2 = TextBuffer::from_text("# title\nedited text\nmore text\n");
-        hl.update(&buf2, Some((1, 1)));
+        hl.update(&buf2, &[]);
 
         let after: Vec<Vec<StyledSpan>> = hl
             .highlight_lines(0..3)
@@ -336,7 +340,7 @@ mod tests {
     fn spans_are_non_overlapping() {
         let buf = TextBuffer::from_text("x = \"hello\" # comment\n");
         let mut hl = RegexHighlighter::for_language(lang::TOML).unwrap();
-        hl.update(&buf, None);
+        hl.update(&buf, &[]);
 
         let result = hl.highlight_lines(0..1);
         let spans = &result[0].spans;

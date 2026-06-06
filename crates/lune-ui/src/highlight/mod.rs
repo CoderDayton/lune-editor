@@ -36,7 +36,7 @@ mod tests {
         // Tree-sitter highlighter produces non-plain highlights for Rust code.
         let buf = TextBuffer::from_text("fn main() { let x = 42; }");
         let mut hl = hl;
-        hl.update(&buf, None);
+        hl.update(&buf, &[]);
         let lines = hl.highlight_lines(0..1);
         // Should have at least one line with styled spans (not plain).
         assert!(!lines.is_empty());
@@ -47,7 +47,7 @@ mod tests {
         let hl = create_highlighter(lang::PYTHON);
         let buf = TextBuffer::from_text("def hello():\n    pass\n");
         let mut hl = hl;
-        hl.update(&buf, None);
+        hl.update(&buf, &[]);
         let lines = hl.highlight_lines(0..1);
         assert!(!lines.is_empty());
     }
@@ -57,7 +57,7 @@ mod tests {
         let hl = create_highlighter(lang::TOML);
         let buf = TextBuffer::from_text("[package]\nname = \"test\"\n");
         let mut hl = hl;
-        hl.update(&buf, None);
+        hl.update(&buf, &[]);
         let lines = hl.highlight_lines(0..2);
         assert!(!lines.is_empty());
     }
@@ -67,7 +67,7 @@ mod tests {
         let hl = create_highlighter(lang::MARKDOWN);
         let buf = TextBuffer::from_text("# Hello\nSome text\n");
         let mut hl = hl;
-        hl.update(&buf, None);
+        hl.update(&buf, &[]);
         let lines = hl.highlight_lines(0..1);
         assert!(!lines.is_empty());
     }
@@ -77,7 +77,7 @@ mod tests {
         let hl = create_highlighter(lang::PLAIN_TEXT);
         let buf = TextBuffer::from_text("just plain text");
         let mut hl = hl;
-        hl.update(&buf, None);
+        hl.update(&buf, &[]);
         let lines = hl.highlight_lines(0..1);
         // Null highlighter produces empty or plain spans.
         assert!(lines.is_empty() || lines.iter().all(HighlightedLine::is_plain));
@@ -88,7 +88,7 @@ mod tests {
         let hl = create_highlighter(lang::JAVASCRIPT);
         let buf = TextBuffer::from_text("const x = 1;\n");
         let mut hl = hl;
-        hl.update(&buf, None);
+        hl.update(&buf, &[]);
         let lines = hl.highlight_lines(0..1);
         assert!(!lines.is_empty());
     }

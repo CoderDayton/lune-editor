@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use ropey::Rope;
 use uuid::Uuid;
 
+use crate::highlight::BufferEdit;
 use crate::position::{CursorState, Position, Selection};
 use crate::undo::{
     EditOp, RevisionId, Transaction, UndoStack, UndoState, end_position_after_insert,
@@ -80,6 +81,13 @@ pub struct TextBuffer {
     pending_ops: Option<Vec<EditOp>>,
     /// Cursor state captured at `begin_transaction`.
     pending_cursor_before: Option<CursorState>,
+
+    /// Byte+point deltas captured at each rope mutation (insert / delete /
+    /// undo / redo) since the last drain. Consumed by the syntax
+    /// highlighter via [`take_pending_edits`](Self::take_pending_edits) to
+    /// drive incremental reparsing. Each delta is expressed in the
+    /// coordinate space *after* the previous delta in this list.
+    pending_edits: Vec<BufferEdit>,
 }
 
 impl TextBuffer {
@@ -100,6 +108,7 @@ impl TextBuffer {
             save_point_lost: false,
             pending_ops: None,
             pending_cursor_before: None,
+            pending_edits: Vec::new(),
         }
     }
 
@@ -212,6 +221,17 @@ impl TextBuffer {
         self.current_revision
     }
 
+    /// Drain the byte+point deltas captured since the last call.
+    ///
+    /// Each mutation (`insert` / `delete` / `replace` / multi-cursor edits /
+    /// undo / redo) appends one or more [`BufferEdit`]s. The caller (the
+    /// syntax highlighter) takes them to drive incremental reparsing. The
+    /// returned edits are in document-evolution order, each expressed in the
+    /// coordinate space *after* the previous one.
+    pub fn take_pending_edits(&mut self) -> Vec<BufferEdit> {
+        std::mem::take(&mut self.pending_edits)
+    }
+
     // ── Position conversion ───────────────────────────────────────────
 
     /// Convert a `Position` to a rope char index.
@@ -258,6 +278,7 @@ impl TextBuffer {
         let char_idx = self.pos_to_char(pos);
         self.rope.insert(char_idx, text);
         self.current_revision += 1;
+        self.capture_insert(char_idx, text);
 
         let text: Arc<str> = Arc::from(text);
         let op = EditOp::Insert {
@@ -297,6 +318,7 @@ impl TextBuffer {
         let deleted_text: Arc<str> = Arc::from(self.rope.slice(start_idx..end_idx).to_string());
         self.rope.remove(start_idx..end_idx);
         self.current_revision += 1;
+        self.capture_delete(start_idx, &deleted_text);
 
         let op = EditOp::Delete {
             start: lo,
@@ -671,18 +693,90 @@ impl TextBuffer {
     }
 
     /// Apply an edit op directly to the rope without recording it.
+    ///
+    /// Used by undo/redo, which bypass [`insert`](Self::insert) /
+    /// [`delete`](Self::delete). Each application still captures a
+    /// [`BufferEdit`] into `pending_edits` so the highlighter sees
+    /// undo/redo mutations the same way it sees ordinary edits.
     fn apply_op_raw(&mut self, op: &EditOp) {
         match op {
             EditOp::Insert { pos, text } => {
                 let idx = self.pos_to_char(*pos);
                 self.rope.insert(idx, text);
+                self.capture_insert(idx, text);
             }
-            EditOp::Delete { start, end, .. } => {
+            EditOp::Delete {
+                start,
+                end,
+                deleted_text,
+            } => {
                 let start_idx = self.pos_to_char(*start);
                 let end_idx = self.pos_to_char(*end);
                 self.rope.remove(start_idx..end_idx);
+                self.capture_delete(start_idx, deleted_text);
             }
         }
+    }
+
+    /// Translate a byte offset in the current rope to a tree-sitter
+    /// `(row, byte_column)` point, where `byte_column` is the byte offset
+    /// from the start of the line (NOT a char offset).
+    #[inline]
+    fn byte_to_point(rope: &Rope, byte: usize) -> (usize, usize) {
+        let row = rope.byte_to_line(byte);
+        let col = byte - rope.line_to_byte(row);
+        (row, col)
+    }
+
+    /// Capture a [`BufferEdit`] for an insertion of `text` at char index
+    /// `start_char`, computed against the live (post-insert) rope.
+    ///
+    /// The unchanged prefix means `char_to_byte(start_char)` is identical
+    /// pre- and post-edit, so the post-edit rope is sufficient.
+    fn capture_insert(&mut self, start_char: usize, text: &str) {
+        let start_byte = self.rope.char_to_byte(start_char);
+        let new_end_byte = start_byte + text.len();
+        let start_point = Self::byte_to_point(&self.rope, start_byte);
+        let new_end_point = Self::byte_to_point(&self.rope, new_end_byte);
+        self.pending_edits.push(BufferEdit {
+            start_byte,
+            old_end_byte: start_byte,
+            new_end_byte,
+            start_point,
+            old_end_point: start_point,
+            new_end_point,
+        });
+    }
+
+    /// Capture a [`BufferEdit`] for a deletion of `deleted_text` starting at
+    /// char index `start_char`, computed against the live (post-delete) rope.
+    ///
+    /// `old_end_byte` / `old_end_point` describe where the deleted region
+    /// ended in the *pre-edit* coordinate space (start + size of removed
+    /// text), which is what tree-sitter expects.
+    fn capture_delete(&mut self, start_char: usize, deleted_text: &str) {
+        let start_byte = self.rope.char_to_byte(start_char);
+        let old_end_byte = start_byte + deleted_text.len();
+        let start_point = Self::byte_to_point(&self.rope, start_byte);
+        // Old end point is expressed in pre-edit coordinates: advance from
+        // the start point by the rows/columns the deleted text spanned.
+        let deleted_newlines = deleted_text.bytes().filter(|&b| b == b'\n').count();
+        let old_end_point = if deleted_newlines == 0 {
+            (start_point.0, start_point.1 + deleted_text.len())
+        } else {
+            let last_line_bytes = deleted_text
+                .rsplit_once('\n')
+                .map_or(deleted_text.len(), |(_, after)| after.len());
+            (start_point.0 + deleted_newlines, last_line_bytes)
+        };
+        self.pending_edits.push(BufferEdit {
+            start_byte,
+            old_end_byte,
+            new_end_byte: start_byte,
+            start_point,
+            old_end_point,
+            new_end_point: start_point,
+        });
     }
 
     // ── Undo state persistence ────────────────────────────────────────
@@ -895,8 +989,11 @@ impl TextBuffer {
 
     /// Reload the buffer contents from disk.
     ///
-    /// Resets undo/redo history and cursor position. Streams from disk
-    /// via `Rope::from_reader` to avoid a full-file `String` allocation.
+    /// Resets undo/redo history and cursor position, and discards any
+    /// pending highlighter edit deltas: the whole document is replaced, so
+    /// the next `take_pending_edits` yields an empty slice and the
+    /// highlighter performs a full reparse. Streams from disk via
+    /// `Rope::from_reader` to avoid a full-file `String` allocation.
     ///
     /// # Errors
     /// Returns an error if the buffer has no file path or if reading fails.
@@ -909,6 +1006,11 @@ impl TextBuffer {
         self.undo_stack = UndoStack::new();
         self.redo_stack = UndoStack::new();
         self.cursor = CursorState::default();
+        // The whole document was replaced; any captured edit deltas now
+        // describe a buffer that no longer exists. Drop them so the
+        // highlighter reparses from scratch instead of misapplying stale
+        // deltas to a mismatched tree.
+        self.pending_edits.clear();
         self.current_revision += 1;
         // Reload = fresh save point.
         self.save_distance = 0;
@@ -1115,6 +1217,169 @@ enum CharKind {
 mod tests {
     use super::*;
     use crate::position::Position;
+
+    // ── Pending edit capture (byte + point deltas) ────────────────────
+
+    #[test]
+    fn pending_edit_single_line_insert() {
+        let mut buf = TextBuffer::from_text("abc\n");
+        buf.insert(Position::new(0, 1), "X");
+        let edits = buf.take_pending_edits();
+        assert_eq!(
+            edits,
+            vec![BufferEdit {
+                start_byte: 1,
+                old_end_byte: 1,
+                new_end_byte: 2,
+                start_point: (0, 1),
+                old_end_point: (0, 1),
+                new_end_point: (0, 2),
+            }]
+        );
+        // Draining empties the queue.
+        assert!(buf.take_pending_edits().is_empty());
+    }
+
+    #[test]
+    fn pending_edit_multiline_insert() {
+        let mut buf = TextBuffer::from_text("abc");
+        buf.insert(Position::new(0, 3), "X\nY");
+        let edits = buf.take_pending_edits();
+        assert_eq!(
+            edits,
+            vec![BufferEdit {
+                start_byte: 3,
+                old_end_byte: 3,
+                new_end_byte: 6,
+                start_point: (0, 3),
+                old_end_point: (0, 3),
+                new_end_point: (1, 1),
+            }]
+        );
+    }
+
+    #[test]
+    fn pending_edit_single_line_delete() {
+        let mut buf = TextBuffer::from_text("abcde\n");
+        buf.delete(Position::new(0, 1), Position::new(0, 3));
+        let edits = buf.take_pending_edits();
+        assert_eq!(
+            edits,
+            vec![BufferEdit {
+                start_byte: 1,
+                old_end_byte: 3,
+                new_end_byte: 1,
+                start_point: (0, 1),
+                old_end_point: (0, 3),
+                new_end_point: (0, 1),
+            }]
+        );
+    }
+
+    #[test]
+    fn pending_edit_multiline_delete() {
+        let mut buf = TextBuffer::from_text("abc\ndef\nghi\n");
+        // Removes "bc\ndef\ng": old end row (2) > start row (0).
+        buf.delete(Position::new(0, 1), Position::new(2, 1));
+        let edits = buf.take_pending_edits();
+        assert_eq!(
+            edits,
+            vec![BufferEdit {
+                start_byte: 1,
+                old_end_byte: 9,
+                new_end_byte: 1,
+                start_point: (0, 1),
+                old_end_point: (2, 1),
+                new_end_point: (0, 1),
+            }]
+        );
+        assert_eq!(buf.text(), "ahi\n");
+    }
+
+    #[test]
+    fn pending_edit_non_ascii_byte_vs_char_column() {
+        // "λ" (U+03BB) is two UTF-8 bytes. Inserting after it must report a
+        // byte column (3) that differs from the char column (2).
+        let mut buf = TextBuffer::from_text("aλb\n");
+        buf.insert(Position::new(0, 2), "x");
+        let edits = buf.take_pending_edits();
+        assert_eq!(edits.len(), 1);
+        let e = edits[0];
+        assert_eq!(e.start_byte, 3, "byte offset past 'a' + 2-byte 'λ'");
+        assert_eq!(e.start_point, (0, 3), "byte column, not char column");
+        // The char column of the same position would be 2 — prove divergence.
+        assert_ne!(e.start_point.1, 2);
+        assert_eq!(e.new_end_byte, 4);
+        assert_eq!(e.new_end_point, (0, 4));
+
+        // Deleting the 2-byte char: old_end advances by 2 bytes, not 1 char.
+        let mut buf2 = TextBuffer::from_text("aλb\n");
+        buf2.delete(Position::new(0, 1), Position::new(0, 2));
+        let edits2 = buf2.take_pending_edits();
+        assert_eq!(
+            edits2,
+            vec![BufferEdit {
+                start_byte: 1,
+                old_end_byte: 3, // start_byte + 2 (byte length of "λ")
+                new_end_byte: 1,
+                start_point: (0, 1),
+                old_end_point: (0, 3),
+                new_end_point: (0, 1),
+            }]
+        );
+        assert_eq!(buf2.text(), "ab\n");
+    }
+
+    #[test]
+    fn pending_edit_replace_yields_two_deltas() {
+        let mut buf = TextBuffer::from_text("abcde\n");
+        // delete [1,3) "bc" then insert "XY" at (0,1) → "aXYde\n".
+        buf.replace(Position::new(0, 1), Position::new(0, 3), "XY");
+        let edits = buf.take_pending_edits();
+        assert_eq!(edits.len(), 2, "replace = delete + insert");
+        // First: delete "bc".
+        assert_eq!(edits[0].start_byte, 1);
+        assert_eq!(edits[0].old_end_byte, 3);
+        assert_eq!(edits[0].new_end_byte, 1);
+        // Second: insert "XY" in the post-delete coordinate space.
+        assert_eq!(edits[1].start_byte, 1);
+        assert_eq!(edits[1].old_end_byte, 1);
+        assert_eq!(edits[1].new_end_byte, 3);
+        assert_eq!(buf.text(), "aXYde\n");
+    }
+
+    #[test]
+    fn pending_edit_undo_redo_capture() {
+        let mut buf = TextBuffer::from_text("abc\n");
+        buf.insert(Position::new(0, 1), "X"); // "aXbc\n"
+        let _ = buf.take_pending_edits(); // discard the insert delta
+        assert!(buf.undo()); // back to "abc\n": undo is a delete of "X"
+        let undo_edits = buf.take_pending_edits();
+        assert_eq!(
+            undo_edits,
+            vec![BufferEdit {
+                start_byte: 1,
+                old_end_byte: 2,
+                new_end_byte: 1,
+                start_point: (0, 1),
+                old_end_point: (0, 2),
+                new_end_point: (0, 1),
+            }]
+        );
+        assert!(buf.redo()); // "aXbc\n": redo re-inserts "X"
+        let redo_edits = buf.take_pending_edits();
+        assert_eq!(
+            redo_edits,
+            vec![BufferEdit {
+                start_byte: 1,
+                old_end_byte: 1,
+                new_end_byte: 2,
+                start_point: (0, 1),
+                old_end_point: (0, 1),
+                new_end_point: (0, 2),
+            }]
+        );
+    }
 
     // ── Constructors & Accessors ──────────────────────────────────────
 
@@ -1727,6 +1992,35 @@ mod tests {
         assert!(!buf.is_dirty());
 
         // Cleanup.
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reload_clears_pending_edits() {
+        let dir = std::env::temp_dir().join("lune_test_reload_clears_edits");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test.txt");
+
+        let mut buf = TextBuffer::from_text("hello world");
+        buf.file_path = Some(path.clone());
+        buf.save().unwrap();
+
+        // An edit captures a pending delta that has not yet been drained.
+        buf.insert(Position::new(0, 0), "X");
+        assert!(
+            !buf.pending_edits.is_empty(),
+            "edit must queue a pending delta"
+        );
+
+        // Reload replaces the whole document; the stale delta must be dropped
+        // so the highlighter reparses in full instead of misapplying it.
+        std::fs::write(&path, "modified content").unwrap();
+        buf.reload().unwrap();
+        assert!(
+            buf.take_pending_edits().is_empty(),
+            "reload must discard pending edit deltas"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1080,7 +1080,7 @@ impl AppState {
             return;
         };
         if let Some(buf) = self.session.registry.get(id) {
-            hl.update(buf, None);
+            hl.update(buf, &[]);
             self.primed_highlighters.insert(id);
         }
     }
@@ -1473,13 +1473,17 @@ impl AppState {
     /// Re-run the highlighter for the active buffer after a text change.
     fn update_active_highlighter(&mut self) {
         if let Some(id) = self.session.active_buffer {
-            // We need to borrow both the buffer (immutable) and the highlighter
-            // (mutable) simultaneously, which requires splitting the borrows.
+            // Drain the buffer's accumulated edits and feed them to the
+            // highlighter so it can reparse incrementally. This needs a mutable
+            // borrow of the buffer (to drain the queue) alongside the mutable
+            // highlighter borrow; they live in disjoint fields of `self`, so the
+            // split borrow is sound.
             if let (Some(buf), Some(hl)) = (
-                self.session.registry.get(id),
+                self.session.registry.get_mut(id),
                 self.highlighters.get_mut(&id),
             ) {
-                hl.update(buf, None);
+                let edits = buf.take_pending_edits();
+                hl.update(buf, &edits);
                 // A real edit just hit the buffer — it's now primed for
                 // sure, so ensure_highlighter_primed won't redundantly
                 // re-parse on the next render.

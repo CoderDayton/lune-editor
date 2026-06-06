@@ -10,6 +10,29 @@ use smallvec::SmallVec;
 
 use crate::buffer::TextBuffer;
 
+// ── Buffer edit delta ─────────────────────────────────────────────────
+
+/// A byte+point delta describing one buffer mutation.
+///
+/// Suitable for driving tree-sitter incremental reparsing. `column` fields
+/// are BYTE offsets within the line (NOT char offsets), to match
+/// tree-sitter's `Point` convention.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BufferEdit {
+    /// Byte offset where the edit begins.
+    pub start_byte: usize,
+    /// Byte offset of the end of the replaced region in the *old* text.
+    pub old_end_byte: usize,
+    /// Byte offset of the end of the inserted region in the *new* text.
+    pub new_end_byte: usize,
+    /// `(row, byte_column)` of `start_byte`.
+    pub start_point: (usize, usize),
+    /// `(row, byte_column)` of `old_end_byte` in the *old* text.
+    pub old_end_point: (usize, usize),
+    /// `(row, byte_column)` of `new_end_byte` in the *new* text.
+    pub new_end_point: (usize, usize),
+}
+
 // ── Highlight style categories ────────────────────────────────────────
 
 /// Semantic category for a highlighted span.
@@ -144,10 +167,15 @@ impl HighlightedLine {
 pub trait Highlighter: Send {
     /// Re-parse / update after a text change.
     ///
-    /// - `buffer`: the current buffer contents.
-    /// - `edit_range`: optional `(start_byte, old_end_byte)` for incremental
-    ///   parsing. When `None`, triggers a full re-parse.
-    fn update(&mut self, buffer: &TextBuffer, edit_range: Option<(usize, usize)>);
+    /// - `buffer`: the current (post-edit) buffer contents.
+    /// - `edits`: the byte+point deltas that produced the current buffer
+    ///   state since the last `update`, in document-evolution order. An
+    ///   empty slice requests a full re-parse; a non-empty slice is an
+    ///   incremental hint that an implementation may use to reparse only
+    ///   the affected region. Implementations that do not support
+    ///   incremental parsing ignore `edits` and always re-parse in full —
+    ///   the result must be identical either way.
+    fn update(&mut self, buffer: &TextBuffer, edits: &[BufferEdit]);
 
     /// Return styled spans for lines in the given range.
     ///
@@ -176,7 +204,7 @@ pub struct NullHighlighter {
 }
 
 impl Highlighter for NullHighlighter {
-    fn update(&mut self, _buffer: &TextBuffer, _edit_range: Option<(usize, usize)>) {}
+    fn update(&mut self, _buffer: &TextBuffer, _edits: &[BufferEdit]) {}
 
     fn highlight_lines(&mut self, line_range: Range<usize>) -> &[HighlightedLine] {
         // Grow the cache to cover the requested range, filling any new
@@ -248,7 +276,7 @@ mod tests {
     fn null_highlighter_produces_empty_spans() {
         let mut hl = NullHighlighter::default();
         let buf = TextBuffer::from_text("fn main() {\n    println!(\"hi\");\n}\n");
-        hl.update(&buf, None);
+        hl.update(&buf, &[]);
         let lines = hl.highlight_lines(0..3);
         assert_eq!(lines.len(), 3);
         for line in lines {

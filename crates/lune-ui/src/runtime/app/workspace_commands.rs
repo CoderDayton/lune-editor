@@ -416,8 +416,11 @@ fn handle_change_language(lang_id: LanguageId, state: &mut AppState) -> Control<
     };
 
     let mut hl = highlight::create_highlighter(lang_id);
-    if let Some(buf) = state.session.registry.get(id) {
-        hl.update(buf, None);
+    if let Some(buf) = state.session.registry.get_mut(id) {
+        // Discard any edit deltas captured against the previous highlighter
+        // so they aren't replayed onto this fresh one, which reparses in full.
+        let _ = buf.take_pending_edits();
+        hl.update(buf, &[]);
     }
     state.highlighters.insert(id, hl);
     state.status_message = format!("Language: {}", lang_id.name());

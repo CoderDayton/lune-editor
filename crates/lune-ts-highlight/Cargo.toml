@@ -1,0 +1,25 @@
+[package]
+name = "lune-ts-highlight"
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+rust-version.workspace = true
+description = "Vendored + patched copy of tree-sitter-highlight 0.26.5 with incremental root-tree reuse"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+tree-sitter.workspace = true
+regex.workspace = true
+streaming-iterator.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tree-sitter-rust.workspace = true
+
+# NOTE: intentionally NOT `[lints] workspace = true`. The workspace denies
+# `unsafe_code` and enables strict clippy (all/pedantic/nursery as warn). The
+# vendored algorithm relies on `unsafe` and would not build under those lints,
+# so this crate relaxes them at the crate root (see `#![allow(...)]` in lib.rs)
+# rather than editing the vendored logic.
