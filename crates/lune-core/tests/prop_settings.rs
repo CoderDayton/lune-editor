@@ -105,6 +105,26 @@ fn arb_ai_settings() -> impl Strategy<Value = AiSettings> {
         .prop_map(|default_client| AiSettings { default_client })
 }
 
+/// Generate arbitrary `AgentSettings`.
+fn arb_agent_settings() -> impl Strategy<Value = AgentSettings> {
+    (
+        prop_oneof![Just(AgentPlacement::Fixed), Just(AgentPlacement::Mouse)],
+        prop_oneof![Just(ColumnSide::Left), Just(ColumnSide::Right)],
+        prop_oneof![Just(RowSide::Top), Just(RowSide::Bottom)],
+        any::<u8>(), // max_columns (0 = auto; full range incl. clamp region)
+        any::<u8>(), // max_rows (incl. 0, which callers clamp to 1)
+    )
+        .prop_map(
+            |(placement, columns_grow, rows_grow, max_columns, max_rows)| AgentSettings {
+                placement,
+                columns_grow,
+                rows_grow,
+                max_columns,
+                max_rows,
+            },
+        )
+}
+
 /// Generate arbitrary `Settings` by composing sub-strategies.
 fn arb_settings() -> impl Strategy<Value = Settings> {
     (
@@ -112,13 +132,15 @@ fn arb_settings() -> impl Strategy<Value = Settings> {
         arb_ui_settings(),
         arb_file_tree_settings(),
         arb_ai_settings(),
+        arb_agent_settings(),
         prop::string::string_regex("[A-Za-z ]{3,20}").unwrap(),
     )
-        .prop_map(|(editor, ui, file_tree, ai, theme)| Settings {
+        .prop_map(|(editor, ui, file_tree, ai, agents, theme)| Settings {
             editor,
             ui,
             file_tree,
             ai,
+            agents,
             theme,
         })
 }

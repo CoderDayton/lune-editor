@@ -3,6 +3,8 @@
 use super::*;
 use crate::runtime::agents::DragState;
 use crate::runtime::tiling;
+use crate::widgets::panel::{panel_block, panel_title};
+use lune_core::settings::{AgentPlacement, ColumnSide, RowSide};
 
 pub(super) fn render_agents_tab(area: Rect, buf: &mut Buffer, state: &mut AppState) {
     state.last_splits = None;
@@ -20,21 +22,32 @@ pub(super) fn render_agents_tab(area: Rect, buf: &mut Buffer, state: &mut AppSta
         .split(area);
     let content = chunks[0];
     let status = chunks[1];
-    state.last_agents_content_area = Some(content);
+
+    // Frame the whole agents view in one titled panel so it reads as a
+    // single cohesive surface, matching the bordered panels on the editor
+    // tab. Everything below renders inside this frame.
+    let frame = panel_block(&state.theme, true, Borders::ALL).title(panel_title(
+        "AGENTS",
+        &state.theme,
+        true,
+    ));
+    let inner = frame.inner(content);
+    frame.render(content, buf);
+    state.last_agents_content_area = Some(inner);
 
     if state.agents_tab.is_empty() {
-        render_empty_agents_tab(content, buf, state);
+        render_empty_agents_tab(inner, buf, state);
     } else {
         match state.agents_tab.layout.as_ref() {
             Some(_) if state.agents_tab.zoomed => {
-                render_zoomed_agent_pane(content, buf, state);
+                render_zoomed_agent_pane(inner, buf, state);
             }
             Some(layout) => {
-                let pane_rects = layout.compute_rects(content);
-                let borders = layout.compute_borders(content);
+                let pane_rects = layout.compute_rects(inner);
+                let borders = layout.compute_borders(inner);
                 render_tiled_agent_panes(&pane_rects, &borders, buf, state);
             }
-            None => render_degraded_agents_tab(content, buf, state),
+            None => render_degraded_agents_tab(inner, buf, state),
         }
     }
 
@@ -52,9 +65,9 @@ pub(super) fn render_agents_tab(area: Rect, buf: &mut Buffer, state: &mut AppSta
 }
 
 fn render_empty_agents_tab(content: Rect, buf: &mut Buffer, state: &AppState) {
-    // No border frame: the populated agents view is borderless, and the
-    // empty state should match so the chrome doesn't pop in and out as
-    // panes are opened and closed.
+    // The outer panel frame is drawn by `render_agents_tab`; the empty
+    // state just centers its help text inside that frame, so no extra
+    // border is drawn here.
     let inner = content;
 
     if inner.width == 0 || inner.height == 0 {
@@ -116,24 +129,19 @@ fn render_empty_agents_tab(content: Rect, buf: &mut Buffer, state: &AppState) {
 }
 
 fn render_degraded_agents_tab(content: Rect, buf: &mut Buffer, state: &AppState) {
-    let block = Block::default()
-        .title(" Agents ")
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(state.theme.overlay_border));
-    let inner = block.inner(content);
-    block.render(content, buf);
-
-    if inner.width == 0 || inner.height == 0 {
+    // The outer panel (drawn by `render_agents_tab`) already frames this
+    // area, so the degraded message renders directly into the content.
+    if content.width == 0 || content.height == 0 {
         return;
     }
 
     Line::from("Agents layout unavailable.")
         .style(Style::new().fg(state.theme.fg))
-        .render(Rect::new(inner.x, inner.y, inner.width, 1), buf);
-    if inner.height > 1 {
+        .render(Rect::new(content.x, content.y, content.width, 1), buf);
+    if content.height > 1 {
         Line::from("Reopen a pane or reapply a layout to recover.")
             .style(Style::new().fg(state.theme.fg_muted))
-            .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
+            .render(Rect::new(content.x, content.y + 1, content.width, 1), buf);
     }
 }
 
@@ -288,18 +296,33 @@ pub(super) fn begin_agent_split_session(
     let new_id = if state.agents_tab.is_empty() {
         Some(state.agents_tab.add_first_pane())
     } else {
-        let split = match requested {
-            Some((direction, side)) => choose_requested_agent_split(state, direction, side),
-            None => choose_auto_agent_split(state),
-        };
-        let Some((direction, side)) = split else {
-            state.overlay.notify(
-                "Focused pane is too small to split again",
-                NotificationLevel::Warning,
-            );
-            return Control::Changed;
-        };
-        state.agents_tab.split_focused_with_side(direction, side)
+        match requested {
+            // Explicit Alt+\ / Alt+- split — a manual binary split of the
+            // focused pane that bypasses the grid cap.
+            Some((direction, side)) => {
+                let Some((direction, side)) = choose_requested_agent_split(state, direction, side)
+                else {
+                    notify_split_too_small(state);
+                    return Control::Changed;
+                };
+                state.agents_tab.split_focused_with_side(direction, side)
+            }
+            None => match state.agent_settings.placement {
+                // Focus-agnostic even grid (default).
+                AgentPlacement::Fixed => match add_grid_pane(state) {
+                    GridAdd::Added(id) => Some(id),
+                    GridAdd::Full => return Control::Changed,
+                },
+                // Legacy cursor-aware split of the pane under the mouse.
+                AgentPlacement::Mouse => {
+                    let Some((direction, side)) = choose_mouse_agent_split(state) else {
+                        notify_split_too_small(state);
+                        return Control::Changed;
+                    };
+                    state.agents_tab.split_focused_with_side(direction, side)
+                }
+            },
+        }
     };
 
     if let Some(pane_id) = new_id {
@@ -316,6 +339,13 @@ const fn default_agent_split() -> (tiling::SplitDirection, tiling::SplitSide) {
     (tiling::SplitDirection::Vertical, tiling::SplitSide::Second)
 }
 
+fn notify_split_too_small(state: &mut AppState) {
+    state.overlay.notify(
+        "Focused pane is too small to split again",
+        NotificationLevel::Warning,
+    );
+}
+
 fn choose_requested_agent_split(
     state: &AppState,
     direction: tiling::SplitDirection,
@@ -326,7 +356,130 @@ fn choose_requested_agent_split(
         .then_some((direction, side))
 }
 
-fn choose_auto_agent_split(
+/// Upper bound on grid columns and rows.
+///
+/// [`tiling::TileNode::split`] clamps split ratios to `0.1..=0.9`, and an even
+/// chain of `N` lanes uses an outer ratio of `1/N`; `N > 10` (ratio `< 0.1`)
+/// would be clamped and silently distort the "even" grid. Capping the
+/// configured `max_columns`/`max_rows` here keeps the tiling exactly even even
+/// for an extreme config value. (Auto sizing never exceeds 4, so this only
+/// bites a hand-set override.)
+const MAX_GRID_LANES: u8 = 10;
+
+/// Outcome of trying to add a pane to the fixed even grid.
+enum GridAdd {
+    /// A pane was added; carries its id.
+    Added(tiling::PaneId),
+    /// The grid is already at capacity for this screen (already notified).
+    Full,
+}
+
+/// Add a pane to the focus-agnostic even grid (the `fixed` placement).
+///
+/// Rebuilds the layout as an even grid including the new pane. When the grid is
+/// already at its screen-derived capacity (`columns × rows`), notifies and
+/// returns [`GridAdd::Full`] — Alt+\ / Alt+- remain the manual override.
+fn add_grid_pane(state: &mut AppState) -> GridAdd {
+    let area = agents_content_area(state);
+    let cols = effective_max_columns(state, area);
+    let rows = usize::from(state.agent_settings.max_rows.clamp(1, MAX_GRID_LANES));
+    let capacity = cols.saturating_mul(rows);
+
+    let count = state
+        .agents_tab
+        .layout
+        .as_ref()
+        .map_or(0, tiling::TileNode::pane_count);
+    if count >= capacity {
+        state.overlay.notify(
+            format!(
+                "Max {capacity} terminals for this screen — close one or use Alt+\\ to split manually"
+            ),
+            NotificationLevel::Warning,
+        );
+        return GridAdd::Full;
+    }
+
+    let new_id = state.agents_tab.alloc_pane_id();
+    let order = grid_pane_order(state, new_id);
+    let (reverse_cols, reverse_rows) = grow_reversals(state);
+    state
+        .agents_tab
+        .set_grid_layout(&order, cols, reverse_cols, reverse_rows);
+    state.agents_tab.focused = Some(new_id);
+    GridAdd::Added(new_id)
+}
+
+/// The agents content rect (the panel's inner area).
+///
+/// Falls back to a coarse 80×24 estimate only before the first render has
+/// recorded a real rect — e.g. the very first `Ctrl+N`. The next render stores
+/// the true inner rect and the grid is rebuilt against it, so the estimate only
+/// affects the auto column-count of that first add.
+fn agents_content_area(state: &AppState) -> Rect {
+    state
+        .last_agents_content_area
+        .unwrap_or_else(|| Rect::new(0, 0, 80, 24))
+}
+
+/// Columns per grid row: the configured `max_columns`, or an aspect-derived
+/// value when it is `0` (auto). Clamped to `1..=MAX_GRID_LANES`.
+fn effective_max_columns(state: &AppState, area: Rect) -> usize {
+    let configured = state.agent_settings.max_columns;
+    let cols = if configured == 0 {
+        auto_max_columns(area)
+    } else {
+        configured
+    };
+    usize::from(cols.clamp(1, MAX_GRID_LANES))
+}
+
+/// Derive the column cap from the content area's cell aspect ratio (cols÷rows).
+/// Cells are ~twice as tall as wide, so cols÷rows runs ~2× the monitor's pixel
+/// aspect: portrait → 1, 16:9 / 16:10 / 21:9 → 3, 32:9 super-ultrawide → 4.
+const fn auto_max_columns(area: Rect) -> u8 {
+    let w = area.width as u32;
+    let h = if area.height == 0 {
+        1
+    } else {
+        area.height as u32
+    };
+    if w * 2 < h * 3 {
+        1 // aspect < 1.5 (portrait / tall)
+    } else if w < h * 6 {
+        3 // 1.5 ≤ aspect < 6 (16:9, 16:10, 21:9)
+    } else {
+        4 // aspect ≥ 6 (32:9 super-ultrawide)
+    }
+}
+
+/// Chronological pane order (oldest→newest) for the grid, including `extra`.
+/// Sorting by [`tiling::PaneId`] keeps the order stable regardless of the
+/// current tree shape, so repeated grid rebuilds never scramble panes.
+fn grid_pane_order(state: &AppState, extra: tiling::PaneId) -> Vec<tiling::PaneId> {
+    let mut order: Vec<tiling::PaneId> = state
+        .agents_tab
+        .layout
+        .as_ref()
+        .map(tiling::TileNode::pane_ids)
+        .unwrap_or_default();
+    order.push(extra);
+    order.sort_by_key(|p| p.0);
+    order
+}
+
+/// `(reverse_cols, reverse_rows)` for the configured growth corner: columns
+/// grow left → reverse columns; rows grow top → reverse rows.
+const fn grow_reversals(state: &AppState) -> (bool, bool) {
+    (
+        matches!(state.agent_settings.columns_grow, ColumnSide::Left),
+        matches!(state.agent_settings.rows_grow, RowSide::Top),
+    )
+}
+
+/// Cursor-aware placement: split the pane under the mouse based on cursor
+/// position. Opt-in via `placement = "mouse"`; the grid is the default.
+fn choose_mouse_agent_split(
     state: &mut AppState,
 ) -> Option<(tiling::SplitDirection, tiling::SplitSide)> {
     let focused_rect = pane_under_mouse(state).or_else(|| focused_agent_pane_rect(state));

@@ -152,6 +152,59 @@ impl TileNode {
         }
     }
 
+    /// Chain `nodes` into an even split along `direction` (every node equal).
+    ///
+    /// Returns `None` for an empty input; a single node is returned as-is.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)] // node counts are tiny (≤ a few dozen)
+    fn even_chain_nodes(direction: SplitDirection, nodes: Vec<Self>) -> Option<Self> {
+        let len = nodes.len();
+        let mut iter = nodes.into_iter().enumerate().rev();
+        let (_, mut acc) = iter.next()?; // rightmost / bottom node
+        for (i, node) in iter {
+            // `node` is one of `len - i` nodes sharing the remaining space.
+            let ratio = 1.0 / (len - i) as f64;
+            acc = Self::split(direction, ratio, node, acc);
+        }
+        Some(acc)
+    }
+
+    /// Build an even grid from `panes` in row-major (chronological) order.
+    ///
+    /// Fills rows of up to `cols` equal columns, wrapping to new rows
+    /// (fill-first: a partial last row spans the remaining panes). All cells
+    /// are equal-sized within their row/column. `reverse_cols` flips column
+    /// growth to the left; `reverse_rows` flips row growth to the top — so the
+    /// newest pane lands at the configured corner.
+    ///
+    /// Returns `None` for an empty `panes` slice.
+    #[must_use]
+    pub fn build_grid(
+        panes: &[PaneId],
+        cols: usize,
+        reverse_cols: bool,
+        reverse_rows: bool,
+    ) -> Option<Self> {
+        if panes.is_empty() {
+            return None;
+        }
+        let cols = cols.max(1);
+        let mut rows: Vec<Self> = Vec::new();
+        for chunk in panes.chunks(cols) {
+            let mut leaves: Vec<Self> = chunk.iter().map(|p| Self::leaf(*p)).collect();
+            if reverse_cols {
+                leaves.reverse();
+            }
+            if let Some(row) = Self::even_chain_nodes(SplitDirection::Vertical, leaves) {
+                rows.push(row);
+            }
+        }
+        if reverse_rows {
+            rows.reverse();
+        }
+        Self::even_chain_nodes(SplitDirection::Horizontal, rows)
+    }
+
     // ── Layout computation ─────────────────────────────────────────
 
     /// Recursively compute the screen [`Rect`] for every leaf pane.
@@ -834,6 +887,50 @@ mod tests {
         assert_eq!(Presets::single(p(0)).pane_count(), 1);
         assert_eq!(Presets::three_columns([p(0), p(1), p(2)]).pane_count(), 3);
         assert_eq!(Presets::grid([p(0), p(1), p(2), p(3)]).pane_count(), 4);
+    }
+
+    #[test]
+    fn build_grid_single_row() {
+        let g = TileNode::build_grid(&[p(0), p(1), p(2)], 3, false, false).unwrap();
+        assert!(matches!(
+            &g,
+            TileNode::Split {
+                direction: SplitDirection::Vertical,
+                ..
+            }
+        ));
+        assert_eq!(g.pane_count(), 3);
+        assert_eq!(g.pane_ids(), vec![p(0), p(1), p(2)]);
+    }
+
+    #[test]
+    fn build_grid_wraps_into_rows() {
+        // 4 panes, 3 columns → row [0,1,2] stacked over row [3].
+        let g = TileNode::build_grid(&[p(0), p(1), p(2), p(3)], 3, false, false).unwrap();
+        assert!(matches!(
+            &g,
+            TileNode::Split {
+                direction: SplitDirection::Horizontal,
+                ..
+            }
+        ));
+        assert_eq!(g.pane_count(), 4);
+        assert_eq!(g.pane_ids(), vec![p(0), p(1), p(2), p(3)]);
+    }
+
+    #[test]
+    fn build_grid_reverses_growth_corner() {
+        // columns grow left → newest-first within the row.
+        let g = TileNode::build_grid(&[p(0), p(1), p(2)], 3, true, false).unwrap();
+        assert_eq!(g.pane_ids(), vec![p(2), p(1), p(0)]);
+        // rows grow top → the wrapped row appears first.
+        let g = TileNode::build_grid(&[p(0), p(1), p(2), p(3)], 3, false, true).unwrap();
+        assert_eq!(g.pane_ids(), vec![p(3), p(0), p(1), p(2)]);
+    }
+
+    #[test]
+    fn build_grid_empty_is_none() {
+        assert!(TileNode::build_grid(&[], 3, false, false).is_none());
     }
 
     #[test]

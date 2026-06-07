@@ -4,6 +4,7 @@ use crate::event::AppCommand;
 use crate::primitives::{Buffer, Line, Rect, Span, Stylize, Widget};
 use crate::theme::Theme;
 use crate::widgets::modal::{Anchor, Modal, ModalState};
+use lune_core::settings::AgentPlacement;
 
 use super::util::render_hrule;
 
@@ -161,7 +162,7 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
         // Agent pane commands
         palette_cmd("Agent: Split Vertical", AppCommand::AgentSplitVertical),
         palette_cmd("Agent: Split Horizontal", AppCommand::AgentSplitHorizontal),
-        palette_cmd("Agent: Split Smart", AppCommand::AgentSplitAuto),
+        palette_cmd("Agent: New Pane", AppCommand::AgentSplitAuto),
         palette_cmd("Agent: Close Pane", AppCommand::AgentClosePane),
         palette_cmd("Agent: Focus Next", AppCommand::AgentFocusNext),
         palette_cmd("Agent: Focus Previous", AppCommand::AgentFocusPrev),
@@ -169,6 +170,15 @@ fn all_palette_commands() -> Vec<PaletteCommand> {
         palette_cmd("Agent: Select Layout", AppCommand::AgentApplyLayout),
         palette_cmd("Agent: Save Current Layout", AppCommand::AgentSaveLayout),
         palette_cmd("Agent: Save Layout As…", AppCommand::AgentSaveLayoutAs),
+        palette_cmd("Agent: Cycle Grid Corner", AppCommand::AgentCycleGridCorner),
+        palette_cmd(
+            "Agent: Placement — Grid (fixed)",
+            AppCommand::AgentSetPlacement(AgentPlacement::Fixed),
+        ),
+        palette_cmd(
+            "Agent: Placement — Follow Mouse",
+            AppCommand::AgentSetPlacement(AgentPlacement::Mouse),
+        ),
     ];
 
     cmds.sort_by(|a, b| a.label_lower.cmp(&b.label_lower));

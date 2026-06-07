@@ -8,4 +8,4 @@ pub mod watcher;
 pub mod workspace;
 pub mod workspace_state;
 
-pub use settings::CursorStyle;
+pub use settings::{AgentPlacement, AgentSettings, ColumnSide, CursorStyle, RowSide};

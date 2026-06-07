@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use crate::primitives::CtEvent;
 use lune_ai::session::AiClientKind;
 use lune_core::language::LanguageId;
+use lune_core::settings::AgentPlacement;
 use rat_salsa::event::RenderedEvent;
 use rat_salsa::timer::TimeOut;
 
@@ -273,6 +274,11 @@ pub enum AppCommand {
     AgentDeleteSavedLayout(usize),
     /// Rename the saved agent layout at the given index.
     AgentRenameSavedLayoutConfirmed { index: usize, name: String },
+    /// Cycle the agent grid growth corner (columns + rows direction together,
+    /// persisted to config).
+    AgentCycleGridCorner,
+    /// Set how new agent pane placement is decided (persisted to config).
+    AgentSetPlacement(AgentPlacement),
 
     // ── Theme commands ──────────────────────────────────────────────
     /// Switch to the next theme in the registry.

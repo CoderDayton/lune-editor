@@ -9,8 +9,8 @@ expression: buffer_to_text(&buf)
                 │>                                             │
                 │──────────────────────────────────────────────│
                 │  Agent: Close Pane                           │
+                │  Agent: Cycle Grid Corner                    │
                 │  Agent: Focus Next                           │
                 │  Agent: Focus Previous                       │
-                │  Agent: Save Current Layout                  │
-                │  Agent: Save Layout As…                      │
+                │  Agent: New Pane                             │
                 ╰────  ↑↓ select · Enter run · Esc close  ─────╯

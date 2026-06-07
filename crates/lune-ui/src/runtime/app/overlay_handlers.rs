@@ -354,16 +354,7 @@ fn persist_theme_selection(state: &mut AppState) {
     if let Some(s) = state.cached_settings.as_mut() {
         s.theme = name;
     }
-    let result = match (state.cached_settings.as_ref(), state.config_paths.as_ref()) {
-        (Some(settings), Some(cp)) => Some(settings.save(&cp.settings_file())),
-        _ => None,
-    };
-    if let Some(Err(e)) = result {
-        state.overlay.notify(
-            format!("Failed to save theme: {e}"),
-            NotificationLevel::Error,
-        );
-    }
+    persist_cached_settings(state, "theme");
 }
 
 fn handle_input_dialog_key(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {

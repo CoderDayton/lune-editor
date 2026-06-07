@@ -129,6 +129,28 @@ impl AgentsTabState {
         }
     }
 
+    /// Replace the layout with an even grid built from `panes`.
+    ///
+    /// Used by the focus-agnostic "fixed" placement: `panes` is the full,
+    /// chronologically-ordered pane set (oldest→newest). `cols` is the columns
+    /// per row; `reverse_cols`/`reverse_rows` choose the growth corner. Pane
+    /// metadata in [`Self::panes`] is untouched — only positions change.
+    ///
+    /// Zoom is intentionally cleared: a zoomed pane hides the rest of the grid,
+    /// so adding a pane re-reveals the whole layout. The caller is expected to
+    /// set [`Self::focused`] to the new pane afterwards.
+    pub fn set_grid_layout(
+        &mut self,
+        panes: &[PaneId],
+        cols: usize,
+        reverse_cols: bool,
+        reverse_rows: bool,
+    ) {
+        self.layout = TileNode::build_grid(panes, cols, reverse_cols, reverse_rows);
+        self.active_saved_layout = None;
+        self.zoomed = false;
+    }
+
     /// Close the focused pane.
     ///
     /// Returns the [`AiSessionId`] that should be killed, or `None` if no

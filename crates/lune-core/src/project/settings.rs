@@ -33,6 +33,8 @@ pub struct Settings {
     pub file_tree: FileTreeSettings,
     /// AI integration settings.
     pub ai: AiSettings,
+    /// Agent pane (multiplexer) settings.
+    pub agents: AgentSettings,
     /// Active theme name (looked up in the theme registry).
     pub theme: String,
 }
@@ -44,6 +46,7 @@ impl Default for Settings {
             ui: UiSettings::default(),
             file_tree: FileTreeSettings::default(),
             ai: AiSettings::default(),
+            agents: AgentSettings::default(),
             theme: "Lune Dark".to_owned(),
         }
     }
@@ -188,6 +191,79 @@ impl Default for AiSettings {
     }
 }
 
+// ── Agent pane settings ───────────────────────────────────────────────
+
+/// How the placement of a new agent pane is decided when opening one with
+/// the "new pane" action (Ctrl+N). Serialized as a lowercase string.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentPlacement {
+    /// Tile new panes into an even, screen-capped grid, ignoring focus. The
+    /// default.
+    #[default]
+    Fixed,
+    /// Split the pane under the mouse cursor, choosing the orientation and
+    /// side from the click position.
+    Mouse,
+}
+
+/// Which side new columns are added to in the agent grid. Serialized as a
+/// lowercase string.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ColumnSide {
+    /// New columns appear on the left.
+    Left,
+    /// New columns appear on the right. The default (reading order).
+    #[default]
+    Right,
+}
+
+/// Which side a wrapped row is added to in the agent grid. Serialized as a
+/// lowercase string.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RowSide {
+    /// Wrapped rows appear on top.
+    Top,
+    /// Wrapped rows appear on the bottom. The default (reading order).
+    #[default]
+    Bottom,
+}
+
+/// Settings for the agents tab pane multiplexer.
+///
+/// In `fixed` placement, new panes (Ctrl+N) tile into an even grid: up to
+/// `max_columns` equal columns per row, wrapping to up to `max_rows` rows. The
+/// `*_grow` fields pick which corner the grid grows from.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AgentSettings {
+    /// How a new pane's placement is chosen.
+    pub placement: AgentPlacement,
+    /// Which side new columns are added to (`fixed` placement).
+    pub columns_grow: ColumnSide,
+    /// Which side wrapped rows are added to (`fixed` placement).
+    pub rows_grow: RowSide,
+    /// Maximum columns per row. `0` means "auto" — derive from the screen's
+    /// aspect ratio (portrait 1, 16:9/21:9 → 3, 32:9 → 4).
+    pub max_columns: u8,
+    /// Maximum number of rows the grid may wrap to.
+    pub max_rows: u8,
+}
+
+impl Default for AgentSettings {
+    fn default() -> Self {
+        Self {
+            placement: AgentPlacement::Fixed,
+            columns_grow: ColumnSide::Right,
+            rows_grow: RowSide::Bottom,
+            max_columns: 0,
+            max_rows: 2,
+        }
+    }
+}
+
 // ── Load / Save / Merge ───────────────────────────────────────────────
 
 impl Settings {
@@ -207,18 +283,37 @@ impl Settings {
         Ok(settings)
     }
 
+    /// Serialize to pretty TOML, prefixed with a managed-file header.
+    ///
+    /// The header warns that in-app setting changes regenerate this file and
+    /// drop comments / unknown keys — a `toml::to_string_pretty` limitation.
+    /// Hand-edits made while Lune is closed are still read on the next load.
+    ///
+    /// # Errors
+    /// Returns an error if serialization fails.
+    pub fn to_pretty_toml(&self) -> Result<String, toml::ser::Error> {
+        const HEADER: &str = "\
+# Lune editor configuration.\n\
+# Updated automatically when you change a setting in-app: your hand-edits are\n\
+# read on load, but comments and unknown keys are dropped the next time the\n\
+# app writes this file. Edit while Lune is closed to keep comments.\n\n";
+        Ok(format!("{HEADER}{}", toml::to_string_pretty(self)?))
+    }
+
     /// Save settings to a TOML file.
     ///
-    /// Uses atomic write: writes to a temporary file then renames, so
-    /// a crash mid-write won't corrupt the file.
+    /// Atomic write: serialize to a process-unique temp file, then rename over
+    /// the destination — so a crash mid-write, or a second Lune instance saving
+    /// concurrently, can't corrupt or race on the config file.
     ///
     /// # Errors
     /// Returns an error if the file cannot be written.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        let content = toml::to_string_pretty(self)?;
+        let content = self.to_pretty_toml()?;
 
-        // Atomic write: write to .tmp then rename
-        let tmp_path = path.with_extension("toml.tmp");
+        // Per-process temp name so two instances don't clobber one another's
+        // `config.toml.tmp`; rename is atomic on the same filesystem.
+        let tmp_path = path.with_extension(format!("toml.tmp.{}", std::process::id()));
         std::fs::write(&tmp_path, content)?;
         std::fs::rename(&tmp_path, path)?;
 
@@ -230,6 +325,7 @@ impl Settings {
     /// Only non-default values from `workspace_settings` replace the
     /// corresponding fields.  This allows a minimal workspace config
     /// that only overrides what it needs.
+    #[allow(clippy::too_many_lines)] // a flat list of per-field merge calls
     pub fn merge_workspace(&mut self, workspace: &Self) {
         let defaults = Self::default();
 
@@ -324,6 +420,33 @@ impl Settings {
             &defaults.file_tree.show_hidden,
         );
 
+        // Agent pane overrides
+        merge_if_different(
+            &mut self.agents.placement,
+            workspace.agents.placement,
+            &defaults.agents.placement,
+        );
+        merge_if_different(
+            &mut self.agents.columns_grow,
+            workspace.agents.columns_grow,
+            &defaults.agents.columns_grow,
+        );
+        merge_if_different(
+            &mut self.agents.rows_grow,
+            workspace.agents.rows_grow,
+            &defaults.agents.rows_grow,
+        );
+        merge_if_different(
+            &mut self.agents.max_columns,
+            workspace.agents.max_columns,
+            &defaults.agents.max_columns,
+        );
+        merge_if_different(
+            &mut self.agents.max_rows,
+            workspace.agents.max_rows,
+            &defaults.agents.max_rows,
+        );
+
         // Theme override
         if workspace.theme != defaults.theme {
             self.theme.clone_from(&workspace.theme);
@@ -377,6 +500,11 @@ mod tests {
         assert_eq!(s.editor.scroll_margin, 5);
         assert!(s.ui.show_file_tree);
         assert!(!s.ui.show_ai_panel);
+        assert_eq!(s.agents.placement, AgentPlacement::Fixed);
+        assert_eq!(s.agents.columns_grow, ColumnSide::Right);
+        assert_eq!(s.agents.rows_grow, RowSide::Bottom);
+        assert_eq!(s.agents.max_columns, 0);
+        assert_eq!(s.agents.max_rows, 2);
         assert_eq!(s.theme, "Lune Dark");
     }
 
@@ -444,6 +572,23 @@ vim_mode = true
         global.merge_workspace(&workspace);
         assert_eq!(global.editor.tab_size, 2); // overridden
         assert!(global.editor.vim_mode); // kept from global
+    }
+
+    #[test]
+    fn merge_workspace_agents_override() {
+        let mut global = Settings::default();
+        // Workspace overrides one grid field; placement stays default.
+        let workspace = Settings {
+            agents: AgentSettings {
+                rows_grow: RowSide::Top,
+                ..AgentSettings::default()
+            },
+            ..Settings::default()
+        };
+
+        global.merge_workspace(&workspace);
+        assert_eq!(global.agents.rows_grow, RowSide::Top); // overridden
+        assert_eq!(global.agents.placement, AgentPlacement::Fixed); // default kept
     }
 
     #[test]

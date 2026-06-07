@@ -19,7 +19,7 @@ use rat_salsa::timer::{TimerDef, TimerHandle};
 use rat_salsa::{Control, RunConfig, SalsaAppContext, SalsaContext, run_tui};
 
 use crate::primitives::{
-    Block, Borders, Buffer, Color, Constraint, CtEvent, Direction, KeyCode, KeyEvent, KeyEventKind,
+    Borders, Buffer, Color, Constraint, CtEvent, Direction, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers, Layout, Line, MouseButton, MouseEvent, MouseEventKind, Rect, Style, Tabs, Widget,
 };
 
@@ -29,7 +29,7 @@ use lune_core::ports::{
     SharedPersistencePort,
 };
 use lune_core::prelude::*;
-use lune_core::settings::Settings;
+use lune_core::settings::{AgentPlacement, AgentSettings, ColumnSide, RowSide, Settings};
 use lune_core::watcher::{FileWatcher, WatchEvent};
 use lune_core::workspace::EntryKind;
 use lune_core::workspace_state::make_relative;
@@ -250,6 +250,8 @@ pub struct AppState {
     pub agents_tab: super::agents::AgentsTabState,
     /// Pane ID waiting for an AI client selection (from the picker).
     pub agents_tab_pending_pane: Option<super::tiling::PaneId>,
+    /// How new agent panes are placed (even grid vs cursor-aware).
+    agent_settings: AgentSettings,
     /// User-saved agent layout templates persisted across the app.
     saved_agent_layouts: Vec<super::tiling::SavedAgentLayout>,
     /// Last known AI terminal size (to avoid redundant resizes).
@@ -433,6 +435,7 @@ impl AppState {
             },
             agents_tab: super::agents::AgentsTabState::new(),
             agents_tab_pending_pane: None,
+            agent_settings: AgentSettings::default(),
             saved_agent_layouts: Vec::new(),
             last_ai_term_size: None,
             config_paths: None,
@@ -667,6 +670,9 @@ impl AppState {
         if self.theme_registry.switch_by_name(&settings.theme) {
             self.apply_active_theme();
         }
+
+        // Agent pane placement.
+        self.agent_settings = settings.agents;
 
         // Cache the settings for hot-reload comparison.
         self.cached_settings = Some(settings.clone());
@@ -2245,6 +2251,84 @@ fn begin_agent_split_second(
     begin_agent_split_session(state, Some((direction, super::tiling::SplitSide::Second)))
 }
 
+/// Rotate the agent grid growth corner through its four positions, persist the
+/// new corner, and confirm via a toast. One palette command instead of four.
+fn cycle_agent_grid_corner(state: &mut AppState) {
+    let (columns_grow, rows_grow) = next_agent_corner(
+        state.agent_settings.columns_grow,
+        state.agent_settings.rows_grow,
+    );
+    state.agent_settings.columns_grow = columns_grow;
+    state.agent_settings.rows_grow = rows_grow;
+    if let Some(s) = state.cached_settings.as_mut() {
+        s.agents.columns_grow = columns_grow;
+        s.agents.rows_grow = rows_grow;
+    }
+    persist_cached_settings(state, "agent settings");
+    state.overlay.notify(
+        format!(
+            "Agent grid grows toward: {}",
+            agent_corner_label(columns_grow, rows_grow)
+        ),
+        NotificationLevel::Info,
+    );
+}
+
+/// Next corner in the cycle: bottom-right → bottom-left → top-left → top-right.
+const fn next_agent_corner(columns: ColumnSide, rows: RowSide) -> (ColumnSide, RowSide) {
+    match (columns, rows) {
+        (ColumnSide::Right, RowSide::Bottom) => (ColumnSide::Left, RowSide::Bottom),
+        (ColumnSide::Left, RowSide::Bottom) => (ColumnSide::Left, RowSide::Top),
+        (ColumnSide::Left, RowSide::Top) => (ColumnSide::Right, RowSide::Top),
+        (ColumnSide::Right, RowSide::Top) => (ColumnSide::Right, RowSide::Bottom),
+    }
+}
+
+/// Set how new agent pane placement is decided, persist it, and confirm.
+fn set_agent_placement(state: &mut AppState, placement: AgentPlacement) {
+    state.agent_settings.placement = placement;
+    if let Some(s) = state.cached_settings.as_mut() {
+        s.agents.placement = placement;
+    }
+    persist_cached_settings(state, "agent settings");
+    state.overlay.notify(
+        format!("Agent placement: {}", agent_placement_label(placement)),
+        NotificationLevel::Info,
+    );
+}
+
+/// Flush the in-memory cached settings to the global config file, surfacing a
+/// toast if the write fails. Callers update `cached_settings` first; `label`
+/// names the setting in the error message (e.g. "theme", "agent settings").
+fn persist_cached_settings(state: &mut AppState, label: &str) {
+    let result = match (state.cached_settings.as_ref(), state.config_paths.as_ref()) {
+        (Some(settings), Some(cp)) => Some(settings.save(&cp.settings_file())),
+        _ => None,
+    };
+    if let Some(Err(e)) = result {
+        state.overlay.notify(
+            format!("Failed to save {label}: {e}"),
+            NotificationLevel::Error,
+        );
+    }
+}
+
+const fn agent_corner_label(columns: ColumnSide, rows: RowSide) -> &'static str {
+    match (rows, columns) {
+        (RowSide::Top, ColumnSide::Left) => "Top-Left",
+        (RowSide::Top, ColumnSide::Right) => "Top-Right",
+        (RowSide::Bottom, ColumnSide::Left) => "Bottom-Left",
+        (RowSide::Bottom, ColumnSide::Right) => "Bottom-Right",
+    }
+}
+
+const fn agent_placement_label(placement: AgentPlacement) -> &'static str {
+    match placement {
+        AgentPlacement::Fixed => "Grid (fixed)",
+        AgentPlacement::Mouse => "Follow mouse",
+    }
+}
+
 fn cycle_theme(state: &mut AppState, next: bool) {
     if next {
         state.next_theme();
@@ -2463,6 +2547,14 @@ fn handle_command(cmd: &AppCommand, state: &mut AppState) -> Control<AppEvent> {
         }
         AppCommand::AgentSplitHorizontal => {
             begin_agent_split_second(state, super::tiling::SplitDirection::Horizontal)
+        }
+        AppCommand::AgentCycleGridCorner => {
+            cycle_agent_grid_corner(state);
+            Control::Changed
+        }
+        AppCommand::AgentSetPlacement(placement) => {
+            set_agent_placement(state, *placement);
+            Control::Changed
         }
         AppCommand::AgentClosePane => {
             if let Some(session_id) = state.agents_tab.close_focused() {
@@ -3611,13 +3703,10 @@ mod tests {
         let mut buf = Buffer::empty(area);
         render_agents_tab(area, &mut buf, &mut state);
 
-        assert_eq!(
-            state.last_agents_content_area,
-            Some(Rect::new(0, 0, 80, 11))
-        );
+        assert_eq!(state.last_agents_content_area, Some(Rect::new(1, 1, 78, 9)));
         assert_eq!(
             state.last_agent_pane_rects,
-            vec![(pane_id, Rect::new(0, 0, 80, 11))]
+            vec![(pane_id, Rect::new(1, 1, 78, 9))]
         );
         let size = state
             .ai_manager
@@ -3625,7 +3714,7 @@ mod tests {
             .unwrap()
             .screen()
             .size();
-        assert_eq!(size, (11, 80));
+        assert_eq!(size, (9, 78));
 
         state.ai_manager.close_all();
     }
@@ -3653,7 +3742,7 @@ mod tests {
         render_agents_tab(area1, &mut buf1, &mut state);
         assert_eq!(
             state.last_agent_pane_rects,
-            vec![(pane_id, Rect::new(0, 0, 80, 11))]
+            vec![(pane_id, Rect::new(1, 1, 78, 9))]
         );
 
         let area2 = Rect::new(0, 0, 60, 18);
@@ -3662,7 +3751,7 @@ mod tests {
 
         assert_eq!(
             state.last_agent_pane_rects,
-            vec![(pane_id, Rect::new(0, 0, 60, 17))]
+            vec![(pane_id, Rect::new(1, 1, 58, 15))]
         );
         let size = state
             .ai_manager
@@ -3670,7 +3759,7 @@ mod tests {
             .unwrap()
             .screen()
             .size();
-        assert_eq!(size, (17, 60));
+        assert_eq!(size, (15, 58));
 
         state.ai_manager.close_all();
     }
@@ -3824,10 +3913,7 @@ mod tests {
         render_agents_tab(area, &mut buf, &mut state);
 
         assert_eq!(state.last_editor_content_area, None);
-        assert_eq!(
-            state.last_agents_content_area,
-            Some(Rect::new(0, 0, 80, 11))
-        );
+        assert_eq!(state.last_agents_content_area, Some(Rect::new(1, 1, 78, 9)));
         assert!(state.last_agent_pane_rects.is_empty());
     }
 
@@ -3870,8 +3956,14 @@ mod tests {
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(area)[0];
-        // Empty agents state is borderless — the inner rect is the content itself.
-        let inner = content;
+        // The agents view is wrapped in a panel; the help text centers
+        // inside that frame's inner rect (content shrunk by the border).
+        let inner = Rect::new(
+            content.x + 1,
+            content.y + 1,
+            content.width - 2,
+            content.height - 2,
+        );
         let total_height = 8;
         let start_y = inner.y + inner.height.saturating_sub(total_height) / 2;
         let text_block_width = [
@@ -4002,6 +4094,7 @@ mod tests {
     #[test]
     fn agent_split_auto_uses_mouse_side() {
         let mut state = AppState::new();
+        state.agent_settings.placement = lune_core::settings::AgentPlacement::Mouse;
         let first = state.agents_tab.add_first_pane();
         state
             .agents_tab
@@ -4025,6 +4118,7 @@ mod tests {
     #[test]
     fn agent_split_auto_targets_pane_under_mouse() {
         let mut state = AppState::new();
+        state.agent_settings.placement = lune_core::settings::AgentPlacement::Mouse;
         let first = state.agents_tab.add_first_pane();
         state
             .agents_tab
@@ -4073,8 +4167,185 @@ mod tests {
     }
 
     #[test]
+    fn agent_split_auto_fixed_opens_right_by_default() {
+        let mut state = AppState::new();
+        let first = state.agents_tab.add_first_pane();
+        state
+            .agents_tab
+            .register_pane(first, lune_ai::AiSessionId::new_v4(), "Shell".to_string());
+        state.last_agent_pane_rects = vec![(first, Rect::new(0, 0, 80, 20))];
+        // No mouse position; default placement is Fixed (even grid).
+
+        let result = handle_command(&AppCommand::AgentSplitAuto, &mut state);
+
+        assert!(matches!(result, Control::Changed));
+        let Some(tiling::TileNode::Split {
+            direction, second, ..
+        }) = state.agents_tab.layout.as_ref()
+        else {
+            panic!("expected split layout");
+        };
+        assert_eq!(*direction, tiling::SplitDirection::Vertical);
+        // New pane is the Second (right) child.
+        let tiling::TileNode::Leaf { pane_id } = second.as_ref() else {
+            panic!("expected leaf on the right");
+        };
+        assert_ne!(*pane_id, first);
+        assert_eq!(state.agents_tab_pending_pane, Some(*pane_id));
+    }
+
+    #[test]
+    fn agent_grid_columns_grow_left_puts_new_pane_first() {
+        let mut state = AppState::new();
+        state.agent_settings.columns_grow = ColumnSide::Left;
+        let first = state.agents_tab.add_first_pane();
+        state
+            .agents_tab
+            .register_pane(first, lune_ai::AiSessionId::new_v4(), "Shell".to_string());
+        state.last_agent_pane_rects = vec![(first, Rect::new(0, 0, 80, 20))];
+
+        let result = handle_command(&AppCommand::AgentSplitAuto, &mut state);
+
+        assert!(matches!(result, Control::Changed));
+        // Two panes tile as one row of columns; columns_grow = Left puts the
+        // new (newest) pane on the left = the First child.
+        let Some(tiling::TileNode::Split {
+            direction,
+            first: left,
+            ..
+        }) = state.agents_tab.layout.as_ref()
+        else {
+            panic!("expected split layout");
+        };
+        assert_eq!(*direction, tiling::SplitDirection::Vertical);
+        let tiling::TileNode::Leaf { pane_id } = left.as_ref() else {
+            panic!("expected leaf on the left");
+        };
+        assert_ne!(*pane_id, first); // the new pane, not the original
+        assert_eq!(state.agents_tab_pending_pane, Some(*pane_id));
+    }
+
+    #[test]
+    fn agent_cycle_grid_corner_command_advances_and_wraps() {
+        let mut state = AppState::new();
+        // Default corner: columns Right, rows Bottom (bottom-right).
+        assert_eq!(state.agent_settings.columns_grow, ColumnSide::Right);
+        assert_eq!(state.agent_settings.rows_grow, RowSide::Bottom);
+
+        let result = handle_command(&AppCommand::AgentCycleGridCorner, &mut state);
+        assert!(matches!(result, Control::Changed));
+        // First step → bottom-left.
+        assert_eq!(state.agent_settings.columns_grow, ColumnSide::Left);
+        assert_eq!(state.agent_settings.rows_grow, RowSide::Bottom);
+
+        // Three more cycles return to the starting corner.
+        for _ in 0..3 {
+            let _ = handle_command(&AppCommand::AgentCycleGridCorner, &mut state);
+        }
+        assert_eq!(state.agent_settings.columns_grow, ColumnSide::Right);
+        assert_eq!(state.agent_settings.rows_grow, RowSide::Bottom);
+    }
+
+    #[test]
+    fn agent_set_placement_command_updates_setting() {
+        let mut state = AppState::new();
+        assert_eq!(state.agent_settings.placement, AgentPlacement::Fixed);
+
+        let result = handle_command(
+            &AppCommand::AgentSetPlacement(AgentPlacement::Mouse),
+            &mut state,
+        );
+
+        assert!(matches!(result, Control::Changed));
+        assert_eq!(state.agent_settings.placement, AgentPlacement::Mouse);
+    }
+
+    #[test]
+    fn agent_grid_blocks_at_capacity_and_warns() {
+        let mut state = AppState::new();
+        // Force a tiny grid: 2 columns × 1 row → capacity 2.
+        state.agent_settings.max_columns = 2;
+        state.agent_settings.max_rows = 1;
+
+        let first = state.agents_tab.add_first_pane();
+        state
+            .agents_tab
+            .register_pane(first, lune_ai::AiSessionId::new_v4(), "Shell".to_string());
+
+        // Second add fills the grid (count 1 < cap 2). Register the pending
+        // pane so the next add isn't short-circuited by the pending guard.
+        let r = handle_command(&AppCommand::AgentSplitAuto, &mut state);
+        assert!(matches!(r, Control::Changed));
+        let pending = state.agents_tab_pending_pane.expect("second pane pending");
+        state.agents_tab.register_pane(
+            pending,
+            lune_ai::AiSessionId::new_v4(),
+            "Shell".to_string(),
+        );
+        state.agents_tab_pending_pane = None;
+        assert_eq!(state.agents_tab.pane_count(), 2);
+
+        // Third add is at capacity → blocked, warned, no new pane.
+        let r = handle_command(&AppCommand::AgentSplitAuto, &mut state);
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(state.agents_tab.pane_count(), 2);
+        assert!(state.agents_tab_pending_pane.is_none());
+        let warning = state
+            .overlay
+            .notifications
+            .last()
+            .map_or("", |n| n.message.as_str());
+        assert!(warning.contains("Max 2 terminals"), "got: {warning}");
+    }
+
+    #[test]
+    fn agent_grid_regrids_stably_after_manual_split() {
+        let mut state = AppState::new();
+        // Deterministic grid: 3 columns × 2 rows.
+        state.agent_settings.max_columns = 3;
+        state.agent_settings.max_rows = 2;
+
+        // One pane, then a MANUAL Alt-split (binary, bypasses the grid cap).
+        let first = state.agents_tab.add_first_pane();
+        state
+            .agents_tab
+            .register_pane(first, lune_ai::AiSessionId::new_v4(), "Shell".to_string());
+
+        let r = handle_command(&AppCommand::AgentSplitVertical, &mut state);
+        assert!(matches!(r, Control::Changed));
+        let second = state
+            .agents_tab_pending_pane
+            .expect("manual split pane pending");
+        state
+            .agents_tab
+            .register_pane(second, lune_ai::AiSessionId::new_v4(), "Shell".to_string());
+        state.agents_tab_pending_pane = None;
+        assert_eq!(state.agents_tab.pane_count(), 2);
+
+        // Grid add (Ctrl+N) must rebuild as an even grid in a stable,
+        // PaneId-sorted order — not scramble the existing manual-split panes.
+        let r = handle_command(&AppCommand::AgentSplitAuto, &mut state);
+        assert!(matches!(r, Control::Changed));
+        assert_eq!(state.agents_tab.pane_count(), 3);
+
+        let ids = state.agents_tab.layout.as_ref().unwrap().pane_ids();
+        let mut sorted = ids.clone();
+        sorted.sort_by_key(|p| p.0);
+        assert_eq!(ids, sorted, "grid order must be PaneId-sorted (stable)");
+        // 3 panes, 3 columns → a single row (top-level Vertical split).
+        assert!(matches!(
+            state.agents_tab.layout.as_ref(),
+            Some(tiling::TileNode::Split {
+                direction: tiling::SplitDirection::Vertical,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn agent_split_auto_falls_back_to_horizontal_when_pane_is_too_narrow() {
         let mut state = AppState::new();
+        state.agent_settings.placement = AgentPlacement::Mouse;
         let first = state.agents_tab.add_first_pane();
         state
             .agents_tab
@@ -4095,6 +4366,7 @@ mod tests {
     #[test]
     fn agent_split_auto_warns_when_pane_is_too_small_in_both_axes() {
         let mut state = AppState::new();
+        state.agent_settings.placement = AgentPlacement::Mouse;
         let first = state.agents_tab.add_first_pane();
         state
             .agents_tab
@@ -4162,6 +4434,7 @@ mod tests {
     #[test]
     fn agent_split_auto_uses_computed_rect_when_render_cache_is_empty() {
         let mut state = AppState::new();
+        state.agent_settings.placement = lune_core::settings::AgentPlacement::Mouse;
         let first = state.agents_tab.add_first_pane();
         state
             .agents_tab
@@ -4216,6 +4489,7 @@ mod tests {
     #[test]
     fn agent_split_auto_targets_pane_under_mouse_when_cache_is_recomputed() {
         let mut state = AppState::new();
+        state.agent_settings.placement = lune_core::settings::AgentPlacement::Mouse;
         let first = state.agents_tab.add_first_pane();
         state
             .agents_tab

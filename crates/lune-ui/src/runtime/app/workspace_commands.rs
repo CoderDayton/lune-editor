@@ -371,7 +371,7 @@ fn handle_open_config_file(cmd: &AppCommand, state: &mut AppState) -> Control<Ap
     let (path, default_content) = match cmd {
         AppCommand::OpenSettings => (
             cp.settings_file(),
-            toml::to_string_pretty(&Settings::default()).unwrap_or_default(),
+            Settings::default().to_pretty_toml().unwrap_or_default(),
         ),
         AppCommand::OpenKeybindings => (
             cp.keybindings_file(),

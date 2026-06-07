@@ -187,6 +187,13 @@ show_hidden = false
 [ai]
 default_client = "claude"   # any CLI AI tool: claude, aider, etc.
 
+[agents]
+placement = "fixed"     # fixed | mouse  (fixed: even grid; mouse: split near the cursor)
+columns_grow = "right"  # left | right   (which side new grid columns are added)
+rows_grow = "bottom"    # top | bottom   (which side wrapped rows are added)
+max_columns = 0         # 0 = auto by screen aspect (portrait 1, 16:9/21:9 3, 32:9 4)
+max_rows = 2            # rows the grid may wrap to
+
 theme = "Lune Dark"
 ```
 
