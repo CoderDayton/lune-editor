@@ -1062,6 +1062,12 @@ impl AppState {
             }
         }
 
+        // Compute git gutter markers for the freshly opened buffer so diff
+        // signs show immediately. Without this the gutter stays blank until
+        // the next save / git-panel toggle / fs-watch event (the periodic
+        // git poll only refreshes file status, never gutters).
+        self.dispatch_gutter_for(id);
+
         Ok(id)
     }
 
@@ -1230,27 +1236,36 @@ impl AppState {
     /// inside the current repo. The async git worker produces snapshots
     /// that the editor reads via `state.gutter_for_render()`.
     fn dispatch_gutter_refresh(&self) {
+        for &id in &self.session.tabs {
+            self.dispatch_gutter_for(id);
+        }
+    }
+
+    /// Dispatch a gutter recompute for a single buffer. No-op when there is
+    /// no repo, the buffer is unknown, it has no path, or its path is
+    /// outside the workdir. Used both by the periodic refresh and on file
+    /// open so diff signs appear immediately rather than only after the
+    /// next save / git-panel toggle / fs-watch event.
+    fn dispatch_gutter_for(&self, id: BufferId) {
         use lune_core::ports::GitCommand;
         let snap = self.git_port.status().load();
         let Some(root) = snap.workdir_root.clone() else {
             return;
         };
-        for &id in &self.session.tabs {
-            let Some(buf) = self.session.registry.get(id) else {
-                continue;
-            };
-            let Some(ref path) = buf.file_path else {
-                continue;
-            };
-            let Ok(rel) = path.strip_prefix(&root) else {
-                continue;
-            };
-            self.git_port.dispatch(GitCommand::RecomputeGutter {
-                buffer: id,
-                path: rel.to_path_buf(),
-                content: buf.text(),
-            });
-        }
+        let Some(buf) = self.session.registry.get(id) else {
+            return;
+        };
+        let Some(ref path) = buf.file_path else {
+            return;
+        };
+        let Ok(rel) = path.strip_prefix(&root) else {
+            return;
+        };
+        self.git_port.dispatch(GitCommand::RecomputeGutter {
+            buffer: id,
+            path: rel.to_path_buf(),
+            content: buf.text(),
+        });
     }
 
     /// Get a clone of the watcher event receiver for use with `PollFileWatcher`.
@@ -3097,6 +3112,71 @@ mod tests {
     fn git_branch_no_ahead_behind() {
         let state = make_state_with_git_snapshot("feature", 0, 0);
         assert_eq!(state.build_git_branch_display(), "feature");
+    }
+
+    // ── gutter on open ────────────────────────────────────────────
+
+    /// A `GitPort` that records dispatched commands while serving a static
+    /// status snapshot, so tests can assert what the UI dispatched.
+    struct RecordingGitPort {
+        inner: lune_core::ports::StaticGitPort,
+        dispatched: std::sync::Arc<std::sync::Mutex<Vec<lune_core::ports::GitCommand>>>,
+    }
+
+    impl lune_core::ports::GitPort for RecordingGitPort {
+        fn status(&self) -> lune_core::ports::Snapshot<lune_core::ports::StatusSnapshot> {
+            self.inner.status()
+        }
+        fn gutter(
+            &self,
+            buffer: BufferId,
+        ) -> Option<lune_core::ports::Snapshot<lune_core::ports::GutterSnapshot>> {
+            self.inner.gutter(buffer)
+        }
+        fn dispatch(&self, cmd: lune_core::ports::GitCommand) {
+            self.dispatched.lock().unwrap().push(cmd);
+        }
+    }
+
+    #[test]
+    fn opening_a_file_dispatches_gutter_recompute() {
+        use lune_core::ports::{GitCommand, StaticGitPort, StatusSnapshot};
+
+        // Canonicalize the root so the stored buffer path strips cleanly
+        // against `workdir_root` regardless of any /tmp symlinking.
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let file = root.join("tracked.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+
+        let inner = StaticGitPort::new();
+        inner.publish_status(StatusSnapshot {
+            workdir_root: Some(root),
+            revision: 1,
+            ..Default::default()
+        });
+        let dispatched = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let port = RecordingGitPort {
+            inner,
+            dispatched: dispatched.clone(),
+        };
+
+        let mut state = AppState::new();
+        state.set_git_port_for_test(Arc::new(port));
+
+        let id = state.open_file(&file).unwrap();
+
+        // Take the recorded commands out of the mutex so the lock guard is
+        // released immediately (clippy `significant_drop_tightening`) while
+        // the owned Vec still backs the assert's debug output.
+        let cmds = std::mem::take(&mut *dispatched.lock().unwrap());
+        let found = cmds
+            .iter()
+            .any(|c| matches!(c, GitCommand::RecomputeGutter { buffer, .. } if *buffer == id));
+        assert!(
+            found,
+            "open_file must dispatch RecomputeGutter for the opened buffer, got {cmds:?}"
+        );
     }
 
     // ── detect_file_type ──────────────────────────────────────────
