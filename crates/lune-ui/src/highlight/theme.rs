@@ -34,9 +34,9 @@ impl SyntaxTheme {
             .fg(hex("#7d8590")) // muted
             .add_modifier(Modifier::ITALIC);
         styles[HighlightStyle::Number as usize] = Style::new().fg(hex("#d699b6")); // mauve
-        styles[HighlightStyle::Operator as usize] = Style::new().fg(hex("#d3c6aa")); // text
+        styles[HighlightStyle::Operator as usize] = Style::new().fg(hex("#f2f1ed")); // text
         styles[HighlightStyle::Punctuation as usize] = Style::new().fg(hex("#7d8590")); // muted
-        styles[HighlightStyle::Variable as usize] = Style::new().fg(hex("#d3c6aa")); // text
+        styles[HighlightStyle::Variable as usize] = Style::new().fg(hex("#f2f1ed")); // text
         styles[HighlightStyle::Constant as usize] =
             Style::new().fg(hex("#d699b6")).add_modifier(Modifier::BOLD); // mauve
         styles[HighlightStyle::Attribute as usize] = Style::new().fg(hex("#dbbc7f")); // yellow

@@ -36,7 +36,9 @@ pub fn panel_title<'a>(label: impl Into<String>, theme: &Theme, is_focused: bool
             .fg(theme.accent)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.fg_muted)
+            .add_modifier(Modifier::BOLD)
     };
     Line::from(Span::styled(format!(" {} ", label.into()), style))
 }
@@ -96,13 +98,13 @@ mod tests {
     }
 
     #[test]
-    fn panel_title_unfocused_is_bold_without_accent() {
+    fn panel_title_unfocused_is_bold_and_muted() {
         let theme = Theme::dark();
         let title = panel_title("SOURCE CONTROL", &theme, false);
         let spans: Vec<_> = title.spans.iter().collect();
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].content, " SOURCE CONTROL ");
-        assert_eq!(spans[0].style.fg, None);
+        assert_eq!(spans[0].style.fg, Some(theme.fg_muted));
         assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
     }
 }

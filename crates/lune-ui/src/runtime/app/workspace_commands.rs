@@ -347,7 +347,7 @@ fn open_file_routed(path: &std::path::Path, state: &mut AppState) -> (Control<Ap
             state.set_root_tab(RootTab::Editor);
             state.focus.focus(PanelId::Editor);
             state.viewport_follow_cursor = true;
-            state.status_message = format!("Opened: {}", state.status_path_display(path));
+            state.status_message.clear();
             (Control::Changed, true)
         }
         Err(e) => {

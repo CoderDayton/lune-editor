@@ -140,6 +140,7 @@ pub struct Modal<'a> {
     border_style: Style,
     title_style: Style,
     body_bg: Color,
+    body_fg: Color,
     backdrop: Option<Color>,
     title_alignment: Alignment,
     border_type: BorderType,
@@ -166,6 +167,7 @@ impl<'a> Modal<'a> {
             border_style: Style::new().fg(theme.accent),
             title_style: Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
             body_bg: theme.bg,
+            body_fg: theme.fg,
             backdrop: Some(theme.bg),
             title_alignment: Alignment::Center,
             border_type: BorderType::Rounded,
@@ -336,7 +338,7 @@ impl<'a> Modal<'a> {
             .borders(Borders::ALL)
             .border_type(self.border_type)
             .border_style(self.border_style)
-            .style(Style::new().bg(self.body_bg));
+            .style(Style::new().fg(self.body_fg).bg(self.body_bg));
 
         if let Some(t) = self.title {
             block = block.title(
@@ -398,7 +400,12 @@ fn render_bottom_label(buf: &mut Buffer, rect: Rect, text: &str, style: Style) {
 /// underlying glyphs stay legible as ghosts.
 fn dim_backdrop(buf: &mut Buffer, area: Rect, exclude: Rect, base: Color) {
     let area = area.intersection(*buf.area());
-    let dim_fg = derive_dim_fg(base);
+    // Darken the backdrop to roughly half-toward-black so the modal floats
+    // above a clearly dimmer surface in BOTH themes — a light-theme `base`
+    // would otherwise wash the surroundings out instead of dimming them.
+    let (br, bg, bb) = color_to_rgb(base);
+    let scrim = Color::Rgb(br / 2, bg / 2, bb / 2);
+    let dim_fg = derive_dim_fg(scrim);
 
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
@@ -411,7 +418,7 @@ fn dim_backdrop(buf: &mut Buffer, area: Rect, exclude: Rect, base: Color) {
             }
             let cell = &mut buf[(x, y)];
             cell.fg = dim_fg;
-            cell.bg = base;
+            cell.bg = scrim;
         }
     }
 }
@@ -588,8 +595,11 @@ mod tests {
             .size_cells(20, 6)
             .render(area, &mut buf, &mut state, |_, _| {});
 
-        // Corner cell sits outside the modal — backdrop bg applied.
-        assert_eq!(cell_bg(&buf, 0, 0), Some(theme.bg));
+        // Corner cell sits outside the modal — a darkened backdrop scrim.
+        let Color::Rgb(r, g, b) = theme.bg else {
+            panic!("dark theme bg is rgb")
+        };
+        assert_eq!(cell_bg(&buf, 0, 0), Some(Color::Rgb(r / 2, g / 2, b / 2)));
         // Inner cell carries the modal body bg.
         let rect = state.overlay_rect().unwrap();
         assert_eq!(cell_bg(&buf, rect.x + 1, rect.y + 1), Some(theme.bg));

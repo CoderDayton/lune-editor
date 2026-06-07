@@ -19,7 +19,7 @@ impl Theme {
         let surface1 = hex("#2f353d"); // borders, gutters
         let surface2 = hex("#4b5563"); // dimmed text
         let subtext0 = hex("#7d8590"); // muted text
-        let text = hex("#d3c6aa"); // primary text (warm off-white)
+        let text = hex("#f2f1ed"); // primary text (off-white)
         let accent = hex("#83a6d6"); // blue accent
         let green = hex("#a7c080");
         let yellow = hex("#dbbc7f");
@@ -90,8 +90,8 @@ impl Theme {
                 .fg(base)
                 .bg(accent)
                 .add_modifier(Modifier::BOLD),
-            status_info: Style::new().fg(subtext0),
-            status_bg: Style::new().fg(subtext0).bg(mantle),
+            status_info: Style::new().fg(hex("#aeb4bc")),
+            status_bg: Style::new().fg(hex("#aeb4bc")).bg(mantle),
 
             // Notifications
             notif_success: green,
@@ -203,8 +203,8 @@ impl Theme {
                 .fg(base)
                 .bg(accent)
                 .add_modifier(Modifier::BOLD),
-            status_info: Style::new().fg(subtext0),
-            status_bg: Style::new().fg(subtext0).bg(mantle),
+            status_info: Style::new().fg(hex("#4f4a39")),
+            status_bg: Style::new().fg(hex("#4f4a39")).bg(mantle),
 
             // Notifications
             notif_success: green,
