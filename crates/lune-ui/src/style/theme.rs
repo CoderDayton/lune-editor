@@ -14,58 +14,20 @@
 //! // Use theme.accent, theme.border_focused, theme.editor_cursor_normal, etc.
 //! ```
 
-use crate::primitives::{Color, Modifier, Style};
-use crate::style::color::hex;
+use crate::primitives::{Color, Style};
 
-// ── Border characters ─────────────────────────────────────────────────
-
-/// A set of Unicode border-drawing characters.
-///
-/// The default set uses rounded corners which produce a softer look than
-/// sharp box-drawing characters.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BorderChars {
-    pub top_left: char,
-    pub top_right: char,
-    pub bottom_left: char,
-    pub bottom_right: char,
-    pub vertical: char,
-    pub horizontal: char,
-}
-
-impl BorderChars {
-    /// Plain border character set: `┌┐└┘│─`.
-    #[inline]
-    pub const fn plain() -> Self {
-        Self {
-            top_left: '┌',
-            top_right: '┐',
-            bottom_left: '└',
-            bottom_right: '┘',
-            vertical: '│',
-            horizontal: '─',
-        }
-    }
-}
-
-impl Default for BorderChars {
-    fn default() -> Self {
-        Self::plain()
-    }
-}
+mod builtin;
 
 // ── Theme ─────────────────────────────────────────────────────────────
 
 /// Centralized design token set for the entire Lune Editor UI.
 ///
-/// Every color, style, and border character used by widgets is stored here.
+/// Every color and style used by widgets is stored here.
 /// Construct with [`Theme::dark()`] for the built-in dark theme, or build
 /// a custom instance for alternative color schemes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Theme {
     // ── Borders ───────────────────────────────────────────────────
-    /// Unicode border character set.
-    pub border_chars: BorderChars,
     /// Border color when the pane has focus.
     pub border_focused: Color,
     /// Border color when the pane does not have focus.
@@ -164,6 +126,10 @@ pub struct Theme {
     pub notif_warn: Color,
     /// Color for error notifications.
     pub notif_error: Color,
+    /// Background fill of the toast panel.
+    pub notif_bg: Color,
+    /// Primary text color inside a toast.
+    pub notif_fg: Color,
 
     // ── Overlay / popup ───────────────────────────────────────────
     /// Border color for overlay panels (command palette, dialogs).
@@ -219,227 +185,6 @@ impl Theme {
         let factor = if bg_lum > 0.5 { -amount } else { amount };
         shade(color, factor)
     }
-
-    /// The built-in dark theme.
-    ///
-    /// Uses a consistent RGB palette for predictable rendering across
-    /// terminals. Inspired by Catppuccin Mocha with a deep blue-gray base.
-    ///
-    /// All style methods on `ratatui_core::style::Style` are `const fn`
-    /// in ratatui-core 0.1, so this constructor is fully const-evaluable.
-    pub const fn dark() -> Self {
-        // ── Palette ──────────────────────────────────────────────
-        let base = hex("#1e1e2e"); // background
-        let surface0 = hex("#313244"); // raised surfaces
-        let surface1 = hex("#45475a"); // borders, gutters
-        let surface2 = hex("#585b70"); // dimmed text
-        let subtext0 = hex("#7f849c"); // muted text
-        let text = hex("#cdd6f4"); // primary text
-        let accent = hex("#89b4fa"); // blue accent
-        let green = hex("#a6e3a1");
-        let yellow = hex("#f9e2af");
-        let red = hex("#f38ba8");
-        let mauve = hex("#cba6f7");
-        let teal = hex("#94e2d5");
-        let mantle = hex("#181825"); // status bar bg
-
-        Self {
-            // Borders
-            border_chars: BorderChars::plain(),
-            border_focused: accent,
-            border_unfocused: surface1,
-
-            // General UI
-            accent,
-            bg: base,
-            fg: text,
-            fg_dim: surface2,
-            fg_muted: subtext0,
-            selection_bg: surface0,
-
-            // Editor
-            editor_cursor_normal: Style::new().fg(base).bg(text),
-            editor_cursor_insert: Style::new().fg(text).add_modifier(Modifier::UNDERLINED),
-            editor_gutter_active: Style::new().fg(text).add_modifier(Modifier::BOLD),
-            editor_gutter_inactive: Style::new().fg(surface1),
-            editor_gutter_separator: surface0,
-
-            // File tree
-            tree_dir_fg: accent,
-            tree_file_fg: text,
-            tree_symlink_fg: teal,
-            tree_selected_bg: surface0,
-
-            // Git status
-            git_added: green,
-            git_modified: yellow,
-            git_deleted: red,
-            git_conflicted: mauve,
-            git_renamed: teal,
-            git_untracked: subtext0,
-            git_ignored: surface1,
-
-            // Diff view
-            diff_add_fg: green,
-            diff_add_bg: hex("#1a2e1a"), // dark green tint
-            diff_del_fg: red,
-            diff_del_bg: hex("#2e1a1e"), // dark red tint
-            diff_hunk_fg: teal,
-
-            // Tab bar
-            tab_active_focused: Style::new()
-                .fg(base)
-                .bg(accent)
-                .add_modifier(Modifier::BOLD),
-            tab_active_unfocused: Style::new()
-                .fg(text)
-                .bg(surface0)
-                .add_modifier(Modifier::BOLD),
-            tab_inactive: Style::new().fg(surface2),
-
-            // Status bar
-            status_mode: Style::new()
-                .fg(base)
-                .bg(accent)
-                .add_modifier(Modifier::BOLD),
-            status_brand: Style::new().fg(base).bg(mauve).add_modifier(Modifier::BOLD),
-            status_info: Style::new().fg(subtext0),
-            status_bg: Style::new().fg(subtext0).bg(mantle),
-
-            // Notifications
-            notif_success: green,
-            notif_info: accent,
-            notif_warn: yellow,
-            notif_error: red,
-
-            // Overlay / popup
-            overlay_border: accent,
-            overlay_selected: Style::new()
-                .fg(base)
-                .bg(accent)
-                .add_modifier(Modifier::BOLD),
-            overlay_dir_fg: teal,
-            overlay_file_fg: text,
-            overlay_hint_fg: surface2,
-
-            // Search highlights
-            search_current_bg: hex("#c89632"),
-            search_match_bg: hex("#505028"),
-
-            // Welcome screen
-            welcome_title: Style::new().fg(accent).add_modifier(Modifier::BOLD),
-            welcome_text: Style::new().fg(subtext0),
-        }
-    }
-
-    /// Built-in light theme.
-    ///
-    /// Uses a consistent RGB palette (Catppuccin Latte-inspired) for
-    /// terminals with a light background.
-    pub const fn light() -> Self {
-        // ── Palette ──────────────────────────────────────────────
-        let base = hex("#eff1f5"); // background
-        let surface0 = hex("#ccd0da"); // raised surfaces
-        let surface1 = hex("#bcc0cc"); // borders
-        let surface2 = hex("#9ca0b0"); // dimmed text
-        let subtext0 = hex("#6c6f85"); // muted text
-        let text = hex("#4c4f69"); // primary text
-        let accent = hex("#1e66f5"); // blue accent
-        let green = hex("#40a02b");
-        let yellow = hex("#df8e1d");
-        let red = hex("#d20f39");
-        let mauve = hex("#8839ef");
-        let teal = hex("#179299");
-        let mantle = hex("#e6e9ef"); // status bar bg
-
-        Self {
-            // Borders
-            border_chars: BorderChars::plain(),
-            border_focused: accent,
-            border_unfocused: surface1,
-
-            // General UI
-            accent,
-            bg: base,
-            fg: text,
-            fg_dim: surface2,
-            fg_muted: subtext0,
-            selection_bg: surface0,
-
-            // Editor
-            editor_cursor_normal: Style::new().fg(base).bg(text),
-            editor_cursor_insert: Style::new().fg(text).add_modifier(Modifier::UNDERLINED),
-            editor_gutter_active: Style::new().fg(text).add_modifier(Modifier::BOLD),
-            editor_gutter_inactive: Style::new().fg(surface1),
-            editor_gutter_separator: surface0,
-
-            // File tree
-            tree_dir_fg: accent,
-            tree_file_fg: text,
-            tree_symlink_fg: teal,
-            tree_selected_bg: surface0,
-
-            // Git status
-            git_added: green,
-            git_modified: yellow,
-            git_deleted: red,
-            git_conflicted: mauve,
-            git_renamed: teal,
-            git_untracked: subtext0,
-            git_ignored: surface1,
-
-            // Diff view
-            diff_add_fg: green,
-            diff_add_bg: hex("#dcf5dc"),
-            diff_del_fg: red,
-            diff_del_bg: hex("#ffe1e1"),
-            diff_hunk_fg: teal,
-
-            // Tab bar
-            tab_active_focused: Style::new()
-                .fg(base)
-                .bg(accent)
-                .add_modifier(Modifier::BOLD),
-            tab_active_unfocused: Style::new()
-                .fg(text)
-                .bg(surface0)
-                .add_modifier(Modifier::BOLD),
-            tab_inactive: Style::new().fg(surface2),
-
-            // Status bar
-            status_mode: Style::new()
-                .fg(base)
-                .bg(accent)
-                .add_modifier(Modifier::BOLD),
-            status_brand: Style::new().fg(base).bg(mauve).add_modifier(Modifier::BOLD),
-            status_info: Style::new().fg(subtext0),
-            status_bg: Style::new().fg(subtext0).bg(mantle),
-
-            // Notifications
-            notif_success: green,
-            notif_info: accent,
-            notif_warn: yellow,
-            notif_error: red,
-
-            // Overlay / popup
-            overlay_border: accent,
-            overlay_selected: Style::new()
-                .fg(base)
-                .bg(accent)
-                .add_modifier(Modifier::BOLD),
-            overlay_dir_fg: teal,
-            overlay_file_fg: text,
-            overlay_hint_fg: surface2,
-
-            // Search highlights
-            search_current_bg: hex("#ffdc64"),
-            search_match_bg: hex("#dcdc96"),
-
-            // Welcome screen
-            welcome_title: Style::new().fg(accent).add_modifier(Modifier::BOLD),
-            welcome_text: Style::new().fg(subtext0),
-        }
-    }
 }
 
 impl Default for Theme {
@@ -453,16 +198,12 @@ impl Default for Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::Modifier;
 
     #[test]
     fn dark_theme_accent_matches_border_focused() {
         let t = Theme::dark();
         assert_eq!(t.accent, t.border_focused);
-    }
-
-    #[test]
-    fn border_chars_plain_is_default() {
-        assert_eq!(BorderChars::default(), BorderChars::plain());
     }
 
     #[test]
@@ -603,8 +344,8 @@ mod tests {
         // Verify both themes can be constructed in a const context.
         const DARK: Theme = Theme::dark();
         const LIGHT: Theme = Theme::light();
-        assert_eq!(DARK.accent, Color::Rgb(137, 180, 250));
-        assert_eq!(LIGHT.accent, Color::Rgb(30, 102, 245));
+        assert_eq!(DARK.accent, Color::Rgb(131, 166, 214));
+        assert_eq!(LIGHT.accent, Color::Rgb(58, 123, 213));
     }
 
     #[test]

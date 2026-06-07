@@ -1,10 +1,10 @@
 ---
 source: crates/lune-ui/tests/snapshot_widgets.rs
-expression: buffer_to_text(&buf)
+expression: text
 ---
 
 
-        ╭ /tmp/lune-broken.png ────────────────────────────────────────╮
+        ╭──────────────────── /tmp/lune-broken.png ────────────────────╮
         │                                                              │
         │                                                              │
         │                                                              │

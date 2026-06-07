@@ -120,6 +120,18 @@ pub enum Anchor {
     Top { margin: u16 },
 }
 
+/// Horizontal placement of the modal within the parent area.
+#[derive(Debug, Clone, Copy)]
+pub enum HAlign {
+    /// `margin` cells from the left edge.
+    Left { margin: u16 },
+    /// Centered horizontally (the default).
+    Center,
+    /// `margin` cells from the right edge — e.g. a search bar tucked into
+    /// the top-right corner. Clamped so the modal stays fully on-screen.
+    Right { margin: u16 },
+}
+
 /// Centered modal config. Combine with [`ModalState`] to render.
 #[derive(Debug, Clone)]
 pub struct Modal<'a> {
@@ -134,6 +146,7 @@ pub struct Modal<'a> {
     padding: (u16, u16),
     min_size: (u16, u16),
     anchor: Anchor,
+    h_align: HAlign,
     footer: Option<&'a str>,
     footer_style: Style,
 }
@@ -159,6 +172,7 @@ impl<'a> Modal<'a> {
             padding: (0, 0),
             min_size: (0, 0),
             anchor: Anchor::Center,
+            h_align: HAlign::Center,
             footer: None,
             footer_style: Style::new().fg(theme.fg_muted),
         }
@@ -249,6 +263,13 @@ impl<'a> Modal<'a> {
         self
     }
 
+    /// Horizontal placement within the parent area. Defaults to centered.
+    #[must_use]
+    pub const fn h_align(mut self, h_align: HAlign) -> Self {
+        self.h_align = h_align;
+        self
+    }
+
     /// A dim hint rendered centered into the bottom border (e.g. key
     /// hints). Defaults to none.
     #[must_use]
@@ -286,7 +307,13 @@ impl<'a> Modal<'a> {
             return;
         }
 
-        let x = area.x + (area.width.saturating_sub(w)) / 2;
+        let x = match self.h_align {
+            HAlign::Center => area.x + (area.width.saturating_sub(w)) / 2,
+            HAlign::Left { margin } => (area.x + margin).min(area.x + area.width.saturating_sub(w)),
+            HAlign::Right { margin } => {
+                area.x + area.width.saturating_sub(w).saturating_sub(margin)
+            }
+        };
         let y = match self.anchor {
             Anchor::Center => area.y + (area.height.saturating_sub(h)) / 2,
             Anchor::Top { margin } => (area.y + margin).min(area.y + area.height.saturating_sub(h)),

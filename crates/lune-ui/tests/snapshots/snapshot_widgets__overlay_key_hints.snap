@@ -1,10 +1,10 @@
 ---
 source: crates/lune-ui/tests/snapshot_widgets.rs
-expression: buffer_to_text(&buf)
+expression: text
 ---
 
 
-        ╭ Keybindings  (Esc/F1 close · type to filter) ────────────────╮
+        ╭──────── Keybindings  (Esc/F1 close · type to filter) ────────╮
         │File                                                          │
         │  Ctrl+S           Save                                       │
         │  Ctrl+Shift+S     Save all                                   │

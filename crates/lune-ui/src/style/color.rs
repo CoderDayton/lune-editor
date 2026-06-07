@@ -54,7 +54,7 @@ const fn dehex(c: u8) -> u8 {
 
 /// Fallible hex color parser accepting `#rgb`, `#rrggbb`, `rgb`, `rrggbb`.
 #[must_use]
-pub fn parse_hex(s: &str) -> Option<Color> {
+pub(crate) fn parse_hex(s: &str) -> Option<Color> {
     let trimmed = s.trim();
     let s = trimmed.strip_prefix('#').unwrap_or(trimmed);
     match s.len() {
@@ -300,9 +300,168 @@ pub fn truecolor_supported() -> bool {
     })
 }
 
+// ── Color parsing ─────────────────────────────────────────────────────
+
+/// Parse a hex color string (`"#RRGGBB"`) into a ratatui `Color`.
+///
+/// Also accepts named colors like `"red"`, `"blue"`, `"reset"`, etc.
+pub(crate) fn parse_color(s: &str) -> Option<Color> {
+    let s = s.trim();
+
+    // Hex literals: #rgb and #rrggbb, with or without the leading #.
+    if s.starts_with('#') || is_bare_hex(s) {
+        if let Some(c) = parse_hex(s) {
+            return Some(c);
+        }
+    }
+
+    // CSS-style functional notation: rgb(r, g, b) and hsl(h, s%, l%).
+    let lower = s.to_ascii_lowercase();
+    if let Some(c) = parse_rgb_fn(&lower) {
+        return Some(c);
+    }
+    if let Some(c) = parse_hsl_fn(&lower) {
+        return Some(c);
+    }
+
+    match lower.as_str() {
+        "reset" | "default" => Some(Color::Reset),
+        "black" => Some(Color::Black),
+        "red" => Some(Color::Red),
+        "green" => Some(Color::Green),
+        "yellow" => Some(Color::Yellow),
+        "blue" => Some(Color::Blue),
+        "magenta" => Some(Color::Magenta),
+        "cyan" => Some(Color::Cyan),
+        "gray" | "grey" => Some(Color::Gray),
+        "darkgray" | "darkgrey" | "dark_gray" | "dark_grey" => Some(Color::DarkGray),
+        "lightred" | "light_red" => Some(Color::LightRed),
+        "lightgreen" | "light_green" => Some(Color::LightGreen),
+        "lightyellow" | "light_yellow" => Some(Color::LightYellow),
+        "lightblue" | "light_blue" => Some(Color::LightBlue),
+        "lightmagenta" | "light_magenta" => Some(Color::LightMagenta),
+        "lightcyan" | "light_cyan" => Some(Color::LightCyan),
+        "white" => Some(Color::White),
+        _ => None,
+    }
+}
+
+/// Whether `s` looks like a bare (no-`#`) 6-digit hex triplet.
+///
+/// Only the full 6-digit form is accepted without a leading `#`. The
+/// 3-digit bare form is deliberately excluded so short English words made
+/// of hex digits (`add`, `dad`, ...) are not silently read as colors;
+/// `#abc` still works via the explicit `#` prefix.
+fn is_bare_hex(s: &str) -> bool {
+    s.len() == 6 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Parse CSS-style `rgb(r, g, b)` with integer components in `[0, 255]`.
+/// Whitespace is flexible; `rgb(255,0,0)`, `rgb(255 0 0)`, and
+/// `rgb( 255 , 0 , 0 )` all parse.
+fn parse_rgb_fn(lower: &str) -> Option<Color> {
+    let inner = lower.strip_prefix("rgb(")?.strip_suffix(')')?;
+    let parts: Vec<&str> = inner
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let r = parts[0].parse::<u16>().ok()?;
+    let g = parts[1].parse::<u16>().ok()?;
+    let b = parts[2].parse::<u16>().ok()?;
+    if r > 255 || g > 255 || b > 255 {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    Some(Color::Rgb(r as u8, g as u8, b as u8))
+}
+
+/// Parse CSS-style `hsl(h, s%, l%)` where `h` is `[0, 360)` degrees and
+/// `s`, `l` are percentages. Routes through `coolor::Hsl` so the output
+/// matches the rest of the color math.
+fn parse_hsl_fn(lower: &str) -> Option<Color> {
+    let inner = lower.strip_prefix("hsl(")?.strip_suffix(')')?;
+    let parts: Vec<&str> = inner
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let h: f32 = parts[0].parse().ok()?;
+    let s: f32 = parts[1].trim_end_matches('%').parse().ok()?;
+    let l: f32 = parts[2].trim_end_matches('%').parse().ok()?;
+    if !(0.0..360.0).contains(&h) || !(0.0..=100.0).contains(&s) || !(0.0..=100.0).contains(&l) {
+        return None;
+    }
+    let hsl = coolor::Hsl::new(h, s / 100.0, l / 100.0);
+    Some(from_coolor(coolor::Color::Hsl(hsl)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_hex_color() {
+        assert_eq!(parse_color("#FF0000"), Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(parse_color("#00ff00"), Some(Color::Rgb(0, 255, 0)));
+        assert_eq!(parse_color("#0000FF"), Some(Color::Rgb(0, 0, 255)));
+        assert_eq!(parse_color("#5082DC"), Some(Color::Rgb(80, 130, 220)));
+    }
+
+    #[test]
+    fn parse_hex_shortform() {
+        assert_eq!(parse_color("#fff"), Some(Color::Rgb(255, 255, 255)));
+        assert_eq!(parse_color("#000"), Some(Color::Rgb(0, 0, 0)));
+        assert_eq!(parse_color("#F0a"), Some(Color::Rgb(0xff, 0, 0xaa)));
+    }
+
+    #[test]
+    fn parse_rgb_functional() {
+        assert_eq!(parse_color("rgb(255, 0, 0)"), Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(parse_color("rgb(0 128 255)"), Some(Color::Rgb(0, 128, 255)));
+        assert_eq!(parse_color("RGB(12,34,56)"), Some(Color::Rgb(12, 34, 56)));
+        assert_eq!(parse_color("rgb(256,0,0)"), None);
+        assert_eq!(parse_color("rgb(1,2)"), None);
+    }
+
+    #[test]
+    fn parse_hsl_functional() {
+        // hsl(0, 100%, 50%) == pure red
+        let red = parse_color("hsl(0, 100%, 50%)").unwrap();
+        let Color::Rgb(r, g, b) = red else {
+            panic!("expected rgb");
+        };
+        assert!(r > 240 && g < 15 && b < 15, "got ({r}, {g}, {b})");
+        // hsl(120, 100%, 50%) == pure green
+        let green = parse_color("hsl(120 100% 50%)").unwrap();
+        let Color::Rgb(r, g, b) = green else {
+            panic!("expected rgb");
+        };
+        assert!(r < 15 && g > 240 && b < 15, "got ({r}, {g}, {b})");
+        // Invalid ranges rejected
+        assert_eq!(parse_color("hsl(360, 50%, 50%)"), None);
+        assert_eq!(parse_color("hsl(0, 150%, 50%)"), None);
+    }
+
+    #[test]
+    fn parse_named_colors() {
+        assert_eq!(parse_color("red"), Some(Color::Red));
+        assert_eq!(parse_color("Blue"), Some(Color::Blue));
+        assert_eq!(parse_color("RESET"), Some(Color::Reset));
+        assert_eq!(parse_color("dark_gray"), Some(Color::DarkGray));
+        assert_eq!(parse_color("light_red"), Some(Color::LightRed));
+    }
+
+    #[test]
+    fn parse_invalid_color() {
+        assert_eq!(parse_color("#GG0000"), None);
+        assert_eq!(parse_color("#12345"), None);
+        assert_eq!(parse_color("foobar"), None);
+    }
 
     #[test]
     fn hex_parses_six_digit() {

@@ -1,10 +1,10 @@
 ---
 source: crates/lune-ui/tests/snapshot_widgets.rs
-expression: buffer_to_text(&buf)
+expression: text
 ---
 
 
-        ╭ README.md (preview) ─────────────────────────────────────────╮
+        ╭──────────────────── README.md (preview) ─────────────────────╮
         │# Title                                                       │
         │                                                              │
         │Body bold and italic.                                         │

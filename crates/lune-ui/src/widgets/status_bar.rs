@@ -24,8 +24,9 @@ const AI_SEGMENT_WIDTH: usize = 12;
 /// Separator drawn between status segments.
 const SEG_SEP: &str = " │ ";
 /// Brand badge shown in the prefix slot on the empty welcome bar — rendered
-/// like the vim mode badge but in its own color (`status_brand`). The
-/// surrounding spaces give it the same padded-box look as ` NORMAL `.
+/// like the vim mode badge, sharing its accent background (`status_brand`,
+/// which matches `status_mode` by default). The surrounding spaces give it
+/// the same padded-box look as ` NORMAL `.
 const BRAND_BADGE: &str = " Lune Editor ";
 /// Left-cluster hint shown when no buffer is open, so the status bar reads
 /// as a discoverable welcome line instead of a blank strip. Chords mirror

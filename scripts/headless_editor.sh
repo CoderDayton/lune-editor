@@ -20,7 +20,16 @@ set -euo pipefail
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-SESSION="lune-headless-$$"
+# Stable session name so `start`, `screenshot`, `send`, `stop` (each a
+# separate process) share one tmux session. Override with LUNE_SESSION to
+# run isolated sessions in parallel.
+SESSION="${LUNE_SESSION:-lune-headless}"
+# Guard: the name flows into every `tmux -t "$SESSION"`, so reject anything
+# that could re-target a different pane (e.g. "lune:0") or smuggle metachars.
+if [[ ! "$SESSION" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo "LUNE_SESSION must contain only letters, digits, '_' or '-'" >&2
+    exit 1
+fi
 BINARY="./target/debug/lune"
 TERM_COLS=120
 TERM_ROWS=40
@@ -49,7 +58,7 @@ start() {
         -x "$TERM_COLS" \
         -y "$TERM_ROWS" \
         -e "TERM=xterm-256color" \
-        -- "$BINARY" --no-vim --no-effects "$@"
+        -- "$BINARY" --no-vim "$@"
 
     # Wait for the TUI to initialize.
     wait_for_stable
@@ -180,7 +189,7 @@ begin_test() {
         -x "$TERM_COLS" \
         -y "$TERM_ROWS" \
         -e "TERM=xterm-256color" \
-        -- "$BINARY" --no-vim --no-effects "$testfile"
+        -- "$BINARY" --no-vim "$testfile"
     wait_for_stable
 }
 
@@ -753,7 +762,7 @@ begin_test_sized() {
         -x "$cols" \
         -y "$rows" \
         -e "TERM=xterm-256color" \
-        -- "$BINARY" --no-vim --no-effects "$testfile"
+        -- "$BINARY" --no-vim "$testfile"
     wait_for_stable
 }
 

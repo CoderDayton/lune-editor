@@ -488,13 +488,15 @@ fn apply_indent_guides_and_brackets(area: Rect, buf: &mut Buffer, tab_size: usiz
     // Rainbow palette — six distinct hues that cycle as nesting deepens.
     // Picks readable colors on both light and dark themes; opaline-style
     // theme tokens could replace this later without changing the loop.
-    const RAINBOW: [Color; 6] = [
-        Color::Cyan,
-        Color::Yellow,
-        Color::Magenta,
-        Color::Green,
-        Color::Red,
-        Color::Blue,
+    // Bracket-pair colors drawn from the theme's six accent hues, so the
+    // rainbow tracks the active palette (light/dark) instead of raw ANSI.
+    let rainbow: [Color; 6] = [
+        theme.accent,         // blue
+        theme.git_modified,   // yellow
+        theme.git_conflicted, // mauve
+        theme.git_added,      // green
+        theme.git_deleted,    // red
+        theme.git_renamed,    // teal
     ];
     let guide_style = Style::new().fg(theme.fg_muted).add_modifier(Modifier::DIM);
     let tab_w = u16::try_from(tab_size).unwrap_or(4).max(1);
@@ -541,31 +543,31 @@ fn apply_indent_guides_and_brackets(area: Rect, buf: &mut Buffer, tab_size: usiz
             let cell = &mut buf[(area.x + dx, y)];
             let depth_color = match cell.symbol() {
                 "(" => {
-                    let c = RAINBOW[(paren.max(0) as usize) % RAINBOW.len()];
+                    let c = rainbow[(paren.max(0) as usize) % rainbow.len()];
                     paren += 1;
                     Some(c)
                 }
                 ")" => {
                     paren -= 1;
-                    Some(RAINBOW[(paren.max(0) as usize) % RAINBOW.len()])
+                    Some(rainbow[(paren.max(0) as usize) % rainbow.len()])
                 }
                 "[" => {
-                    let c = RAINBOW[(square.max(0) as usize) % RAINBOW.len()];
+                    let c = rainbow[(square.max(0) as usize) % rainbow.len()];
                     square += 1;
                     Some(c)
                 }
                 "]" => {
                     square -= 1;
-                    Some(RAINBOW[(square.max(0) as usize) % RAINBOW.len()])
+                    Some(rainbow[(square.max(0) as usize) % rainbow.len()])
                 }
                 "{" => {
-                    let c = RAINBOW[(curly.max(0) as usize) % RAINBOW.len()];
+                    let c = rainbow[(curly.max(0) as usize) % rainbow.len()];
                     curly += 1;
                     Some(c)
                 }
                 "}" => {
                     curly -= 1;
-                    Some(RAINBOW[(curly.max(0) as usize) % RAINBOW.len()])
+                    Some(rainbow[(curly.max(0) as usize) % rainbow.len()])
                 }
                 _ => None,
             };

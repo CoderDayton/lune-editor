@@ -19,7 +19,7 @@ use rat_salsa::timer::{TimerDef, TimerHandle};
 use rat_salsa::{Control, RunConfig, SalsaAppContext, SalsaContext, run_tui};
 
 use crate::primitives::{
-    Block, Borders, Buffer, Constraint, CtEvent, Direction, KeyCode, KeyEvent, KeyEventKind,
+    Block, Borders, Buffer, Color, Constraint, CtEvent, Direction, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers, Layout, Line, MouseButton, MouseEvent, MouseEventKind, Rect, Style, Tabs, Widget,
 };
 
@@ -355,7 +355,7 @@ pub struct AppState {
     spinner_timer: Option<TimerHandle>,
 
     /// Active notification animation timer handle, registered while any
-    /// toast is on screen so the loop wakes on a fixed ~30 fps cadence to
+    /// toast is on screen so the loop wakes on a fixed ~60 fps cadence to
     /// prune and animate toasts. `None` when no toast is queued, so an
     /// idle terminal stops waking. Synced after every event in
     /// [`sync_notification_timer`].
@@ -1664,6 +1664,23 @@ pub fn render(
     // Render overlays on top.
     overlay::render_overlay(area, buf, &mut state.overlay, &state.theme);
 
+    // Application background: any cell no widget gave an explicit
+    // background is left at `Color::Reset` (the editor body, panel
+    // interiors, gaps, and seams all do this — text rendering resets bg).
+    // Fill those with the theme background so the whole frame reads as one
+    // surface instead of showing the terminal's own background through the
+    // gaps. Cells with a real background (selection, cursor, tabs, toasts)
+    // are untouched. Done before the confirm modals so their backdrop dim
+    // falls over a fully-themed frame.
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buf[(x, y)];
+            if cell.bg == Color::Reset {
+                cell.set_bg(state.theme.bg);
+            }
+        }
+    }
+
     // The quit confirmation modal sits above all other overlays so
     // backdrop dimming covers them too.
     state.quit_confirm.render(area, buf, &state.theme);
@@ -1751,10 +1768,11 @@ fn sync_spinner_timer(state: &mut AppState, global: &LuneGlobal) {
     }
 }
 
-/// Tick interval for the notification animation timer. ~30 fps — fine
-/// enough for a smooth slide/fade, coarse enough to stay cheap, and only
-/// running while toasts are actually on screen.
-const NOTIF_TICK_INTERVAL: Duration = Duration::from_millis(33);
+/// Tick interval for the notification animation timer. ~60 fps — keeps
+/// the spring entrance, brightness pop, and shadow fade buttery, and only
+/// running while toasts are actually on screen (the timer is removed the
+/// instant the queue drains, so an idle terminal still costs nothing).
+const NOTIF_TICK_INTERVAL: Duration = Duration::from_millis(16);
 
 /// Whether a notification timer tick should force a render.
 ///
@@ -1778,7 +1796,7 @@ const fn notification_tick_needs_render(
 /// Without a timer, a toast raised on an otherwise-idle terminal would
 /// hang on screen — frozen at full opacity — until the next unrelated
 /// key/mouse/FS event happened to wake the loop. Registering a
-/// repeat-forever ~30 fps timer while any toast is queued guarantees the
+/// repeat-forever ~60 fps timer while any toast is queued guarantees the
 /// periodic `Timer` events that drive `prune_notifications` and the fade
 /// animation; removing it once the queue drains returns the loop to its
 /// idle blocked-on-input state so we don't burn CPU on an empty screen.
@@ -2772,8 +2790,12 @@ mod tests {
 
     #[test]
     fn render_produces_single_status_row_for_various_window_heights() {
-        use crate::primitives::Color;
-        let mantle = Color::Rgb(24, 24, 37);
+        // Derive the status-bar background from the active theme so this
+        // test tracks palette changes instead of pinning a literal color.
+        let mantle = crate::theme::Theme::dark()
+            .status_bg
+            .bg
+            .expect("dark theme status bar has a background");
 
         for h in [10_u16, 20, 40, 80] {
             let mut state = AppState::new();

@@ -23,27 +23,28 @@ impl SyntaxTheme {
     pub fn dark() -> Self {
         let mut styles = [Style::default(); STYLE_COUNT];
 
-        // Catppuccin Mocha palette for syntax highlighting.
+        // GitHub × Gruvbox-soft — the same six accent hues the UI chrome
+        // uses, so code and chrome read as a single cohesive theme.
         styles[HighlightStyle::Keyword as usize] =
-            Style::new().fg(hex("#cba6f7")).add_modifier(Modifier::BOLD); // mauve
-        styles[HighlightStyle::Type as usize] = Style::new().fg(hex("#f9e2af")); // yellow
-        styles[HighlightStyle::Function as usize] = Style::new().fg(hex("#89b4fa")); // blue
-        styles[HighlightStyle::String as usize] = Style::new().fg(hex("#a6e3a1")); // green
+            Style::new().fg(hex("#e67e80")).add_modifier(Modifier::BOLD); // red
+        styles[HighlightStyle::Type as usize] = Style::new().fg(hex("#dbbc7f")); // yellow
+        styles[HighlightStyle::Function as usize] = Style::new().fg(hex("#83a6d6")); // blue
+        styles[HighlightStyle::String as usize] = Style::new().fg(hex("#a7c080")); // green
         styles[HighlightStyle::Comment as usize] = Style::new()
-            .fg(hex("#7f849c")) // overlay1
+            .fg(hex("#7d8590")) // muted
             .add_modifier(Modifier::ITALIC);
-        styles[HighlightStyle::Number as usize] = Style::new().fg(hex("#fab387")); // peach
-        styles[HighlightStyle::Operator as usize] = Style::new().fg(hex("#89dceb")); // sky
-        styles[HighlightStyle::Punctuation as usize] = Style::new().fg(hex("#9399b2")); // overlay2
-        styles[HighlightStyle::Variable as usize] = Style::new().fg(hex("#cdd6f4")); // text
+        styles[HighlightStyle::Number as usize] = Style::new().fg(hex("#d699b6")); // mauve
+        styles[HighlightStyle::Operator as usize] = Style::new().fg(hex("#d3c6aa")); // text
+        styles[HighlightStyle::Punctuation as usize] = Style::new().fg(hex("#7d8590")); // muted
+        styles[HighlightStyle::Variable as usize] = Style::new().fg(hex("#d3c6aa")); // text
         styles[HighlightStyle::Constant as usize] =
-            Style::new().fg(hex("#fab387")).add_modifier(Modifier::BOLD); // peach
-        styles[HighlightStyle::Attribute as usize] = Style::new().fg(hex("#f9e2af")); // yellow
-        styles[HighlightStyle::Namespace as usize] = Style::new().fg(hex("#b4befe")); // lavender
+            Style::new().fg(hex("#d699b6")).add_modifier(Modifier::BOLD); // mauve
+        styles[HighlightStyle::Attribute as usize] = Style::new().fg(hex("#dbbc7f")); // yellow
+        styles[HighlightStyle::Namespace as usize] = Style::new().fg(hex("#7fbbb3")); // teal
         styles[HighlightStyle::Error as usize] = Style::new()
-            .fg(hex("#f38ba8")) // red
+            .fg(hex("#e67e80")) // red
             .add_modifier(Modifier::UNDERLINED);
-        styles[HighlightStyle::Embedded as usize] = Style::new().fg(hex("#94e2d5")); // teal
+        styles[HighlightStyle::Embedded as usize] = Style::new().fg(hex("#7fbbb3")); // teal
         styles[HighlightStyle::Default as usize] = Style::default();
 
         Self { styles }
@@ -54,26 +55,28 @@ impl SyntaxTheme {
     pub fn light() -> Self {
         let mut styles = [Style::default(); STYLE_COUNT];
 
+        // GitHub × Gruvbox-soft (light) — the same six accent hues the
+        // light UI chrome uses.
         styles[HighlightStyle::Keyword as usize] =
-            Style::new().fg(hex("#0000b4")).add_modifier(Modifier::BOLD);
-        styles[HighlightStyle::Type as usize] = Style::new().fg(hex("#007878"));
-        styles[HighlightStyle::Function as usize] = Style::new().fg(hex("#783c00"));
-        styles[HighlightStyle::String as usize] = Style::new().fg(hex("#007800"));
+            Style::new().fg(hex("#c14a3d")).add_modifier(Modifier::BOLD); // red
+        styles[HighlightStyle::Type as usize] = Style::new().fg(hex("#b07d2b")); // yellow
+        styles[HighlightStyle::Function as usize] = Style::new().fg(hex("#3a7bd5")); // blue
+        styles[HighlightStyle::String as usize] = Style::new().fg(hex("#6c802f")); // green
         styles[HighlightStyle::Comment as usize] = Style::new()
-            .fg(hex("#828282"))
+            .fg(hex("#6f6957")) // muted
             .add_modifier(Modifier::ITALIC);
-        styles[HighlightStyle::Number as usize] = Style::new().fg(hex("#8c008c"));
-        styles[HighlightStyle::Operator as usize] = Style::new().fg(hex("#3c3c3c"));
-        styles[HighlightStyle::Punctuation as usize] = Style::new().fg(hex("#646464"));
-        styles[HighlightStyle::Variable as usize] = Style::new().fg(hex("#b42828"));
+        styles[HighlightStyle::Number as usize] = Style::new().fg(hex("#9a5fb0")); // mauve
+        styles[HighlightStyle::Operator as usize] = Style::new().fg(hex("#3c3a32")); // text
+        styles[HighlightStyle::Punctuation as usize] = Style::new().fg(hex("#6f6957")); // muted
+        styles[HighlightStyle::Variable as usize] = Style::new().fg(hex("#3c3a32")); // text
         styles[HighlightStyle::Constant as usize] =
-            Style::new().fg(hex("#8c008c")).add_modifier(Modifier::BOLD);
-        styles[HighlightStyle::Attribute as usize] = Style::new().fg(hex("#a06400"));
-        styles[HighlightStyle::Namespace as usize] = Style::new().fg(hex("#006464"));
+            Style::new().fg(hex("#9a5fb0")).add_modifier(Modifier::BOLD); // mauve
+        styles[HighlightStyle::Attribute as usize] = Style::new().fg(hex("#b07d2b")); // yellow
+        styles[HighlightStyle::Namespace as usize] = Style::new().fg(hex("#4a8b80")); // teal
         styles[HighlightStyle::Error as usize] = Style::new()
-            .fg(hex("#c80000"))
+            .fg(hex("#c14a3d")) // red
             .add_modifier(Modifier::UNDERLINED);
-        styles[HighlightStyle::Embedded as usize] = Style::new().fg(hex("#006400"));
+        styles[HighlightStyle::Embedded as usize] = Style::new().fg(hex("#4a8b80")); // teal
         styles[HighlightStyle::Default as usize] = Style::default();
 
         Self { styles }
@@ -111,10 +114,10 @@ mod tests {
     use crate::primitives::Color;
 
     #[test]
-    fn dark_theme_keyword_is_mauve_bold() {
+    fn dark_theme_keyword_is_red_bold() {
         let theme = SyntaxTheme::dark();
         let style = theme.resolve(HighlightStyle::Keyword);
-        assert_eq!(style.fg, Some(Color::Rgb(203, 166, 247)));
+        assert_eq!(style.fg, Some(Color::Rgb(230, 126, 128)));
         assert!(style.add_modifier.contains(Modifier::BOLD));
     }
 
@@ -122,14 +125,14 @@ mod tests {
     fn dark_theme_string_is_green() {
         let theme = SyntaxTheme::dark();
         let style = theme.resolve(HighlightStyle::String);
-        assert_eq!(style.fg, Some(Color::Rgb(166, 227, 161)));
+        assert_eq!(style.fg, Some(Color::Rgb(167, 192, 128)));
     }
 
     #[test]
     fn dark_theme_comment_is_italic() {
         let theme = SyntaxTheme::dark();
         let style = theme.resolve(HighlightStyle::Comment);
-        assert_eq!(style.fg, Some(Color::Rgb(127, 132, 156)));
+        assert_eq!(style.fg, Some(Color::Rgb(125, 133, 144)));
         assert!(style.add_modifier.contains(Modifier::ITALIC));
     }
 
