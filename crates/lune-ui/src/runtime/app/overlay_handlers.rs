@@ -308,6 +308,7 @@ fn handle_theme_picker_key(key: &KeyEvent, state: &mut AppState) -> Control<AppE
             Control::Changed
         }
         KeyCode::Enter => {
+            persist_theme_selection(state);
             close_overlay(state);
             Control::Changed
         }
@@ -339,6 +340,29 @@ fn apply_theme_preview(state: &mut AppState) {
     if let Some(idx) = state.overlay.theme_picker.selected_idx() {
         state.theme_registry.switch(ThemeId(idx));
         state.apply_active_theme();
+    }
+}
+
+/// Persist the confirmed theme so it survives a restart.
+///
+/// Preview already updated `theme_registry` + the live `state.theme`; here we
+/// write the active theme name into the cached settings and flush them to the
+/// global config file. Without this the choice lives only in memory and reverts
+/// on next launch (`apply_settings` reads the unchanged `settings.theme`).
+fn persist_theme_selection(state: &mut AppState) {
+    let name = state.theme_registry.current_name().to_owned();
+    if let Some(s) = state.cached_settings.as_mut() {
+        s.theme = name;
+    }
+    let result = match (state.cached_settings.as_ref(), state.config_paths.as_ref()) {
+        (Some(settings), Some(cp)) => Some(settings.save(&cp.settings_file())),
+        _ => None,
+    };
+    if let Some(Err(e)) = result {
+        state.overlay.notify(
+            format!("Failed to save theme: {e}"),
+            NotificationLevel::Error,
+        );
     }
 }
 
@@ -590,6 +614,29 @@ mod tests {
         state.session.active_buffer = Some(id);
         state.session.tabs.push(id);
         state
+    }
+
+    #[test]
+    fn theme_picker_enter_persists_selection_to_disk() {
+        use lune_core::config::ConfigPaths;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cp = ConfigPaths::from_root(dir.path().to_path_buf());
+
+        let mut state = AppState::new();
+        state.set_config_paths(cp.clone());
+        state.apply_settings(&Settings::default());
+
+        // Simulate a preview selecting a theme other than the default.
+        assert!(state.theme_registry.switch(ThemeId(1)));
+        state.apply_active_theme();
+        let expected = state.theme_registry.current_name().to_owned();
+        assert_ne!(expected, Settings::default().theme);
+
+        persist_theme_selection(&mut state);
+
+        let saved = Settings::load(&cp.settings_file()).unwrap();
+        assert_eq!(saved.theme, expected);
     }
 
     #[test]
