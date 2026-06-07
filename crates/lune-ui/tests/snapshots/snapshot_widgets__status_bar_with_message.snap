@@ -2,4 +2,4 @@
 source: crates/lune-ui/tests/snapshot_widgets.rs
 expression: buffer_to_text(&buf)
 ---
- NORMAL  File saved su...             Ln 10, Col 5 | UTF-8
+ NORMAL  File saved successfully (10,5) │ UTF-8

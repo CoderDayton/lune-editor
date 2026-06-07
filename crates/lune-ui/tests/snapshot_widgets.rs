@@ -71,6 +71,7 @@ fn snapshot_status_bar_normal_mode() {
     let status = StatusLineState {
         mode: VimMode::Normal,
         vim_enabled: true,
+        has_buffer: true,
         file_path: "src/main.rs".to_string(),
         dirty: false,
         cursor_line: 42,
@@ -97,6 +98,7 @@ fn status_bar_hides_mode_label_when_vim_disabled() {
     let status = StatusLineState {
         mode: VimMode::Normal,
         vim_enabled: false,
+        has_buffer: true,
         file_path: "src/main.rs".to_string(),
         cursor_line: 1,
         cursor_col: 1,
@@ -127,6 +129,7 @@ fn snapshot_status_bar_insert_dirty() {
     let status = StatusLineState {
         mode: VimMode::Insert,
         vim_enabled: true,
+        has_buffer: true,
         file_path: "lib.rs".to_string(),
         dirty: true,
         cursor_line: 100,
@@ -152,6 +155,7 @@ fn snapshot_status_bar_with_message() {
     let status = StatusLineState {
         mode: VimMode::Normal,
         vim_enabled: true,
+        has_buffer: true,
         file_path: "ignored_because_message_set.rs".to_string(),
         message: "File saved successfully".to_string(),
         cursor_line: 10,
@@ -163,6 +167,40 @@ fn snapshot_status_bar_with_message() {
     let mut throbber = ThrobberState::default();
     render_status_bar(area, &mut buf, &status, &theme, &mut throbber);
     insta::assert_snapshot!("status_bar_with_message", buffer_to_text(&buf));
+}
+
+#[test]
+fn snapshot_status_bar_empty_state() {
+    // With no buffer open (`has_buffer` defaults to `false`) and no transient
+    // message, the left cluster shows the welcome hint instead of collapsing
+    // to a blank strip. Git stays on the right so the bar reads as anchored on
+    // both ends.
+    let area = Rect::new(0, 0, 80, 1);
+    let mut buf = Buffer::empty(area);
+    let theme = Theme::dark();
+
+    let status = StatusLineState {
+        mode: VimMode::Normal,
+        // Vim is on, but with no buffer the mode badge must still be hidden:
+        // a NORMAL label claims a mode for nothing to edit.
+        vim_enabled: true,
+        git_branch: "main".to_string(),
+        encoding: "UTF-8",
+        ..StatusLineState::default()
+    };
+
+    let mut throbber = ThrobberState::default();
+    render_status_bar(area, &mut buf, &status, &theme, &mut throbber);
+    let text = buffer_to_text(&buf);
+    assert!(
+        text.contains("Lune Editor") && text.contains("C-o open file"),
+        "empty status bar should show the welcome hint, got {text:?}"
+    );
+    assert!(
+        !text.contains("NORMAL"),
+        "mode badge must be hidden when no buffer is open, got {text:?}"
+    );
+    insta::assert_snapshot!("status_bar_empty_state", text);
 }
 
 // ── Tab bar snapshots ─────────────────────────────────────────────────
@@ -888,6 +926,7 @@ fn snapshot_status_bar_ai_busy() {
         mode: VimMode::Normal,
         vim_enabled: true,
         file_path: "src/main.rs".to_string(),
+        has_buffer: true,
         dirty: false,
         cursor_line: 10,
         cursor_col: 5,
@@ -915,6 +954,7 @@ fn snapshot_status_bar_light_theme() {
         mode: VimMode::Normal,
         vim_enabled: true,
         file_path: "src/main.rs".to_string(),
+        has_buffer: true,
         cursor_line: 1,
         cursor_col: 1,
         git_branch: "main".to_string(),

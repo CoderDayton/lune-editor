@@ -414,6 +414,7 @@ pub struct TabColorsConfig {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct StatusBarConfig {
     pub mode: Option<StyleDef>,
+    pub brand: Option<StyleDef>,
     pub info: Option<StyleDef>,
     pub bg: Option<StyleDef>,
 }
@@ -532,6 +533,7 @@ impl ThemeConfig {
 
         // ── Status bar ───────────────────────────────────────────
         apply_style(self.status_bar.mode.as_ref(), &mut t.status_mode);
+        apply_style(self.status_bar.brand.as_ref(), &mut t.status_brand);
         apply_style(self.status_bar.info.as_ref(), &mut t.status_info);
         apply_style(self.status_bar.bg.as_ref(), &mut t.status_bg);
 
@@ -581,7 +583,12 @@ fn apply_color(src: Option<&String>, target: &mut Color) {
 /// Apply an optional `StyleDef` override to a target `Style`.
 fn apply_style(src: Option<&StyleDef>, target: &mut Style) {
     if let Some(sdef) = src {
-        *target = sdef.to_style();
+        // Merge, don't replace: only the fields the override actually sets
+        // take effect. An override of just `fg` keeps the base `bg`, and
+        // modifiers are added to (not swapped for) the base ones. This is
+        // ratatui's `patch` semantics, so partial theme overrides compose
+        // instead of silently wiping unspecified attributes.
+        *target = target.patch(sdef.to_style());
     }
 }
 
@@ -934,6 +941,33 @@ accent = "#FF0000"
         // Non-overridden fields should match the dark base
         assert_eq!(theme.fg, Theme::dark().fg);
         assert_eq!(theme.diff_add_fg, Theme::dark().diff_add_fg);
+    }
+
+    #[test]
+    fn style_override_merges_onto_base() {
+        // Setting only `fg` on a status-bar style must keep the base `bg`
+        // (and base modifiers), rather than wiping them — see `apply_style`.
+        let toml_str = r##"
+name = "Merge"
+base = "dark"
+
+[status_bar]
+bg = { fg = "#FF0000" }
+mode = { modifiers = "italic" }
+"##;
+        let config: ThemeConfig = toml::from_str(toml_str).unwrap();
+        let (theme, _) = config.compile();
+        let base = Theme::dark();
+
+        // `bg` override set only fg: fg changes, base bg is preserved.
+        assert_eq!(theme.status_bg.fg, Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(theme.status_bg.bg, base.status_bg.bg);
+
+        // `mode` override added italic on top of the base bold + colors.
+        assert_eq!(theme.status_mode.fg, base.status_mode.fg);
+        assert_eq!(theme.status_mode.bg, base.status_mode.bg);
+        assert!(theme.status_mode.add_modifier.contains(Modifier::BOLD));
+        assert!(theme.status_mode.add_modifier.contains(Modifier::ITALIC));
     }
 
     #[test]

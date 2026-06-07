@@ -2,7 +2,7 @@
 source: crates/lune-ui/tests/snapshot_widgets.rs
 expression: buffer_to_text(&buf)
 ---
-┌ SOURCE CONTROL ─────────────────┐
+╭ SOURCE CONTROL ─────────────────╮
 │ ⎇ main                          │
 │ Staged Changes (2)              │
 │ M src/main.rs                   │
@@ -13,4 +13,4 @@ expression: buffer_to_text(&buf)
 │                                 │
 │                                 │
 │ s/u stage  c commit  d discard  │
-└─────────────────────────────────┘
+╰─────────────────────────────────╯

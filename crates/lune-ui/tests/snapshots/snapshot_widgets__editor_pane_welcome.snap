@@ -2,7 +2,6 @@
 source: crates/lune-ui/tests/snapshot_widgets.rs
 expression: buffer_to_text(&buf)
 ---
-
            ██╗      ██╗   ██╗ ███╗   ██╗ ███████╗
            ██║      ██║   ██║ ████╗  ██║ ██╔════╝
            ██║      ██║   ██║ ██╔██╗ ██║ █████╗
@@ -10,11 +9,12 @@ expression: buffer_to_text(&buf)
            ███████╗ ╚██████╔╝ ██║ ╚████║ ███████╗
            ╚══════╝  ╚═════╝  ╚═╝  ╚═══╝ ╚══════╝
 
-             a minimal terminal editor · v0.1.0
+            an agentic terminal editor · v0.1.0
 
               ╭ shortcuts ───────────────────╮
-              │ Ctrl+P Command palette       │
-              │ Ctrl+B Toggle file tree      │
-              │ Ctrl+` Toggle agents tab     │
-              │ Ctrl+Q Quit                  │
+              │ C-o Open file                │
+              │ C-p Command palette          │
+              │ C-b Toggle file tree         │
+              │ C-` Toggle agents tab        │
+              │ C-q Quit                     │
               ╰──────────────────────────────╯

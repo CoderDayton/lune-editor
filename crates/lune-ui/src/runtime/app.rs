@@ -1384,6 +1384,7 @@ impl AppState {
         StatusLineState {
             mode: self.vim.mode,
             vim_enabled: self.vim_enabled,
+            has_buffer: self.active_buf().is_some(),
             file_path,
             dirty,
             cursor_line,
@@ -3700,15 +3701,10 @@ mod tests {
     }
 
     #[test]
-    fn editor_top_border_aligns_with_file_tree_top_border() {
-        // file_tree and the editor pane both wrap their content in
-        // bordered Blocks; the top borders must share a row.  Pre-fix,
-        // the editor's block was drawn after a 1-row tab strip, so its
-        // top border floated at row 1 while file_tree's sat at row 0.
-        //
-        // With the block hoisted to wrap the whole center column, the
-        // top border lives at row 0 of the center and the tab strip
-        // moves to row 1 (inside the block).
+    fn editor_and_file_tree_frames_align_below_tab_strip() {
+        // The tab strip occupies row 0; the editor frame starts at
+        // row 1 just below it.  The file-tree frame is dropped by the
+        // same offset so the two panes' top borders line up.
         let mut state = AppState::new();
         state.layout.show_file_tree = true;
 
@@ -3719,47 +3715,41 @@ mod tests {
         let splits = state.last_splits.as_ref().expect("splits stored").clone();
         let left = splits.left.expect("file tree visible");
         let center = splits.center;
-        assert_eq!(left.y, 0);
-        assert_eq!(center.y, 0);
 
-        // file_tree's top-left corner of its block.
-        let ft_top = buf
-            .cell((left.x, left.y))
-            .map(|c| c.symbol().to_string())
-            .unwrap_or_default();
-        assert!(
-            ft_top == "┌" || ft_top == "─",
-            "file_tree top-left at row {}: {ft_top:?}",
-            left.y
-        );
+        // Both frames drop below the tab strip and align.
+        let frame_row = center.y + 1;
+        assert_eq!(left.y, frame_row, "file tree frame dropped to align");
 
-        // Editor's top border with Borders::ALL: top-left corner at
-        // the first cell, horizontal rule continuing inward.
-        let editor_top_left = buf
-            .cell((center.x, center.y))
+        let ft_corner = buf
+            .cell((left.x, frame_row))
             .map(|c| c.symbol().to_string())
             .unwrap_or_default();
         assert_eq!(
-            editor_top_left, "┌",
-            "editor top-left corner expected at row {} col {}, got {editor_top_left:?}",
-            center.y, center.x
+            ft_corner, "╭",
+            "file tree top-left corner expected at row {frame_row}, got {ft_corner:?}"
         );
-        let editor_top_mid = buf
-            .cell((center.x + 1, center.y))
+
+        let editor_corner = buf
+            .cell((center.x, frame_row))
             .map(|c| c.symbol().to_string())
             .unwrap_or_default();
         assert_eq!(
-            editor_top_mid, "─",
-            "editor top rule expected just inside the left corner, got {editor_top_mid:?}"
+            editor_corner, "╭",
+            "editor top-left corner expected at row {frame_row}, got {editor_corner:?}"
+        );
+
+        // Bottoms align too: both frames share the same area height.
+        assert_eq!(
+            left.y + left.height,
+            center.y + center.height,
+            "file tree and editor frames must share a bottom edge"
         );
     }
 
     #[test]
-    fn editor_tab_strip_renders_inside_block_at_row_one() {
-        // After the block wraps the whole center column, row 0 is the
-        // top border and row 1 is the tab strip.  Pre-fix the order
-        // was reversed (tab strip on row 0, top border on row 1).
-        // This test pins the row roles independently of tab_mgr state.
+    fn editor_tab_strip_renders_above_frame() {
+        // Row 0 is the tab strip; the editor's Borders::ALL box begins
+        // directly below it at row 1.
         let mut state = AppState::new();
         let area = Rect::new(0, 0, 80, 12);
         let mut buf = Buffer::empty(area);
@@ -3767,50 +3757,38 @@ mod tests {
 
         let center = state.last_splits.as_ref().unwrap().center;
 
-        // Row 0 across the center column with Borders::ALL: corners
+        // Row 0: tab strip — no border glyph at the first cell.
+        let row0 = buf
+            .cell((center.x, center.y))
+            .map(|c| c.symbol().to_string())
+            .unwrap_or_default();
+        assert!(
+            row0 != "╭" && row0 != "│",
+            "row 0 col {} must be the tab strip, not a border, got {row0:?}",
+            center.x
+        );
+
+        // Row 1 across the center column with Borders::ALL: corners
         // bracket the row, horizontal rules fill between.
         let last_x = center.x + center.width - 1;
+        let border_row = center.y + 1;
         for x in center.x..=last_x {
             let sym = buf
-                .cell((x, center.y))
+                .cell((x, border_row))
                 .map(|c| c.symbol().to_string())
                 .unwrap_or_default();
             let expected = if x == center.x {
-                "┌"
+                "╭"
             } else if x == last_x {
-                "┐"
+                "╮"
             } else {
                 "─"
             };
             assert_eq!(
                 sym, expected,
-                "row {} col {x}: expected {expected:?}, got {sym:?}",
-                center.y
+                "row {border_row} col {x}: expected {expected:?}, got {sym:?}"
             );
         }
-
-        // Row 1 is the tab strip inside the block. The first and last
-        // cells are the block's vertical sides; between them, the tab
-        // strip itself starts (never with a horizontal rule).
-        let left_side = buf
-            .cell((center.x, center.y + 1))
-            .map(|c| c.symbol().to_string())
-            .unwrap_or_default();
-        assert_eq!(
-            left_side, "│",
-            "row 1 col {} must be the block's left side, got {left_side:?}",
-            center.x
-        );
-        let tab_strip_start = buf
-            .cell((center.x + 1, center.y + 1))
-            .map(|c| c.symbol().to_string())
-            .unwrap_or_default();
-        assert_ne!(
-            tab_strip_start,
-            "─",
-            "row 1 col {} (inside block) must be tab strip, not border",
-            center.x + 1
-        );
     }
 
     #[test]
@@ -3839,10 +3817,20 @@ mod tests {
 
         render_agents_tab(area, &mut buf, &mut state);
 
-        let bottom = row_text(&buf, area, area.height - 1);
-        // Vim is off by default, so the mode label is hidden; the encoding
-        // segment is a stable proof the status bar still renders.
-        assert!(bottom.contains("UTF-8"), "bottom row was {bottom:?}");
+        // Vim is off and no buffer is open, so the bar shows the brand badge
+        // on the left; the badge color plus the painted background prove it
+        // still renders.
+        let y = area.height - 1;
+        let badge_bg = buf.cell((0, y)).and_then(|c| c.style().bg);
+        assert_eq!(
+            badge_bg, state.theme.status_brand.bg,
+            "brand badge must paint the bottom-left of the status bar"
+        );
+        let bar_bg = buf.cell((area.width - 2, y)).and_then(|c| c.style().bg);
+        assert_eq!(
+            bar_bg, state.theme.status_bg.bg,
+            "status bar background must paint the bottom row"
+        );
     }
 
     #[test]
@@ -3917,10 +3905,20 @@ mod tests {
         let mut buf = Buffer::empty(area);
         render_agents_tab(area, &mut buf, &mut state);
 
-        let bottom = row_text(&buf, area, area.height - 1);
-        // Vim is off by default, so the mode label is hidden; the encoding
-        // segment is a stable proof the status bar still renders.
-        assert!(bottom.contains("UTF-8"), "bottom row was {bottom:?}");
+        // Vim is off and no buffer is open, so the bar shows the brand badge
+        // on the left; the badge color plus the painted background prove it
+        // still renders.
+        let y = area.height - 1;
+        let badge_bg = buf.cell((0, y)).and_then(|c| c.style().bg);
+        assert_eq!(
+            badge_bg, state.theme.status_brand.bg,
+            "brand badge must paint the bottom-left of the status bar"
+        );
+        let bar_bg = buf.cell((area.width - 2, y)).and_then(|c| c.style().bg);
+        assert_eq!(
+            bar_bg, state.theme.status_bg.bg,
+            "status bar background must paint the bottom row"
+        );
     }
 
     #[test]

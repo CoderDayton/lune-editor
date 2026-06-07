@@ -1,6 +1,5 @@
 ---
 source: crates/lune-ui/tests/snapshot_widgets.rs
-assertion_line: 240
 expression: buffer_to_text(&buf)
 ---
- test.rs x
+ ○ test.rs x

@@ -1,9 +1,9 @@
 //! Status bar widget.
 //!
 //! Renders a single-row status bar at the bottom of the editor showing:
-//! - Left: vim mode indicator, file path, dirty indicator
-//! - Center: cursor position (Ln/Col)
-//! - Right: git branch, encoding, file type, AI status
+//! - Left: vim mode, file path, cursor position, file type, line ending,
+//!   and encoding — clustered together, micro-editor style
+//! - Right: git branch and AI status
 
 use crate::primitives::{Buffer, Line, Rect, Span, StatefulWidget, Widget};
 
@@ -17,18 +17,20 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 ///
 /// This prevents extremely long absolute paths from dominating the full line.
 const MAX_STATUS_PATH_CHARS: usize = 120;
-/// Fixed width for the cursor segment (`Ln X, Col Y` + optional selection).
-const CURSOR_SEGMENT_WIDTH: usize = 24;
-/// Fixed width for the line ending segment.
-const LINE_ENDING_SEGMENT_WIDTH: usize = 4;
 /// Fixed width for the git branch segment.
 const BRANCH_SEGMENT_WIDTH: usize = 16;
-/// Fixed width for the encoding segment.
-const ENCODING_SEGMENT_WIDTH: usize = 7;
-/// Fixed width for the file type segment.
-const FILETYPE_SEGMENT_WIDTH: usize = 8;
 /// Fixed width for the AI status segment.
 const AI_SEGMENT_WIDTH: usize = 12;
+/// Separator drawn between status segments.
+const SEG_SEP: &str = " │ ";
+/// Brand badge shown in the prefix slot on the empty welcome bar — rendered
+/// like the vim mode badge but in its own color (`status_brand`). The
+/// surrounding spaces give it the same padded-box look as ` NORMAL `.
+const BRAND_BADGE: &str = " Lune Editor ";
+/// Left-cluster hint shown when no buffer is open, so the status bar reads
+/// as a discoverable welcome line instead of a blank strip. Chords mirror
+/// the default keymap (see `runtime/keybindings.rs`).
+const EMPTY_STATE_HINT: &str = "C-o open file │ C-p palette │ C-b explorer";
 
 // ── Status line state ─────────────────────────────────────────────────
 
@@ -50,6 +52,11 @@ pub struct StatusLineState {
     pub file_path: String,
     /// Whether the current buffer is dirty.
     pub dirty: bool,
+    /// Whether an editable buffer is currently open. Drives the welcome /
+    /// empty state: when `false` the bar shows the brand badge and hint
+    /// instead of mode + path. Kept distinct from `cursor_line` so the
+    /// empty state never depends on the cursor happening to read as 0.
+    pub has_buffer: bool,
     /// Cursor position: line number (1-based).
     pub cursor_line: usize,
     /// Cursor position: column number (1-based).
@@ -111,41 +118,61 @@ pub fn render_status_bar(
         cell.set_style(theme.status_bg);
     }
 
-    // The mode indicator only makes sense in vim mode. With vim disabled the
-    // editor is always in direct-input state, so the label is hidden — the
-    // rest of the bar already handles an empty mode segment gracefully.
-    let mode_label: &str = if status.vim_enabled {
-        mode_string(status.mode)
+    // Prefix badge: the vim mode while editing a buffer, otherwise the brand
+    // badge on the empty welcome bar. They never co-occur — no buffer means
+    // no mode — so a single slot renders whichever applies. With vim disabled
+    // and a buffer open the slot is empty (no modal state to show).
+    let no_buffer = !status.has_buffer;
+    let (badge_label, badge_style): (&str, _) = if status.vim_enabled && !no_buffer {
+        (mode_string(status.mode), theme.status_mode)
+    } else if no_buffer {
+        (BRAND_BADGE, theme.status_brand)
     } else {
-        ""
+        ("", theme.status_mode)
     };
     let dirty_mark = if status.dirty { " [+]" } else { "" };
 
-    let mut left_text = if status.message.is_empty() {
+    // ── Left cluster (micro-editor style) ─────────────────────────────
+    // `path (Ln,Col) │ ft:type │ LF │ UTF-8`.  A transient message takes
+    // priority over the file path; the meta tail only shows when a buffer
+    // is open.
+    let primary = if !status.message.is_empty() {
+        status.message.clone()
+    } else if no_buffer {
+        // No buffer open: show the welcome hint so the bar is never blank.
+        EMPTY_STATE_HINT.to_string()
+    } else {
         let path = truncate_path_with_ellipsis(&status.file_path, MAX_STATUS_PATH_CHARS);
         format!("{path}{dirty_mark}")
-    } else {
-        status.message.clone()
     };
 
-    // Build right-side segments using fixed widths so core components keep
-    // stable positions regardless of left-path length.
-    let cursor_text = if status.cursor_line > 0 {
+    let mut left_text = primary;
+    if status.has_buffer {
+        let mut pos = format!(" ({},{})", status.cursor_line, status.cursor_col);
         if status.selection_chars > 0 {
-            format!(
-                "Ln {}, Col {} ({} sel)",
-                status.cursor_line, status.cursor_col, status.selection_chars
-            )
-        } else {
-            format!("Ln {}, Col {}", status.cursor_line, status.cursor_col)
+            use std::fmt::Write as _;
+            let _ = write!(pos, " {} sel", status.selection_chars);
         }
-    } else {
-        String::new()
-    };
-    let mut right_segments = Vec::with_capacity(6);
-    if !cursor_text.is_empty() {
-        right_segments.push(fixed_segment(&cursor_text, CURSOR_SEGMENT_WIDTH, true));
+        left_text.push_str(&pos);
+
+        let mut meta: Vec<String> = Vec::with_capacity(3);
+        if !status.file_type.trim().is_empty() {
+            meta.push(format!("ft:{}", status.file_type.to_lowercase()));
+        }
+        if !status.line_ending.is_empty() {
+            meta.push(status.line_ending.to_string());
+        }
+        if !status.encoding.trim().is_empty() {
+            meta.push(status.encoding.to_string());
+        }
+        if !meta.is_empty() {
+            left_text.push_str(SEG_SEP);
+            left_text.push_str(&meta.join(SEG_SEP));
+        }
     }
+
+    // ── Right cluster: git branch and AI status ───────────────────────
+    let mut right_segments = Vec::with_capacity(2);
     if !status.git_branch.trim().is_empty() {
         // Reserve 2 leading cells for the throbber when the git op is
         // busy: the BRAILLE_SIX_DOUBLE throbber renders as a glyph plus a
@@ -157,27 +184,6 @@ pub fn render_status_bar(
             status.git_branch.clone()
         };
         right_segments.push(fixed_segment(&branch, BRANCH_SEGMENT_WIDTH, false));
-    }
-    if !status.encoding.trim().is_empty() {
-        right_segments.push(fixed_segment(
-            status.encoding,
-            ENCODING_SEGMENT_WIDTH,
-            false,
-        ));
-    }
-    if !status.line_ending.is_empty() {
-        right_segments.push(fixed_segment(
-            status.line_ending,
-            LINE_ENDING_SEGMENT_WIDTH,
-            false,
-        ));
-    }
-    if !status.file_type.trim().is_empty() {
-        right_segments.push(fixed_segment(
-            &status.file_type,
-            FILETYPE_SEGMENT_WIDTH,
-            false,
-        ));
     }
     if !status.ai_status.trim().is_empty() {
         // Reserve 2 leading cells for the throbber when busy: it renders
@@ -196,7 +202,7 @@ pub fn render_status_bar(
         right_segments.clear();
     }
 
-    let right_text = right_segments.join(" | ");
+    let right_text = right_segments.join(SEG_SEP);
 
     // Calculate spacing and clamp left text to available width.
     //
@@ -205,10 +211,10 @@ pub fn render_status_bar(
     // `.chars().count()` underestimates the painted width and lets the
     // right segments overflow the line. See lune `unicode_width` use in
     // `editor_pane.rs` for the same invariant.
-    let mode_width = display_width(mode_label);
-    let separator = if mode_label.is_empty() { "" } else { " " };
+    let badge_width = display_width(badge_label);
+    let separator = if badge_label.is_empty() { "" } else { " " };
     let right_width = display_width(&right_text);
-    let prefix_width = mode_width + display_width(separator);
+    let prefix_width = badge_width + display_width(separator);
     // Keep at least one spacer column before right-side info.
     let max_left = line_area
         .width
@@ -220,8 +226,8 @@ pub fn render_status_bar(
         .saturating_sub(prefix_width + left_width + right_width);
 
     let mut spans = Vec::with_capacity(7);
-    if !mode_label.is_empty() {
-        spans.push(Span::styled(mode_label, theme.status_mode));
+    if !badge_label.is_empty() {
+        spans.push(Span::styled(badge_label, badge_style));
         spans.push(Span::from(" "));
     }
     spans.push(Span::from(left_text));
@@ -248,31 +254,14 @@ pub fn render_status_bar(
         // width; segments are joined by `" | "` (3 cells). We re-derive
         // the cumulative left edge of the git and AI segments here so a
         // spinner can be overlaid on the first cell of each.
+        // Git is the first right segment now; AI follows it, separated
+        // by SEG_SEP (3 cells).  Cursor and meta info live on the left.
         let right_x = line_area.x + prefix_width + left_width + spacer_width;
-        let git_x = if status.cursor_line > 0 {
-            right_x.saturating_add(CURSOR_SEGMENT_WIDTH as u16 + 3)
-        } else {
+        let git_x = right_x;
+        let ai_x = if status.git_branch.trim().is_empty() {
             right_x
-        };
-        let after_git = if status.git_branch.trim().is_empty() {
-            git_x
         } else {
-            git_x.saturating_add(BRANCH_SEGMENT_WIDTH as u16 + 3)
-        };
-        let after_encoding = if status.encoding.trim().is_empty() {
-            after_git
-        } else {
-            after_git.saturating_add(ENCODING_SEGMENT_WIDTH as u16 + 3)
-        };
-        let after_line_ending = if status.line_ending.is_empty() {
-            after_encoding
-        } else {
-            after_encoding.saturating_add(LINE_ENDING_SEGMENT_WIDTH as u16 + 3)
-        };
-        let ai_x = if status.file_type.trim().is_empty() {
-            after_line_ending
-        } else {
-            after_line_ending.saturating_add(FILETYPE_SEGMENT_WIDTH as u16 + 3)
+            right_x.saturating_add(BRANCH_SEGMENT_WIDTH as u16 + 3)
         };
 
         let spinner = Throbber::default()

@@ -1,0 +1,5 @@
+---
+source: crates/lune-ui/tests/snapshot_widgets.rs
+expression: text
+---
+ Lune Editor  C-o open file │ C-p palette │ C-b explorer        main

@@ -2,11 +2,11 @@
 source: crates/lune-ui/tests/snapshot_widgets.rs
 expression: buffer_to_text(&buf)
 ---
-┌ my-project ────────────────┐
+╭ my-project ────────────────╮
 │                            │
 │                            │
 │                            │
 │          No files          │
 │                            │
 │                            │
-└────────────────────────────┘
+╰────────────────────────────╯

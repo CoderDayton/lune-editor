@@ -6,7 +6,7 @@
 //! collapses that into one helper pair, so adding a new panel — or
 //! changing the focus color scheme — only touches one place.
 
-use crate::primitives::{Block, Borders, Line, Modifier, Span, Style};
+use crate::primitives::{Block, BorderType, Borders, Line, Modifier, Span, Style};
 use crate::theme::Theme;
 
 /// Build a focus-aware bordered Block.
@@ -23,6 +23,7 @@ pub fn panel_block<'a>(theme: &Theme, is_focused: bool, borders: Borders) -> Blo
     };
     Block::default()
         .borders(borders)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(color))
 }
 

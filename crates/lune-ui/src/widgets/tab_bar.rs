@@ -4,7 +4,7 @@
 //! highlighting, dirty indicators, and close buttons. Supports overflow
 //! with scroll indicators and mouse click handling.
 
-use crate::primitives::{Buffer, Line, Rect, Span, Stylize, Widget, symbols};
+use crate::primitives::{Buffer, Color, Line, Rect, Span, Stylize, Widget, symbols};
 
 use lune_core::prelude::*;
 
@@ -138,11 +138,11 @@ impl TabManager {
     /// Compute the display width of a tab label.
     #[allow(clippy::cast_possible_truncation)]
     fn tab_label_width(tab: &TabEntry) -> u16 {
-        // " filename [+] x " or " filename x "
-        let base = tab.title.len() + 2; // " filename "
-        let dirty = if tab.dirty { 4 } else { 0 }; // "[+] "
+        // " ● filename x " — leading state circle, title, close button.
+        let circle = 3; // " ● "
+        let title = tab.title.len() + 1; // "filename "
         let close = 2; // "x "
-        (base + dirty + close) as u16
+        (circle + title + close) as u16
     }
 }
 
@@ -165,7 +165,9 @@ pub fn render_tab_bar(
     }
 
     if tab_mgr.tabs.is_empty() {
-        Line::from(Span::from(" No open files ").dim()).render(area, buf);
+        // No open buffers: leave the strip blank rather than showing a
+        // placeholder — the empty row reads as intentional breathing
+        // room above the editor frame.
         return;
     }
 
@@ -214,6 +216,46 @@ pub fn render_tab_bar(
     Line::from(spans).render(area, buf);
 }
 
+/// Visual state of a tab's leading status circle.
+///
+/// The circle gives an at-a-glance view of the buffer's save state:
+/// a filled circle marks unsaved changes, a hollow circle marks a clean
+/// (saved) buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabIndicator {
+    /// Buffer has unsaved changes — filled circle.
+    Modified,
+    /// Buffer is clean / saved — hollow circle.
+    Clean,
+}
+
+impl TabIndicator {
+    /// Derive the indicator state from a tab entry.
+    const fn for_tab(tab: &TabEntry) -> Self {
+        if tab.dirty {
+            Self::Modified
+        } else {
+            Self::Clean
+        }
+    }
+
+    /// The glyph drawn for this state.
+    const fn glyph(self) -> &'static str {
+        match self {
+            Self::Modified => "●",
+            Self::Clean => "○",
+        }
+    }
+
+    /// Foreground color used when the tab is not the focused-active tab.
+    const fn color(self, theme: &Theme) -> Color {
+        match self {
+            Self::Modified => theme.git_modified,
+            Self::Clean => theme.fg_dim,
+        }
+    }
+}
+
 /// Build styled spans for a single tab entry.
 fn build_tab_spans<'a>(
     tab: &TabEntry,
@@ -232,10 +274,22 @@ fn build_tab_spans<'a>(
         theme.tab_inactive
     };
 
-    // " title"
-    let dirty_mark = if tab.dirty { " [+]" } else { "" };
-    let prefix = format!(" {}{dirty_mark} ", tab.title);
-    spans.push(Span::styled(prefix, base_style));
+    // Leading state circle. On the focused-active tab the bright accent
+    // background already provides contrast, so the glyph keeps the tab's
+    // base color; elsewhere it carries its own status color.
+    let indicator = TabIndicator::for_tab(tab);
+    let circle_style = if is_active && is_focused {
+        base_style
+    } else {
+        base_style.fg(indicator.color(theme))
+    };
+    spans.push(Span::styled(
+        format!(" {} ", indicator.glyph()),
+        circle_style,
+    ));
+
+    // "title "
+    spans.push(Span::styled(format!("{} ", tab.title), base_style));
 
     // "x "
     spans.push(Span::styled("x ", base_style));
@@ -268,7 +322,7 @@ mod tests {
         mgr.tabs.push(make_tab("lib.rs", false));
         mgr.active_index = 0;
 
-        // First tab starts at x=0, label " main.rs x " = 11 chars.
+        // First tab starts at x=0, label " ○ main.rs x " = 13 chars.
         let result = mgr.hit_test(0, 0, 80);
         assert!(result.is_some());
         let (idx, _is_close) = result.unwrap();
@@ -278,15 +332,15 @@ mod tests {
     #[test]
     fn tab_label_width_dirty() {
         let tab = make_tab("test.rs", true);
-        // " test.rs [+] " = 13, "x " = 2 => 15
-        assert_eq!(TabManager::tab_label_width(&tab), 15);
+        // " ● test.rs x " — circle width is fixed, independent of dirty state.
+        assert_eq!(TabManager::tab_label_width(&tab), 13);
     }
 
     #[test]
     fn tab_label_width_clean() {
         let tab = make_tab("test.rs", false);
-        // " test.rs " = 9, "x " = 2 => 11
-        assert_eq!(TabManager::tab_label_width(&tab), 11);
+        // " ○ test.rs x " = 13
+        assert_eq!(TabManager::tab_label_width(&tab), 13);
     }
 
     #[test]
@@ -296,9 +350,9 @@ mod tests {
         mgr.tabs.push(make_tab("b.rs", false));
         mgr.active_index = 0;
 
-        // First tab: " a.rs x " = width 8.
+        // First tab: " ○ a.rs x " = width 10.
         let first_width = TabManager::tab_label_width(&mgr.tabs[0]);
-        assert_eq!(first_width, 8);
+        assert_eq!(first_width, 10);
 
         // Hit test at x = first_width (after separator) should hit second tab.
         let result = mgr.hit_test(first_width + 1, 0, 80);

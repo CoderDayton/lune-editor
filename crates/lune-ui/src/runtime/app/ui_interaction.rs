@@ -624,18 +624,12 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             }
         }
 
-        // The tab strip lives at row `center.y + 1` — the first row
-        // inside the editor's Borders::ALL block (row `center.y` is
-        // the block's top border). With ALL borders, the strip is
-        // also inset by 1 column on each side (the block's vertical
-        // sides), so the clickable region is `center.x + 1 .. center.x + width - 1`.
-        if row == splits.center.y.saturating_add(1) && splits.center.width >= 2 {
-            let tab_area = Rect::new(
-                splits.center.x.saturating_add(1),
-                splits.center.y.saturating_add(1),
-                splits.center.width.saturating_sub(2),
-                1,
-            );
+        // The tab strip lives at the very top row of the center column
+        // (`center.y`), above the editor's Borders::ALL box.  It spans
+        // the full width with no border inset, so the clickable region
+        // is `center.x .. center.x + width`.
+        if row == splits.center.y && splits.center.width >= 1 {
+            let tab_area = Rect::new(splits.center.x, splits.center.y, splits.center.width, 1);
             if let Some((idx, is_close)) = state.tab_mgr.hit_test(col, tab_area.x, tab_area.width) {
                 if is_close {
                     if let Some(bid) = state.tab_mgr.buffer_at(idx) {
@@ -1239,12 +1233,10 @@ mod tests {
 
     #[test]
     fn click_on_editor_tab_strip_row_switches_buffer() {
-        // After the block hoist, the editor's tab strip lives at
-        // `center.y + 1` (the first row inside the block, below the
-        // top border).  A click at that row on a tab label must
-        // activate that buffer.  Pre-fix the handler watched row
-        // `center.y`, so this click landed on the new top-border row
-        // and never reached the tab handler.
+        // The editor's tab strip lives at the top row of the center
+        // column (`center.y`), above the bordered editor box and with
+        // no left-border inset.  A click at that row on a tab label
+        // must activate that buffer.
         let mut state = AppState::new();
 
         // Two scratch buffers → two tabs; first is active.
@@ -1268,10 +1260,10 @@ mod tests {
 
         let center = state.last_splits.as_ref().unwrap().center;
 
-        // Each scratch tab labels "Untitled" → width " Untitled x " =
-        // 12 cells, separator = 1.  Click inside the second tab.
-        let tab_row = center.y + 1;
-        let click_col = center.x + 12 + 1 + 3; // start of tab 2 + 3 chars in
+        // Each scratch tab labels "Untitled" → width " ○ Untitled x "
+        // = 14 cells, separator = 1.  Click inside the second tab.
+        let tab_row = center.y;
+        let click_col = center.x + 14 + 1 + 3; // start of tab 2 + 3 chars in
         let click = MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: click_col,

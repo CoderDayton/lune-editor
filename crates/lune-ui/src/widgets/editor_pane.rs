@@ -1226,11 +1226,11 @@ const BANNER_HEIGHT: u16 = 6;
 /// Rotating tip pool — one is shown per UTC day at the bottom of the
 /// welcome screen. Order is stable so users see the same tip all day.
 const TIPS: &[&str] = &[
-    "Ctrl+P opens the command palette — fuzzy-find any action.",
-    "Ctrl+B toggles the file tree.",
-    "Ctrl+` opens the agents tab.",
-    "Ctrl+\\ splits the current pane.",
-    "Ctrl+Shift+P jumps to a file by name.",
+    "C-p opens the command palette — fuzzy-find any action.",
+    "C-b toggles the file tree.",
+    "C-` opens the agents tab.",
+    "C-\\ splits the current pane.",
+    "C-S-p jumps to a file by name.",
     "Drop a file onto the terminal to open it in a new tab.",
 ];
 
@@ -1259,11 +1259,11 @@ fn render_welcome(area: Rect, buf: &mut Buffer, theme: &Theme, info: Option<&Wel
     let recent_rows = recent.len().min(5) as u16;
     // Panel = 2 (borders) + N content lines. Two side-by-side panels
     // share the same height; cap to the taller content (shortcuts always
-    // has 4 lines; recent has up to 5).
+    // has 5 lines; recent has up to 5).
     let panel_inner = if show_recent {
-        4u16.max(recent_rows)
+        5u16.max(recent_rows)
     } else {
-        4
+        5
     };
     let panel_height = panel_inner + 2;
 
@@ -1283,7 +1283,10 @@ fn render_welcome(area: Rect, buf: &mut Buffer, theme: &Theme, info: Option<&Wel
     }
 
     // ── Tagline + version ───────────────────────────────────────
-    let tagline = format!("a minimal terminal editor · v{}", env!("CARGO_PKG_VERSION"));
+    let tagline = format!(
+        "an agentic terminal editor · v{}",
+        env!("CARGO_PKG_VERSION")
+    );
     let tagline_y = start_y + BANNER_HEIGHT + 1;
     let tagline_w = UnicodeWidthStr::width(tagline.as_str()) as u16;
     let tagline_x = area.x + area.width.saturating_sub(tagline_w) / 2;
@@ -1345,10 +1348,10 @@ fn render_welcome_minimal(area: Rect, buf: &mut Buffer, theme: &Theme) {
         "",
         "Open a file to get started",
         "",
-        "Ctrl+P  Command Palette",
-        "Ctrl+B  Toggle File Tree",
-        "Ctrl+`  Toggle Agents Tab",
-        "Ctrl+Q  Quit",
+        "C-p  Command Palette",
+        "C-b  Toggle File Tree",
+        "C-`  Toggle Agents Tab",
+        "C-q  Quit",
     ];
 
     let start_y = area.y + area.height.saturating_sub(messages.len() as u16) / 2;
@@ -1383,14 +1386,15 @@ fn render_shortcuts_panel(area: Rect, buf: &mut Buffer, theme: &Theme) {
     block.render(area, buf);
 
     let rows: &[(&str, &str)] = &[
-        ("Ctrl+P", "Command palette"),
-        ("Ctrl+B", "Toggle file tree"),
-        ("Ctrl+`", "Toggle agents tab"),
-        ("Ctrl+Q", "Quit"),
+        ("C-o", "Open file"),
+        ("C-p", "Command palette"),
+        ("C-b", "Toggle file tree"),
+        ("C-`", "Toggle agents tab"),
+        ("C-q", "Quit"),
     ];
     let key_style = Style::new().fg(theme.accent).add_modifier(Modifier::BOLD);
     let txt_style = Style::new().fg(theme.fg);
-    let key_col_w = 7u16; // "Ctrl+`" is 6 chars + 1 space
+    let key_col_w = 4u16; // longest key "C-`" is 3 chars + 1 space
 
     for (i, (k, v)) in rows.iter().take(inner.height as usize).enumerate() {
         let y = inner.y + i as u16;
@@ -2093,8 +2097,8 @@ mod tests {
             for x in area.x..area.x + area.width {
                 let sym = buf[(x, y)].symbol();
                 assert_ne!(sym, "─", "no horizontal rule at ({x},{y})");
-                assert_ne!(sym, "┌", "no top-left corner at ({x},{y})");
-                assert_ne!(sym, "┐", "no top-right corner at ({x},{y})");
+                assert_ne!(sym, "╭", "no top-left corner at ({x},{y})");
+                assert_ne!(sym, "╮", "no top-right corner at ({x},{y})");
             }
         }
     }

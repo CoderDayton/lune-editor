@@ -2,4 +2,4 @@
 source: crates/lune-ui/tests/snapshot_widgets.rs
 expression: buffer_to_text(&buf)
 ---
- main.rs x │ lib.rs [+] x │ utils.rs x │ config.rs [+] x
+ ○ main.rs x │ ● lib.rs x │ ○ utils.rs x │ ● config.rs x

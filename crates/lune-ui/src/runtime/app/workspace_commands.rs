@@ -339,7 +339,7 @@ fn open_file_routed(path: &std::path::Path, state: &mut AppState) -> (Control<Ap
     if is_image_path(path) {
         state.overlay.open_image_preview(path, &state.image_decoder);
         state.focus.focus(PanelId::CommandPalette);
-        state.status_message = format!("Previewing: {}", path.display());
+        state.status_message = format!("Previewing: {}", state.status_path_display(path));
         return (Control::Changed, false);
     }
     match state.open_file(path) {
@@ -347,7 +347,7 @@ fn open_file_routed(path: &std::path::Path, state: &mut AppState) -> (Control<Ap
             state.set_root_tab(RootTab::Editor);
             state.focus.focus(PanelId::Editor);
             state.viewport_follow_cursor = true;
-            state.status_message = format!("Opened: {}", path.display());
+            state.status_message = format!("Opened: {}", state.status_path_display(path));
             (Control::Changed, true)
         }
         Err(e) => {

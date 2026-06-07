@@ -17,17 +17,29 @@ pub(super) fn render_editor_tab(area: Rect, buf: &mut Buffer, state: &mut AppSta
     state.last_agents_content_area = None;
     state.last_agent_pane_rects.clear();
 
-    let splits = layout::compute_layout(area, &state.layout);
+    let mut splits = layout::compute_layout(area, &state.layout);
+    // Drop the file-tree frame by the same offset the editor frame uses
+    // (tab strip + gap) so the two panes' top and bottom borders align.
+    if let Some(left) = splits.left.as_mut() {
+        let shift = EDITOR_FRAME_TOP_OFFSET.min(left.height);
+        left.y += shift;
+        left.height -= shift;
+    }
     state.last_splits = Some(splits.clone());
 
     if let Some(left_area) = splits.left {
-        let ws_name = state.workspace.as_ref().map_or("EXPLORER", Workspace::name);
+        // Uppercase the workspace name so the panel title reads like a
+        // header (e.g. "LUNE-EDITOR"), matching the "EXPLORER" fallback.
+        let ws_name = state
+            .workspace
+            .as_ref()
+            .map_or_else(|| "EXPLORER".to_string(), |w| w.name().to_uppercase());
         let ft_focused = state.focus.is_focused(PanelId::FileTree);
         file_tree::render_file_tree(
             left_area,
             buf,
             &mut state.file_tree,
-            ws_name,
+            &ws_name,
             ft_focused,
             &state.theme,
         );
@@ -62,35 +74,45 @@ pub(super) fn render_editor_tab(area: Rect, buf: &mut Buffer, state: &mut AppSta
     );
 }
 
+/// Rows reserved above the editor frame inside the center column: the
+/// tab strip plus an optional gap of `EDITOR_FRAME_TOP_OFFSET - 1` rows.
+/// The file-tree frame is dropped by the same amount in
+/// `render_editor_tab` so the two panes' top borders stay aligned.
+const EDITOR_FRAME_TOP_OFFSET: u16 = 1;
+
 fn render_center(area: Rect, buf: &mut Buffer, state: &mut AppState, is_focused: bool) {
-    if area.height < 2 {
+    if area.height <= EDITOR_FRAME_TOP_OFFSET {
         return;
     }
 
-    // Wrap the entire center column (tab strip + editor) in one
-    // focus-aware Block with ALL borders.  Closing the box on the
-    // left and right means the editor reads as its own pane — the
-    // file_tree's right `│` and the editor's left `│` sit in adjacent
-    // columns (a deliberate `││` seam rather than a shared single
-    // line) so each pane has a complete frame even when the panes
-    // don't otherwise visually connect.
-    let block = crate::widgets::panel::panel_block(&state.theme, is_focused, Borders::ALL);
-    let inner = block.inner(area);
-    block.render(area, buf);
-
-    if inner.height < 1 {
-        return;
-    }
-
-    let chunks = Layout::default()
+    // The tab strip sits *above* the editor frame.  Split the center
+    // column into the tab row, an optional gap (`EDITOR_FRAME_TOP_OFFSET
+    // - 1` rows), and the bordered editor box below; the box keeps all
+    // four borders so the editor reads as its own pane (the file_tree's
+    // right `│` and this box's left `│` sit in adjacent columns — a
+    // deliberate `││` seam).
+    let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
-        .split(inner);
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(EDITOR_FRAME_TOP_OFFSET - 1),
+            Constraint::Min(0),
+        ])
+        .split(area);
 
-    let tab_area = chunks[0];
-    let content_area = chunks[1];
+    let tab_area = outer[0];
+    let editor_box = outer[2];
 
+    // Tabs sit in row 0; `outer[1]` is the optional gap above the frame.
     tab_bar::render_tab_bar(tab_area, buf, &state.tab_mgr, is_focused, &state.theme);
+
+    let block = crate::widgets::panel::panel_block(&state.theme, is_focused, Borders::ALL);
+    let content_area = block.inner(editor_box);
+    block.render(editor_box, buf);
+
+    if content_area.height < 1 {
+        return;
+    }
 
     // Compute `highlighted` with an explicit `if let` instead of a
     // closure so the returned borrow flows cleanly out of the scope

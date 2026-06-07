@@ -146,6 +146,10 @@ pub struct Theme {
     // ── Status bar ────────────────────────────────────────────────
     /// Style for the mode indicator segment (e.g. NORMAL, INSERT).
     pub status_mode: Style,
+    /// Style for the brand badge shown on the empty welcome bar. Rendered
+    /// like the mode badge but in a distinct color so it is not mistaken
+    /// for a vim mode.
+    pub status_brand: Style,
     /// Style for informational segments (file path, position).
     pub status_info: Style,
     /// Base background style for the status bar.
@@ -283,7 +287,10 @@ impl Theme {
             diff_hunk_fg: teal,
 
             // Tab bar
-            tab_active_focused: Style::new().fg(accent).add_modifier(Modifier::BOLD),
+            tab_active_focused: Style::new()
+                .fg(base)
+                .bg(accent)
+                .add_modifier(Modifier::BOLD),
             tab_active_unfocused: Style::new()
                 .fg(text)
                 .bg(surface0)
@@ -295,6 +302,7 @@ impl Theme {
                 .fg(base)
                 .bg(accent)
                 .add_modifier(Modifier::BOLD),
+            status_brand: Style::new().fg(base).bg(mauve).add_modifier(Modifier::BOLD),
             status_info: Style::new().fg(subtext0),
             status_bg: Style::new().fg(subtext0).bg(mantle),
 
@@ -388,7 +396,10 @@ impl Theme {
             diff_hunk_fg: teal,
 
             // Tab bar
-            tab_active_focused: Style::new().fg(accent).add_modifier(Modifier::BOLD),
+            tab_active_focused: Style::new()
+                .fg(base)
+                .bg(accent)
+                .add_modifier(Modifier::BOLD),
             tab_active_unfocused: Style::new()
                 .fg(text)
                 .bg(surface0)
@@ -400,6 +411,7 @@ impl Theme {
                 .fg(base)
                 .bg(accent)
                 .add_modifier(Modifier::BOLD),
+            status_brand: Style::new().fg(base).bg(mauve).add_modifier(Modifier::BOLD),
             status_info: Style::new().fg(subtext0),
             status_bg: Style::new().fg(subtext0).bg(mantle),
 
@@ -497,7 +509,7 @@ mod tests {
     #[test]
     fn tab_active_focused_uses_accent_color() {
         let t = Theme::dark();
-        assert_eq!(t.tab_active_focused.fg, Some(t.accent));
+        assert_eq!(t.tab_active_focused.bg, Some(t.accent));
         assert!(t.tab_active_focused.add_modifier.contains(Modifier::BOLD));
     }
 
