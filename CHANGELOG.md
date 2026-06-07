@@ -12,7 +12,8 @@ All notable changes to Lune Editor are documented here.
 - Per-hunk git staging, unstaging, and discarding via unified diff patches
 - Find & replace overlay with live search highlighting (Ctrl+F / Ctrl+H)
 - File operation inline input dialogs (create file/dir, rename, delete)
-- Notification fade-out animation with block-character progress bar
+- Toast notifications with a thick left accent bar and bold, left-aligned
+  text; they slide in with a subtle overshoot and fade out on expiry
 - Diff fade-in animation for newly added lines in the editor gutter
 - Language selector overlay with fuzzy filter (Ctrl+L)
 - Root Editor / Agents tab switcher (Ctrl+1 / Ctrl+2)
@@ -27,6 +28,19 @@ All notable changes to Lune Editor are documented here.
   of hex digits (`add`, `dad`) are no longer misread as colors
 - Markdown highlighting: fenced code blocks now style the ``` delimiter
   lines rather than the whole block body
+- Refreshed the built-in **Lune Dark** and **Lune Light** palettes (warmer
+  and more cohesive) and recolored syntax highlighting to share the same
+  hues, so code and UI read as one theme
+- Every popup overlay now renders through one shared modal frame for a
+  uniform look; find & replace sits in the top-right corner and no longer
+  dims the editor behind it
+- The editor background now fills the whole window, including the gaps
+  between panels, instead of the terminal's own background
+- Status bar "Lune Editor" badge now uses the accent color
+
+### Removed
+- Border-character customization (the `[borders]` theme table) — it was
+  never used for rendering; panels draw Ratatui's rounded borders directly
 
 ## [0.1.0] — Initial release
 

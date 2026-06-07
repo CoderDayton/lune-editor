@@ -23,8 +23,8 @@ impl SyntaxTheme {
     pub fn dark() -> Self {
         let mut styles = [Style::default(); STYLE_COUNT];
 
-        // GitHub × Gruvbox-soft — the same six accent hues the UI chrome
-        // uses, so code and chrome read as a single cohesive theme.
+        // Lune Dark syntax palette — the same six accent hues the UI
+        // chrome uses, so code and chrome read as a single cohesive theme.
         styles[HighlightStyle::Keyword as usize] =
             Style::new().fg(hex("#e67e80")).add_modifier(Modifier::BOLD); // red
         styles[HighlightStyle::Type as usize] = Style::new().fg(hex("#dbbc7f")); // yellow
@@ -55,8 +55,8 @@ impl SyntaxTheme {
     pub fn light() -> Self {
         let mut styles = [Style::default(); STYLE_COUNT];
 
-        // GitHub × Gruvbox-soft (light) — the same six accent hues the
-        // light UI chrome uses.
+        // Lune Light syntax palette — the same six accent hues the light
+        // UI chrome uses.
         styles[HighlightStyle::Keyword as usize] =
             Style::new().fg(hex("#c14a3d")).add_modifier(Modifier::BOLD); // red
         styles[HighlightStyle::Type as usize] = Style::new().fg(hex("#b07d2b")); // yellow

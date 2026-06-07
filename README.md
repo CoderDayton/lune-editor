@@ -306,23 +306,12 @@ The diff view (`widgets/diff_view.rs`) renders inline unified diffs with syntax-
 
 ## Themes
 
-Themes are TOML files in `~/.config/lune-editor/themes/`. The built-in **Lune Dark** theme is the default.
+Two themes ship with Lune — **Lune Dark** (default) and **Lune Light** —
+switch with `Ctrl+T` or `theme = "Lune Light"` in your config. Drop your
+own TOML themes in `~/.config/lune-editor/themes/`.
 
-```toml
-# ~/.config/lune-editor/themes/my-theme.toml
-[colors]
-background   = "#1e1e2e"
-foreground   = "#cdd6f4"
-cursor       = "#f5e0dc"
-selection    = "#313244"
-keyword      = "#cba6f7"
-string       = "#a6e3a1"
-comment      = "#6c7086"
-function     = "#89b4fa"
-type_name    = "#f9e2af"
-```
-
-Switch themes: `Ctrl+T` (cycle) or set `theme = "My Theme"` in config.
+See the **[theming guide](docs/theming.md)** for the built-in themes, the
+full config schema, and how to write a custom theme.
 
 ---
 

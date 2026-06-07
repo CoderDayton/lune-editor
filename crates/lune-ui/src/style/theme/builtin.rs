@@ -6,10 +6,9 @@ use super::Theme;
 impl Theme {
     /// The built-in dark theme.
     ///
-    /// A GitHub-dark structure (neutral cool-gray surfaces) carrying
-    /// Gruvbox-soft warm content colors (warm off-white text, desaturated
-    /// olive/amber/coral accents). Uses a consistent RGB palette for
-    /// predictable rendering across terminals.
+    /// Neutral cool-gray surfaces carrying warm content colors — a warm
+    /// off-white text and desaturated olive/amber/coral accents. Uses a
+    /// consistent RGB palette for predictable rendering across terminals.
     ///
     /// All style methods on `ratatui_core::style::Style` are `const fn`
     /// in ratatui-core 0.1, so this constructor is fully const-evaluable.
@@ -124,8 +123,8 @@ impl Theme {
 
     /// Built-in light theme.
     ///
-    /// A GitHub-light "paper" structure with Gruvbox-soft warm accents,
-    /// for terminals with a light background. Consistent RGB palette.
+    /// A warm "paper" background with desaturated warm accents, for
+    /// terminals with a light background. Consistent RGB palette.
     pub const fn light() -> Self {
         // ── Palette ──────────────────────────────────────────────
         let base = hex("#f4f0e6"); // background (warm paper)

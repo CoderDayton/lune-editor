@@ -9,6 +9,7 @@ Lune documentation is organized by purpose:
 ## Start Here
 
 - Spec: `docs/specs/sdd.md`
+- Theming guide: `docs/theming.md`
 - Testing guide: `docs/guides/testing.md`
 - Implementation plan index: `docs/plans/sdd/00-index.md`
 
@@ -16,6 +17,7 @@ Lune documentation is organized by purpose:
 
 ```text
 docs/
+├── theming.md
 ├── guides/
 │   └── testing.md
 ├── plans/
