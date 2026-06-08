@@ -11,6 +11,20 @@
 cargo build
 ```
 
+### Faster local builds
+
+Optionally add `.cargo/config.toml` in the repo root:
+
+```toml
+[build]
+rustflags = ["-C", "target-cpu=native"]   # native CPU features for dev builds
+
+# mold linker (Linux), if installed:
+# [target.x86_64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+```
+
 ## Test
 
 ```bash

@@ -163,7 +163,7 @@ Test on each terminal emulator. Record pass/fail per terminal.
 - [ ] Verify recovery prompt appears with correct file list
 - [ ] Accept recovery, verify unsaved changes restored
 
-**Expected:** State database preserves workspace state, recovery is seamless.
+**Expected:** State database preserves workspace state, recovery works.
 
 ### 9. Vim and mouse coexistence
 
