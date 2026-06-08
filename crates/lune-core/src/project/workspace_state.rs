@@ -99,10 +99,10 @@ impl WorkspaceState {
     pub fn prune_missing_files(&mut self) {
         let root = self.root.clone();
         self.open_files.retain(|rel| root.join(rel).exists());
-        if let Some(ref active) = self.active_file {
-            if !root.join(active).exists() {
-                self.active_file = None;
-            }
+        if let Some(ref active) = self.active_file
+            && !root.join(active).exists()
+        {
+            self.active_file = None;
         }
         self.cursor_positions
             .retain(|rel, _| root.join(rel).exists());

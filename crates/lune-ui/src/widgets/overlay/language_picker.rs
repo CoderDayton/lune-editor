@@ -55,7 +55,7 @@ impl LanguagePickerState {
     }
 
     /// Move selection down (wraps).
-    pub fn select_next(&mut self) {
+    pub const fn select_next(&mut self) {
         if self.filtered.is_empty() {
             return;
         }

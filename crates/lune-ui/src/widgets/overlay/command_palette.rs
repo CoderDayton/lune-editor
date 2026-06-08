@@ -71,7 +71,7 @@ impl CommandPaletteState {
     }
 
     /// Move selection up.
-    pub fn select_prev(&mut self) {
+    pub const fn select_prev(&mut self) {
         if !self.filtered_commands.is_empty() {
             self.selected = if self.selected == 0 {
                 self.filtered_commands.len() - 1
@@ -82,7 +82,7 @@ impl CommandPaletteState {
     }
 
     /// Move selection down.
-    pub fn select_next(&mut self) {
+    pub const fn select_next(&mut self) {
         if !self.filtered_commands.is_empty() {
             self.selected = (self.selected + 1) % self.filtered_commands.len();
         }

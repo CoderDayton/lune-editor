@@ -91,13 +91,13 @@ impl KvStore {
 /// cannot return.
 impl Drop for KvStore {
     fn drop(&mut self) {
-        if self.dirty {
-            if let Err(e) = self.flush() {
-                log::warn!(
-                    "kv-store: final flush failed for {}: {e}",
-                    self.path.display()
-                );
-            }
+        if self.dirty
+            && let Err(e) = self.flush()
+        {
+            log::warn!(
+                "kv-store: final flush failed for {}: {e}",
+                self.path.display()
+            );
         }
     }
 }
@@ -201,7 +201,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(s: &str) -> anyhow::Result<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         anyhow::bail!("odd-length hex");
     }
     let mut out = Vec::with_capacity(s.len() / 2);

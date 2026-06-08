@@ -566,13 +566,13 @@ pub(super) fn find_prev_match(state: &mut AppState) -> Control<AppEvent> {
 }
 
 fn navigate_to_current_match(state: &mut AppState) {
-    if let Some(idx) = state.overlay.find_replace.search_state.current_match {
-        if let Some(&(start, _end)) = state.overlay.find_replace.search_state.matches.get(idx) {
-            if let Some(buf) = state.active_buf_mut() {
-                buf.cursor.primary = Selection::cursor(start);
-            }
-            state.viewport_follow_cursor = true;
+    if let Some(idx) = state.overlay.find_replace.search_state.current_match
+        && let Some(&(start, _end)) = state.overlay.find_replace.search_state.matches.get(idx)
+    {
+        if let Some(buf) = state.active_buf_mut() {
+            buf.cursor.primary = Selection::cursor(start);
         }
+        state.viewport_follow_cursor = true;
     }
 }
 

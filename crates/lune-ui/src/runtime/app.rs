@@ -290,7 +290,7 @@ pub struct AppState {
     pub quit_confirm: ConfirmDialogState,
     /// "Discard unsaved changes?" confirmation for closing a single
     /// dirty tab. Opened by [`AppCommand::CloseTab`], the tab close
-    /// button, and `Ctrl+W`; Confirm closes [`Self::pending_close`].
+    /// button, and `Ctrl+W`; Confirm closes `Self::pending_close`.
     pub close_confirm: ConfirmDialogState,
     /// Buffer awaiting a decision while [`Self::close_confirm`] is open.
     pending_close: Option<BufferId>,
@@ -336,7 +336,7 @@ pub struct AppState {
     /// adapter in a later slice.
     persistence_port: SharedPersistencePort,
     /// Shared throbber animation state — advanced once per render in
-    /// [`ui_render::render_editor_tab`] / [`agent_tab::render`] so all
+    /// `ui_render::render_editor_tab` / `agent_tab::render` so all
     /// "busy" spinners (AI status, git fetch/push) tick in lockstep.
     pub throbber_state: throbber_widgets_tui::ThrobberState,
 
@@ -762,7 +762,7 @@ impl AppState {
     /// Persist all in-flight reactive state to the database.
     ///
     /// Writes workspace state (open files, cursor positions, layout) and
-    /// per-file undo history. Called from [`maybe_persist_state`] on a
+    /// per-file undo history. Called from `maybe_persist_state` on a
     /// debounced timer during the event loop and once from the exit path
     /// as a final flush before the DB is closed.
     ///
@@ -773,10 +773,10 @@ impl AppState {
         }
         if let Some(mut wstate) = self.collect_workspace_state() {
             wstate.touch();
-            if let Some(db) = self.state_db_mut() {
-                if let Err(e) = db.put_workspace(&wstate) {
-                    log::warn!("failed to persist workspace state: {e}");
-                }
+            if let Some(db) = self.state_db_mut()
+                && let Err(e) = db.put_workspace(&wstate)
+            {
+                log::warn!("failed to persist workspace state: {e}");
             }
         }
         self.persist_undo_history();
@@ -848,12 +848,12 @@ impl AppState {
 
         // Cursor positions keyed by relative path.
         for &id in &self.session.tabs {
-            if let Some(buf) = self.session.registry.get(id) {
-                if let Some(ref path) = buf.file_path {
-                    let rel = make_relative(path, &root);
-                    let pos = &buf.cursor.primary.head;
-                    wstate.cursor_positions.insert(rel, (pos.line, pos.col));
-                }
+            if let Some(buf) = self.session.registry.get(id)
+                && let Some(ref path) = buf.file_path
+            {
+                let rel = make_relative(path, &root);
+                let pos = &buf.cursor.primary.head;
+                wstate.cursor_positions.insert(rel, (pos.line, pos.col));
             }
         }
 
@@ -886,10 +886,10 @@ impl AppState {
         // Open files in order.
         for rel in &wstate.open_files {
             let abs = root.join(rel);
-            if abs.exists() {
-                if let Err(e) = self.open_file(&abs) {
-                    log::warn!("restore: failed to open {}: {e}", abs.display());
-                }
+            if abs.exists()
+                && let Err(e) = self.open_file(&abs)
+            {
+                log::warn!("restore: failed to open {}: {e}", abs.display());
             }
         }
 
@@ -900,10 +900,10 @@ impl AppState {
         if let Some(ref active_rel) = wstate.active_file {
             let abs = root.join(active_rel);
             let key = std::fs::canonicalize(&abs).unwrap_or(abs);
-            if let Some(id) = self.session.registry.by_path(&key) {
-                if self.session.tabs.contains(&id) {
-                    self.session.active_buffer = Some(id);
-                }
+            if let Some(id) = self.session.registry.by_path(&key)
+                && self.session.tabs.contains(&id)
+            {
+                self.session.active_buffer = Some(id);
             }
         }
 
@@ -939,13 +939,13 @@ impl AppState {
                 };
                 match db.get_undo(&file_path) {
                     Ok(Some(undo_state)) => {
-                        if let Some(buf) = self.session.registry.get_mut(id) {
-                            if !buf.restore_undo_state(undo_state) {
-                                log::debug!(
-                                    "undo state hash mismatch for {}, discarding",
-                                    file_path.display()
-                                );
-                            }
+                        if let Some(buf) = self.session.registry.get_mut(id)
+                            && !buf.restore_undo_state(undo_state)
+                        {
+                            log::debug!(
+                                "undo state hash mismatch for {}, discarding",
+                                file_path.display()
+                            );
                         }
                     }
                     Ok(None) => {}
@@ -1054,23 +1054,23 @@ impl AppState {
         };
         self.recent_files.record_open(&absolute);
         let snapshot = self.recent_files.clone();
-        if let Some(db) = self.state_db_mut() {
-            if let Err(e) = db.put_recent_files(&snapshot) {
-                log::warn!("failed to persist recent files: {e}");
-            }
+        if let Some(db) = self.state_db_mut()
+            && let Err(e) = db.put_recent_files(&snapshot)
+        {
+            log::warn!("failed to persist recent files: {e}");
         }
 
         // Assign a syntax highlighter if we don't already have one for
         // this buffer.  Skip the eager full-buffer `update()` — it runs
         // lazily on first render via `ensure_highlighter_primed`.
-        if !self.highlighters.contains_key(&id) {
-            if let Some(buf) = self.session.registry.get(id) {
-                let first_line = buf.line(0);
-                let lang_id = self.lang_registry.detect(path, first_line.as_deref());
-                if let Some(lid) = lang_id {
-                    let hl = highlight::create_highlighter(lid);
-                    self.highlighters.insert(id, hl);
-                }
+        if !self.highlighters.contains_key(&id)
+            && let Some(buf) = self.session.registry.get(id)
+        {
+            let first_line = buf.line(0);
+            let lang_id = self.lang_registry.detect(path, first_line.as_deref());
+            if let Some(lid) = lang_id {
+                let hl = highlight::create_highlighter(lid);
+                self.highlighters.insert(id, hl);
             }
         }
 
@@ -1187,10 +1187,10 @@ impl AppState {
     /// a directory, reacting to a watcher event, etc). This is cheap —
     /// we reuse the cached port status snapshot.
     pub fn refresh_file_tree(&mut self) {
-        if let Some(ref mut ws) = self.workspace {
-            if let Err(e) = self.file_tree.refresh(ws) {
-                log::error!("Failed to refresh file tree: {e}");
-            }
+        if let Some(ref mut ws) = self.workspace
+            && let Err(e) = self.file_tree.refresh(ws)
+        {
+            log::error!("Failed to refresh file tree: {e}");
         }
         // Re-apply git status from the port's last published snapshot —
         // no sync git call, so this is a pure hashmap scan.
@@ -2771,7 +2771,7 @@ impl rat_salsa::poll::PollEvents<AppEvent, Error> for PollAiSessions {
 /// threads in [`overlay::ImageDecoder::spawn`].
 ///
 /// Holds no data — the actual results live on `AppState::image_decode_rx`
-/// and are drained by [`handle_image_decode_ready`] when this poll
+/// and are drained by `handle_image_decode_ready` when this poll
 /// emits an [`AppEvent::ImageDecodeReady`].
 pub struct PollImageDecode {
     wake: Arc<AtomicBool>,
@@ -5104,10 +5104,11 @@ mod tests {
             let mut n = 0;
             for y in 1..10 {
                 for x in 0..area.width {
-                    if let Some(cell) = buf.cell((x, y)) {
-                        if cell.fg != theme_fg && !cell.symbol().trim().is_empty() {
-                            n += 1;
-                        }
+                    if let Some(cell) = buf.cell((x, y))
+                        && cell.fg != theme_fg
+                        && !cell.symbol().trim().is_empty()
+                    {
+                        n += 1;
                     }
                 }
             }

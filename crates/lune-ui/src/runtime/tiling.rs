@@ -1,6 +1,6 @@
 //! Binary split tree for tiling terminal panes in the Agents tab.
 //!
-//! Each node is either a [`Leaf`] (single pane) or a [`Split`] (two children
+//! Each node is either a `Leaf` (single pane) or a `Split` (two children
 //! separated by a 1-cell border). The tree is recursively subdivided via
 //! [`TileNode::compute_rects`] to produce a `(PaneId, Rect)` for every leaf.
 
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 // ── Identifiers ────────────────────────────────────────────────────────
 
-/// Opaque pane identifier, unique within a single [`AgentsTabState`].
+/// Opaque pane identifier, unique within a single `AgentsTabState`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PaneId(pub u32);
 
@@ -65,7 +65,7 @@ pub enum SavedTileNode {
 /// Serializable mirror of [`lune_ai::session::AiClientKind`] for persistence.
 ///
 /// Kept separate from the AI crate so saved layouts don't introduce a serde
-/// dependency there. Convert via [`From`]/[`to_client_kind`].
+/// dependency there. Convert via [`From`]/`to_client_kind`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SavedPaneKind {
     /// Plain shell.

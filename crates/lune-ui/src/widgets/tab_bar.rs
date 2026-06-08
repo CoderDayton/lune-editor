@@ -137,7 +137,7 @@ impl TabManager {
 
     /// Compute the display width of a tab label.
     #[allow(clippy::cast_possible_truncation)]
-    fn tab_label_width(tab: &TabEntry) -> u16 {
+    const fn tab_label_width(tab: &TabEntry) -> u16 {
         // " ● filename x " — leading state circle, title, close button.
         let circle = 3; // " ● "
         let title = tab.title.len() + 1; // "filename "

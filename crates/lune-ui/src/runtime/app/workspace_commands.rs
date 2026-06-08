@@ -80,12 +80,12 @@ pub(super) fn handle_save_all(state: &mut AppState) -> Control<AppEvent> {
     let mut saved = 0;
     let mut errors = 0;
     for id in ids {
-        if let Some(buf) = state.session.registry.get_mut(id) {
-            if buf.is_dirty() {
-                match buf.save() {
-                    Ok(()) => saved += 1,
-                    Err(_) => errors += 1,
-                }
+        if let Some(buf) = state.session.registry.get_mut(id)
+            && buf.is_dirty()
+        {
+            match buf.save() {
+                Ok(()) => saved += 1,
+                Err(_) => errors += 1,
             }
         }
     }
@@ -122,10 +122,10 @@ fn handle_file_tree_command(cmd: &AppCommand, state: &mut AppState) -> Control<A
         }
         AppCommand::RevealInFileTree(path) => {
             let path = path.clone();
-            if let Some(ref mut ws) = state.workspace {
-                if let Err(e) = state.file_tree.reveal_path(&path, ws) {
-                    log::error!("Failed to reveal path: {e}");
-                }
+            if let Some(ref mut ws) = state.workspace
+                && let Err(e) = state.file_tree.reveal_path(&path, ws)
+            {
+                log::error!("Failed to reveal path: {e}");
             }
             state.refresh_file_tree();
             state.file_tree.select_by_path(&path, 20);
@@ -263,10 +263,10 @@ fn handle_rename(from: &Path, to: &Path, state: &mut AppState) -> Control<AppEve
             Ok(()) => {
                 refreshed = true;
                 for &id in &state.session.tabs {
-                    if let Some(buf) = state.session.registry.get_mut(id) {
-                        if buf.file_path.as_deref() == Some(from) {
-                            buf.file_path = Some(to.to_path_buf());
-                        }
+                    if let Some(buf) = state.session.registry.get_mut(id)
+                        && buf.file_path.as_deref() == Some(from)
+                    {
+                        buf.file_path = Some(to.to_path_buf());
                     }
                 }
                 state
@@ -397,14 +397,14 @@ fn handle_open_config_file(cmd: &AppCommand, state: &mut AppState) -> Control<Ap
         return Control::Changed;
     }
 
-    if !path.exists() {
-        if let Err(e) = std::fs::write(&path, &default_content) {
-            state.overlay.notify(
-                format!("Failed to create {}: {e}", path.display()),
-                NotificationLevel::Error,
-            );
-            return Control::Changed;
-        }
+    if !path.exists()
+        && let Err(e) = std::fs::write(&path, &default_content)
+    {
+        state.overlay.notify(
+            format!("Failed to create {}: {e}", path.display()),
+            NotificationLevel::Error,
+        );
+        return Control::Changed;
     }
 
     handle_open_file(&path, state)

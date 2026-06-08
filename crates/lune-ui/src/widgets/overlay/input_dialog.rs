@@ -119,7 +119,7 @@ impl InputDialogState {
     }
 
     /// Move cursor to the end.
-    pub fn end(&mut self) {
+    pub const fn end(&mut self) {
         self.cursor_pos = self.input.len();
     }
 
@@ -196,15 +196,14 @@ pub(crate) fn render_input_dialog(
     }
 
     // Validation error or hint.
-    if inner.height > 1 {
-        if let Some(err) = state.validate() {
-            if !state.input.is_empty() {
-                Line::from(Span::from(err).fg(theme.notif_error)).render(
-                    Rect::new(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), 1),
-                    buf,
-                );
-            }
-        }
+    if inner.height > 1
+        && let Some(err) = state.validate()
+        && !state.input.is_empty()
+    {
+        Line::from(Span::from(err).fg(theme.notif_error)).render(
+            Rect::new(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), 1),
+            buf,
+        );
     }
 
     // Footer hint.

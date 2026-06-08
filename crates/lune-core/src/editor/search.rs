@@ -19,13 +19,13 @@ pub struct SearchState {
 impl SearchState {
     /// Number of matches found.
     #[must_use]
-    pub fn match_count(&self) -> usize {
+    pub const fn match_count(&self) -> usize {
         self.matches.len()
     }
 
     /// Whether there are any matches.
     #[must_use]
-    pub fn has_matches(&self) -> bool {
+    pub const fn has_matches(&self) -> bool {
         !self.matches.is_empty()
     }
 }
@@ -168,10 +168,10 @@ impl TextBuffer {
     ///
     /// Returns the updated search state (matches are recalculated).
     pub fn replace_current(&mut self, state: &SearchState, replacement: &str) -> SearchState {
-        if let Some(idx) = state.current_match {
-            if let Some(&(start, end)) = state.matches.get(idx) {
-                self.replace(start, end, replacement);
-            }
+        if let Some(idx) = state.current_match
+            && let Some(&(start, end)) = state.matches.get(idx)
+        {
+            self.replace(start, end, replacement);
         }
         // Recalculate matches after replacement.
         self.search(&state.query, state.case_sensitive)

@@ -14,7 +14,7 @@ use coolor::{AnsiColor, Color as CoolColor, Rgb};
 /// This is a `const fn` so it can be used inside `const fn` theme
 /// constructors. Invalid input is a compile-time (or startup) panic —
 /// this is intentional, since these literals are developer-controlled.
-/// For fallible runtime parsing use [`parse_hex`].
+/// For fallible runtime parsing use `parse_hex`.
 ///
 /// # Panics
 /// Panics if `s` is not a valid 3- or 6-digit hex color.
@@ -309,10 +309,10 @@ pub(crate) fn parse_color(s: &str) -> Option<Color> {
     let s = s.trim();
 
     // Hex literals: #rgb and #rrggbb, with or without the leading #.
-    if s.starts_with('#') || is_bare_hex(s) {
-        if let Some(c) = parse_hex(s) {
-            return Some(c);
-        }
+    if (s.starts_with('#') || is_bare_hex(s))
+        && let Some(c) = parse_hex(s)
+    {
+        return Some(c);
     }
 
     // CSS-style functional notation: rgb(r, g, b) and hsl(h, s%, l%).

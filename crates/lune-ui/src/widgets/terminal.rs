@@ -163,15 +163,16 @@ pub fn render_terminal_screen(
         let (cursor_row, cursor_col) = screen.cursor_position();
         let cx = area.x + cursor_col;
         let cy = area.y + cursor_row;
-        if cx < area.x + area.width && cy < area.y + area.height {
-            if let Some(cell) = buf.cell_mut((cx, cy)) {
-                // Invert the cursor cell for visibility.
-                let cursor_style = Style::default()
-                    .fg(theme.bg)
-                    .bg(theme.fg)
-                    .add_modifier(Modifier::SLOW_BLINK);
-                cell.set_style(cursor_style);
-            }
+        if cx < area.x + area.width
+            && cy < area.y + area.height
+            && let Some(cell) = buf.cell_mut((cx, cy))
+        {
+            // Invert the cursor cell for visibility.
+            let cursor_style = Style::default()
+                .fg(theme.bg)
+                .bg(theme.fg)
+                .add_modifier(Modifier::SLOW_BLINK);
+            cell.set_style(cursor_style);
         }
     }
 }

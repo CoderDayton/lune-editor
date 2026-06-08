@@ -387,10 +387,10 @@ fn collect_file_diffs(diff: &Diff<'_>) -> Result<Vec<FileDiff>> {
                 // recently-emitted content line in the current hunk.
                 // The marker itself produces no patch line; the flag
                 // controls whether `to_patch` re-emits the marker.
-                if let Some(h) = file_diff.hunks.last_mut() {
-                    if let Some(last_line) = h.lines.last_mut() {
-                        last_line.no_newline_eof = true;
-                    }
+                if let Some(h) = file_diff.hunks.last_mut()
+                    && let Some(last_line) = h.lines.last_mut()
+                {
+                    last_line.no_newline_eof = true;
                 }
             }
             _ => {

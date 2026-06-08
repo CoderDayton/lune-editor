@@ -30,7 +30,7 @@ pub enum AppEvent {
     /// Application-level command (from keybinding, command palette, etc.).
     Command(AppCommand),
     /// One or more image decode workers have results ready. The handler
-    /// drains the receiver on [`AppState`] and applies stale-filtered
+    /// drains the receiver on `AppState` and applies stale-filtered
     /// results to the image preview overlay.
     ImageDecodeReady,
 }
@@ -260,7 +260,7 @@ pub enum AppCommand {
     /// Toggle zoom on the focused agent pane.
     AgentToggleZoom,
     /// Save the current agent layout, reusing the active saved layout's
-    /// name when one is set. Falls back to [`AgentSaveLayoutAs`] when
+    /// name when one is set. Falls back to `AgentSaveLayoutAs` when
     /// there is no active layout to overwrite.
     AgentSaveLayout,
     /// Always prompt for a new name, even when an active layout exists.

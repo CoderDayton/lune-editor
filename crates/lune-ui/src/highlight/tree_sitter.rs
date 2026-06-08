@@ -498,7 +498,7 @@ fn add_spans_for_byte_range(
 
 /// Check if a language has tree-sitter support.
 ///
-/// Derived from the same match arms as [`load_highlight_config`] to stay
+/// Derived from the same match arms as `load_highlight_config` to stay
 /// in sync without maintaining a duplicate list.
 pub fn has_tree_sitter_support(lang_id: LanguageId) -> bool {
     // The set of supported languages is defined by load_highlight_config's

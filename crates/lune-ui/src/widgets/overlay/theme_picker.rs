@@ -62,7 +62,7 @@ impl ThemePickerState {
     }
 
     /// Move selection down (wraps).
-    pub fn select_next(&mut self) {
+    pub const fn select_next(&mut self) {
         if !self.filtered.is_empty() {
             self.selected = (self.selected + 1) % self.filtered.len();
             self.ensure_visible(10);

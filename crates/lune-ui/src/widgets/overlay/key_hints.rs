@@ -57,7 +57,7 @@ impl KeyHintsState {
     }
 }
 
-/// Curated cheatsheet, mirroring [`Keymap::default_global`].
+/// Curated cheatsheet, mirroring `Keymap::default_global`.
 ///
 /// Update both lists when adding bindings — the cheatsheet is the
 /// user-visible reference, the keymap is the source of truth at

@@ -59,7 +59,7 @@ impl LayoutPickerState {
 
     /// Number of entries that currently pass the filter.
     #[must_use]
-    pub fn filtered_len(&self) -> usize {
+    pub const fn filtered_len(&self) -> usize {
         self.filtered_indices.len()
     }
 
@@ -138,7 +138,7 @@ impl LayoutPickerState {
     }
 
     /// Move selection down (wraps).
-    pub fn select_next(&mut self) {
+    pub const fn select_next(&mut self) {
         let len = self.filtered_indices.len();
         if len != 0 {
             self.selected = (self.selected + 1) % len;

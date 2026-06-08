@@ -309,13 +309,12 @@ fn handle_file_tree_collapse(state: &mut AppState) -> Control<AppEvent> {
 }
 
 fn handle_file_tree_set_expanded(state: &mut AppState, expanded: bool) -> Control<AppEvent> {
-    if state.file_tree.selected_is_dir() {
-        if let Some(path) = state.file_tree.selected_path().map(Path::to_path_buf) {
-            if let Some(ref mut ws) = state.workspace {
-                ws.set_expanded(&path, expanded);
-                state.refresh_file_tree();
-            }
-        }
+    if state.file_tree.selected_is_dir()
+        && let Some(path) = state.file_tree.selected_path().map(Path::to_path_buf)
+        && let Some(ref mut ws) = state.workspace
+    {
+        ws.set_expanded(&path, expanded);
+        state.refresh_file_tree();
     }
     Control::Changed
 }
@@ -404,11 +403,11 @@ fn handle_git_panel_open(state: &AppState) -> Control<AppEvent> {
 }
 
 fn toggle_selected_dir(state: &mut AppState) -> Control<AppEvent> {
-    if let Some(path) = state.file_tree.selected_path().map(Path::to_path_buf) {
-        if let Some(ref mut ws) = state.workspace {
-            ws.toggle_expanded(&path);
-            state.refresh_file_tree();
-        }
+    if let Some(path) = state.file_tree.selected_path().map(Path::to_path_buf)
+        && let Some(ref mut ws) = state.workspace
+    {
+        ws.toggle_expanded(&path);
+        state.refresh_file_tree();
     }
     Control::Changed
 }
@@ -422,14 +421,14 @@ fn handle_mouse_event(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             // dispatching to the per-tab handlers. Otherwise a click on
             // "Editor" while on the Agents tab would be swallowed by the
             // agents pane-focus logic and silently do nothing.
-            if let Some(tab_area) = state.last_root_tabs_area {
-                if point_in_rect(mouse.column, mouse.row, tab_area) {
-                    if let Some(tab) = root_tab_hit_test(mouse.column, tab_area) {
-                        state.set_root_tab(tab);
-                        return Control::Changed;
-                    }
-                    return Control::Continue;
+            if let Some(tab_area) = state.last_root_tabs_area
+                && point_in_rect(mouse.column, mouse.row, tab_area)
+            {
+                if let Some(tab) = root_tab_hit_test(mouse.column, tab_area) {
+                    state.set_root_tab(tab);
+                    return Control::Changed;
                 }
+                return Control::Continue;
             }
             if state.root_tab == RootTab::Agents {
                 return handle_agents_mouse_down(mouse, state);
@@ -668,40 +667,39 @@ fn handle_mouse_click(mouse: MouseEvent, state: &mut AppState) -> Control<AppEve
             return Control::Continue;
         }
 
-        if let Some(left_area) = splits.left {
-            if point_in_rect(col, row, left_area) {
-                state.focus.focus(PanelId::FileTree);
-                let click_count = register_click(state, col, row, 500);
-                if let Some(idx) = state.file_tree.hit_test(row, left_area) {
-                    state.file_tree.selected = idx;
-                    if click_count >= 2 {
-                        state.last_click = None;
-                        return handle_file_tree_enter(state);
-                    }
+        if let Some(left_area) = splits.left
+            && point_in_rect(col, row, left_area)
+        {
+            state.focus.focus(PanelId::FileTree);
+            let click_count = register_click(state, col, row, 500);
+            if let Some(idx) = state.file_tree.hit_test(row, left_area) {
+                state.file_tree.selected = idx;
+                if click_count >= 2 {
+                    state.last_click = None;
+                    return handle_file_tree_enter(state);
                 }
-                return Control::Changed;
             }
+            return Control::Changed;
         }
 
-        if state.layout.show_git_panel {
-            if let Some(right_area) = splits.right {
-                if point_in_rect(col, row, right_area) {
-                    state.focus.focus(PanelId::GitPanel);
-                    let click_count = register_click(state, col, row, 500);
-                    if let Some(idx) = state.git_panel.hit_test(row) {
-                        // Headers aren't selectable; clicking one only
-                        // focuses the panel.
-                        if state.git_panel.entry_is_file(idx) {
-                            state.git_panel.selected = idx;
-                            if click_count >= 2 {
-                                state.last_click = None;
-                                return handle_git_panel_open(state);
-                            }
-                        }
+        if state.layout.show_git_panel
+            && let Some(right_area) = splits.right
+            && point_in_rect(col, row, right_area)
+        {
+            state.focus.focus(PanelId::GitPanel);
+            let click_count = register_click(state, col, row, 500);
+            if let Some(idx) = state.git_panel.hit_test(row) {
+                // Headers aren't selectable; clicking one only
+                // focuses the panel.
+                if state.git_panel.entry_is_file(idx) {
+                    state.git_panel.selected = idx;
+                    if click_count >= 2 {
+                        state.last_click = None;
+                        return handle_git_panel_open(state);
                     }
-                    return Control::Changed;
                 }
             }
+            return Control::Changed;
         }
 
         // The tab strip lives at the very top row of the center column

@@ -108,10 +108,10 @@ impl AiManager {
     /// Close a session by ID. If it's the active session, switches to
     /// another session or sets active to `None`.
     pub fn close_session(&mut self, id: AiSessionId) {
-        if let Some(mut session) = self.sessions.remove(&id) {
-            if session.state() == SessionState::Running {
-                let _ = session.stop();
-            }
+        if let Some(mut session) = self.sessions.remove(&id)
+            && session.state() == SessionState::Running
+        {
+            let _ = session.stop();
         }
         if self.active == Some(id) {
             // Switch to the first remaining session, or None.

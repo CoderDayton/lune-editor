@@ -150,7 +150,7 @@ impl Workspace {
 
     /// List the contents of a directory, returning sorted entries.
     ///
-    /// Results are cached; call [`invalidate`] to force a re-read.
+    /// Results are cached; call `invalidate` to force a re-read.
     /// Directories appear first, then files, both sorted alphabetically
     /// (case-insensitive).
     ///
@@ -166,7 +166,7 @@ impl Workspace {
     }
 
     /// Invalidate the cache for a specific directory, forcing a re-read
-    /// on the next [`list_dir`] call.
+    /// on the next `list_dir` call.
     pub fn invalidate(&mut self, dir: &Path) {
         self.tree_cache.remove(dir);
     }
@@ -271,14 +271,13 @@ impl Workspace {
         let parent = dir.parent()?;
         let entries = self.tree_cache.get_mut(parent)?;
         for entry in entries {
-            if entry.path == dir {
-                if let EntryKind::Directory {
+            if entry.path == dir
+                && let EntryKind::Directory {
                     expanded: ref mut exp,
                 } = entry.kind
-                {
-                    *exp = f(*exp);
-                    return Some(*exp);
-                }
+            {
+                *exp = f(*exp);
+                return Some(*exp);
             }
         }
         None

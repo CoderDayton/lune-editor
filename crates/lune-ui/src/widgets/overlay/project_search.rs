@@ -51,7 +51,7 @@ impl ProjectSearchState {
     }
 
     /// Re-run the search against the cached file list. Queries shorter than
-    /// [`PROJECT_SEARCH_MIN_QUERY`] clear the results.
+    /// `PROJECT_SEARCH_MIN_QUERY` clear the results.
     pub fn update_results(&mut self) {
         if self.query_len() < PROJECT_SEARCH_MIN_QUERY {
             self.results.clear();
@@ -96,7 +96,7 @@ impl ProjectSearchState {
     }
 
     /// Move the selection up, wrapping to the bottom.
-    pub fn select_prev(&mut self) {
+    pub const fn select_prev(&mut self) {
         if !self.results.is_empty() {
             self.selected = if self.selected == 0 {
                 self.results.len() - 1
@@ -107,7 +107,7 @@ impl ProjectSearchState {
     }
 
     /// Move the selection down, wrapping to the top.
-    pub fn select_next(&mut self) {
+    pub const fn select_next(&mut self) {
         if !self.results.is_empty() {
             self.selected = (self.selected + 1) % self.results.len();
         }

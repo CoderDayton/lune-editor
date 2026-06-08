@@ -114,14 +114,12 @@ pub(super) fn agent_pane_term_size(
     if let (Some(area), Some(layout)) = (
         state.last_agents_content_area,
         state.agents_tab.layout.as_ref(),
-    ) {
-        if let Some((_, rect)) = layout
-            .compute_rects(area)
-            .into_iter()
-            .find(|(id, _)| *id == pane_id)
-        {
-            return Some(AiTermSize::new(rect.height.max(1), rect.width.max(1)));
-        }
+    ) && let Some((_, rect)) = layout
+        .compute_rects(area)
+        .into_iter()
+        .find(|(id, _)| *id == pane_id)
+    {
+        return Some(AiTermSize::new(rect.height.max(1), rect.width.max(1)));
     }
 
     state

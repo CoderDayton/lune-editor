@@ -51,7 +51,7 @@ pub struct StatusSnapshot {
     /// notification.
     pub last_error: Option<String>,
     /// Metadata from the most recent successful commit, if any. UI
-    /// renders this as a success notification ("[abc1234] msg").
+    /// renders this as a success notification (`[abc1234] msg`).
     pub last_commit: Option<CommitInfo>,
     /// Monotonic counter — bumps on every publish. UI uses it to detect
     /// changes without deep-comparing the file list.

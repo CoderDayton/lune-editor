@@ -90,7 +90,7 @@ impl Default for SearchOptions {
 
 /// Walk `root` depth-first and collect candidate text-file paths.
 ///
-/// Skips [`IGNORED_DIRS`], hidden entries (leading `.`), and symlinks.
+/// Skips `IGNORED_DIRS`, hidden entries (leading `.`), and symlinks.
 /// Capped at [`DEFAULT_MAX_FILES`]; returned paths are sorted for stable
 /// output.
 #[must_use]
@@ -144,10 +144,10 @@ fn normalize_needle(query: &str, case_sensitive: bool) -> String {
 /// Read one file, applying the shared text-file filters: returns `None`
 /// for oversized, binary (NUL-containing), unreadable, or non-UTF-8 files.
 fn read_text_file(path: &Path, max_file_size: u64) -> Option<String> {
-    if let Ok(meta) = std::fs::metadata(path) {
-        if meta.len() > max_file_size {
-            return None;
-        }
+    if let Ok(meta) = std::fs::metadata(path)
+        && meta.len() > max_file_size
+    {
+        return None;
     }
     let bytes = std::fs::read(path).ok()?;
     // A zero byte is a cheap, reliable "this is not text" signal.

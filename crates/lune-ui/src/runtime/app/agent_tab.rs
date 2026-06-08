@@ -240,10 +240,10 @@ fn render_agent_split_borders(borders: &[tiling::Border], buf: &mut Buffer, stat
 pub(super) fn sync_agent_session_size(session: &mut lune_ai::AiSession, area: Rect) {
     let target = AiTermSize::new(area.height.max(1), area.width.max(1));
     let current = session.screen().size();
-    if current != (target.rows, target.cols) {
-        if let Err(e) = session.resize(target) {
-            log::warn!("Failed to resize agent session {}: {e}", session.id());
-        }
+    if current != (target.rows, target.cols)
+        && let Err(e) = session.resize(target)
+    {
+        log::warn!("Failed to resize agent session {}: {e}", session.id());
     }
 }
 
@@ -252,13 +252,13 @@ pub(super) fn handle_agents_tab_key(key: &KeyEvent, state: &mut AppState) -> Con
         return Control::Continue;
     }
 
-    if let Some(session_id) = state.agents_tab.focused_session() {
-        if let Some(session) = state.ai_manager.session_mut(session_id) {
-            let bytes = key_event_to_bytes(key);
-            if !bytes.is_empty() {
-                let _ = session.send_input(&bytes);
-                return Control::Changed;
-            }
+    if let Some(session_id) = state.agents_tab.focused_session()
+        && let Some(session) = state.ai_manager.session_mut(session_id)
+    {
+        let bytes = key_event_to_bytes(key);
+        if !bytes.is_empty() {
+            let _ = session.send_input(&bytes);
+            return Control::Changed;
         }
     }
 
@@ -575,15 +575,14 @@ fn focused_agent_pane_rect(state: &AppState) -> Option<Rect> {
 }
 
 fn resolved_agent_pane_rects(state: &AppState) -> Vec<(tiling::PaneId, Rect)> {
-    if state.agents_tab.zoomed {
-        if let Some(rects) = state
+    if state.agents_tab.zoomed
+        && let Some(rects) = state
             .agents_tab
             .focused
             .zip(state.last_agents_content_area)
             .map(|(pane_id, rect)| vec![(pane_id, rect)])
-        {
-            return rects;
-        }
+    {
+        return rects;
     }
 
     if let (Some(content_area), Some(layout)) = (
@@ -648,14 +647,14 @@ pub(super) fn handle_agents_mouse_down(
         return Control::Continue;
     };
 
-    if !state.agents_tab.zoomed {
-        if let Some((path, direction)) = layout.hit_test_border(content_area, col, row, 1) {
-            state.agents_tab.drag = Some(DragState {
-                split_path: path,
-                direction,
-            });
-            return Control::Changed;
-        }
+    if !state.agents_tab.zoomed
+        && let Some((path, direction)) = layout.hit_test_border(content_area, col, row, 1)
+    {
+        state.agents_tab.drag = Some(DragState {
+            split_path: path,
+            direction,
+        });
+        return Control::Changed;
     }
 
     let rects = state.last_agent_pane_rects.clone();
@@ -715,13 +714,13 @@ pub(super) fn handle_agents_mouse_drag(
 }
 
 fn key_event_to_bytes(key: &KeyEvent) -> Vec<u8> {
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        if let KeyCode::Char(ch) = key.code {
-            let ctrl = (ch.to_ascii_lowercase() as u8)
-                .wrapping_sub(b'a')
-                .wrapping_add(1);
-            return vec![ctrl];
-        }
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && let KeyCode::Char(ch) = key.code
+    {
+        let ctrl = (ch.to_ascii_lowercase() as u8)
+            .wrapping_sub(b'a')
+            .wrapping_add(1);
+        return vec![ctrl];
     }
 
     match key.code {

@@ -91,7 +91,7 @@ impl ImagePreviewState {
     /// and return the new generation so the caller can hand it to the
     /// worker that will produce the result. Subsequent stale results
     /// (different generation or different path) are dropped by
-    /// [`apply_result`].
+    /// `apply_result`.
     pub fn begin_load(&mut self, path: &Path) -> u64 {
         self.path = Some(path.to_path_buf());
         self.protocol = None;

@@ -129,10 +129,10 @@ fn main() -> Result<()> {
         .or_else(ConfigPaths::resolve);
 
     // Ensure config directories exist on disk.
-    if let Some(ref cp) = config_paths {
-        if let Err(e) = cp.ensure_dirs() {
-            eprintln!("Warning: failed to create config dirs: {e}");
-        }
+    if let Some(ref cp) = config_paths
+        && let Err(e) = cp.ensure_dirs()
+    {
+        eprintln!("Warning: failed to create config dirs: {e}");
     }
 
     // Open the global state database. The per-workspace database is
@@ -201,13 +201,13 @@ fn main() -> Result<()> {
     // the parent directory cannot be created, we fall back to
     // workspace persistence disabled and warn the user via the TUI
     // overlay (stderr is invisible when launched from a desktop launcher).
-    if let (Some(db), Some(root)) = (state_db.as_mut(), workspace_root.as_deref()) {
-        if let Err(e) = db.attach_workspace(root) {
-            state.set_startup_warning(format!(
+    if let (Some(db), Some(root)) = (state_db.as_mut(), workspace_root.as_deref())
+        && let Err(e) = db.attach_workspace(root)
+    {
+        state.set_startup_warning(format!(
                 "Workspace state disabled for {}: {e}. Another Lune instance may be editing this workspace.",
                 root.display()
             ));
-        }
     }
 
     // Warn when the global state DB is unavailable (recent workspaces +
@@ -284,17 +284,17 @@ fn main() -> Result<()> {
     // Final reactive save: workspace state + undo history (complements the
     // debounced mid-session saves). Then flush the state DB to disk.
     state.persist_full_state();
-    if let Some(db) = state.state_db_mut() {
-        if let Err(e) = db.flush() {
-            eprintln!("Warning: failed to flush state database: {e}");
-        }
+    if let Some(db) = state.state_db_mut()
+        && let Err(e) = db.flush()
+    {
+        eprintln!("Warning: failed to flush state database: {e}");
     }
 
     // Clear crash recovery (clean exit = no recovery needed).
-    if let Some(ref cp) = config_paths {
-        if let Err(e) = RecoveryState::clear(cp) {
-            eprintln!("Warning: failed to clear recovery state: {e}");
-        }
+    if let Some(ref cp) = config_paths
+        && let Err(e) = RecoveryState::clear(cp)
+    {
+        eprintln!("Warning: failed to clear recovery state: {e}");
     }
 
     Ok(())

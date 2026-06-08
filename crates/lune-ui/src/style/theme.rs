@@ -169,7 +169,7 @@ impl Theme {
     }
 
     /// Lift `color` away from its own background by `amount` (`[0, 1]`).
-    /// Inverse of [`dim`]: dark themes lighten toward white, light themes
+    /// Inverse of `dim`: dark themes lighten toward white, light themes
     /// darken toward black. Good for active / emphasized states.
     #[must_use]
     pub fn lift(&self, color: Color, amount: f32) -> Color {

@@ -77,11 +77,11 @@ impl SessionModel {
         &self.tabs
     }
 
-    pub fn tab_count(&self) -> usize {
+    pub const fn tab_count(&self) -> usize {
         self.tabs.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.tabs.is_empty()
     }
 

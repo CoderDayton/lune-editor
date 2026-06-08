@@ -102,7 +102,7 @@ impl FileTreeState {
     }
 
     /// Jump selection to the last entry.
-    pub fn select_last(&mut self) {
+    pub const fn select_last(&mut self) {
         self.selected = self.entries.len().saturating_sub(1);
     }
 
@@ -199,7 +199,7 @@ impl FileTreeState {
 
     /// Reveal a path by expanding all ancestor directories.
     ///
-    /// After calling this, you should call [`refresh`] and then [`select_by_path`].
+    /// After calling this, you should call `refresh` and then `select_by_path`.
     ///
     /// # Errors
     /// Returns an error if ancestor directories cannot be listed.
@@ -236,7 +236,7 @@ impl FileTreeState {
     /// Hit test: given a mouse click position and the render area,
     /// return the index of the clicked entry.
     #[must_use]
-    pub fn hit_test(&self, row: u16, area: Rect) -> Option<usize> {
+    pub const fn hit_test(&self, row: u16, area: Rect) -> Option<usize> {
         // Block with Borders::ALL: top border (with title) at area.y,
         // content starts at area.y + 1, bottom border at area.y + height - 1.
         if row <= area.y || row >= area.y + area.height.saturating_sub(1) {

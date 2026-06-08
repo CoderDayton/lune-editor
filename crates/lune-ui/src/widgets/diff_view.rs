@@ -57,11 +57,11 @@ impl DiffViewState {
 
     /// Jump to the next hunk.
     pub fn next_hunk(&mut self) {
-        if let Some(diff) = &self.diff {
-            if self.current_hunk < diff.hunks.len().saturating_sub(1) {
-                self.current_hunk += 1;
-                self.scroll_to_current_hunk();
-            }
+        if let Some(diff) = &self.diff
+            && self.current_hunk < diff.hunks.len().saturating_sub(1)
+        {
+            self.current_hunk += 1;
+            self.scroll_to_current_hunk();
         }
     }
 

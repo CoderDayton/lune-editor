@@ -121,7 +121,7 @@ impl AiClientPickerState {
     }
 
     /// Move selection up.
-    pub fn select_prev(&mut self) {
+    pub const fn select_prev(&mut self) {
         if !self.entries.is_empty() {
             self.selected = if self.selected == 0 {
                 self.entries.len() - 1
@@ -132,7 +132,7 @@ impl AiClientPickerState {
     }
 
     /// Move selection down.
-    pub fn select_next(&mut self) {
+    pub const fn select_next(&mut self) {
         if !self.entries.is_empty() {
             self.selected = (self.selected + 1) % self.entries.len();
         }

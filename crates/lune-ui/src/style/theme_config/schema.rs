@@ -44,15 +44,15 @@ impl StyleDef {
     /// empty or contain unparseable values.
     pub(super) fn to_style(&self) -> Style {
         let mut style = Style::new();
-        if let Some(ref fg) = self.fg {
-            if let Some(c) = crate::style::color::parse_color(fg) {
-                style = style.fg(c);
-            }
+        if let Some(ref fg) = self.fg
+            && let Some(c) = crate::style::color::parse_color(fg)
+        {
+            style = style.fg(c);
         }
-        if let Some(ref bg) = self.bg {
-            if let Some(c) = crate::style::color::parse_color(bg) {
-                style = style.bg(c);
-            }
+        if let Some(ref bg) = self.bg
+            && let Some(c) = crate::style::color::parse_color(bg)
+        {
+            style = style.bg(c);
         }
         if let Some(ref mods) = self.modifiers {
             style = style.add_modifier(parse_modifiers(mods));

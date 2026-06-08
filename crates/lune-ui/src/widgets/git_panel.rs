@@ -128,7 +128,7 @@ impl GitPanelState {
     }
 
     /// Number of entries (including headers).
-    pub fn entry_count(&self) -> usize {
+    pub const fn entry_count(&self) -> usize {
         self.entries.len()
     }
 

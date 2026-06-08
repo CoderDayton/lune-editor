@@ -48,17 +48,17 @@ pub(super) fn render_editor_tab(area: Rect, buf: &mut Buffer, state: &mut AppSta
     let editor_focused = state.focus.is_focused(PanelId::Editor);
     render_center(splits.center, buf, state, editor_focused);
 
-    if let Some(right_area) = splits.right {
-        if state.layout.show_git_panel {
-            let gp_focused = state.focus.is_focused(PanelId::GitPanel);
-            git_panel::render_git_panel(
-                right_area,
-                buf,
-                &mut state.git_panel,
-                gp_focused,
-                &state.theme,
-            );
-        }
+    if let Some(right_area) = splits.right
+        && state.layout.show_git_panel
+    {
+        let gp_focused = state.focus.is_focused(PanelId::GitPanel);
+        git_panel::render_git_panel(
+            right_area,
+            buf,
+            &mut state.git_panel,
+            gp_focused,
+            &state.theme,
+        );
     }
 
     let status_state = state.build_status_line();

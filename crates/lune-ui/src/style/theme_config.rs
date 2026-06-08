@@ -8,7 +8,7 @@
 //!   color strings and named modifiers.  Parsed once at load time, never
 //!   touched in the render path.
 //!
-//! - **[`Theme`]** (in `crate::theme`) — a flat `Copy` struct (~564 bytes)
+//! - **`Theme`** (in `crate::theme`) — a flat `Copy` struct (~564 bytes)
 //!   of raw `Color` / `Style` values used by every widget every frame.
 //!   Theme switching is a single `usize` index change in the registry.
 //!

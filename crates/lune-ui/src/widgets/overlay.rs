@@ -291,7 +291,7 @@ impl OverlayState {
     /// when the source buffer changes identity.
     ///
     /// Revision-only updates against the same buffer are debounced by
-    /// [`MIN_LIVE_REFRESH_INTERVAL`]: `tui_markdown` runs synchronously on
+    /// `MIN_LIVE_REFRESH_INTERVAL`: `tui_markdown` runs synchronously on
     /// the UI thread and re-parsing on every keystroke can produce
     /// noticeable input lag for large markdown sources. Buffer swaps and
     /// the initial parse always bypass the debounce so newly-opened
@@ -401,12 +401,13 @@ impl OverlayState {
         now: Instant,
     ) {
         let message = message.into();
-        if let Some(last) = self.notifications.last_mut() {
-            if last.level == level && last.message == message {
-                last.count = last.count.saturating_add(1);
-                last.created = now;
-                return;
-            }
+        if let Some(last) = self.notifications.last_mut()
+            && last.level == level
+            && last.message == message
+        {
+            last.count = last.count.saturating_add(1);
+            last.created = now;
+            return;
         }
         self.notifications.push(Notification {
             message,
@@ -456,7 +457,7 @@ impl OverlayState {
     /// notification animation timer so toasts prune and fade on a quiet
     /// terminal without waiting for unrelated input.
     #[must_use]
-    pub fn has_active_notifications(&self) -> bool {
+    pub const fn has_active_notifications(&self) -> bool {
         !self.notifications.is_empty()
     }
 }

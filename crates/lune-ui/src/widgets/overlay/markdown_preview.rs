@@ -32,12 +32,12 @@ pub struct MarkdownPreviewState {
     /// time. `None` only on a defaulted state (before any open call).
     pub rendered: Option<Text<'static>>,
     /// Buffer the cached parse came from. Together with `source_revision`,
-    /// this forms the cache key for [`OverlayState::refresh_markdown_preview`].
+    /// this forms the cache key for `OverlayState::refresh_markdown_preview`.
     pub source_buffer: Option<BufferId>,
     /// Revision of `source_buffer` when the cached parse was produced.
     pub source_revision: Option<RevisionId>,
     /// Wall-clock instant of the last parse. Used by
-    /// [`OverlayState::refresh_markdown_preview`] to debounce per-keystroke
+    /// `OverlayState::refresh_markdown_preview` to debounce per-keystroke
     /// re-parses on the UI thread.
     pub last_parsed_at: Option<Instant>,
 }

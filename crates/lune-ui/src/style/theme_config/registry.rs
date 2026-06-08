@@ -62,13 +62,13 @@ impl ThemeRegistry {
 
     /// Number of loaded themes.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.themes.len()
     }
 
     /// Whether the registry is empty (should never be in practice).
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.themes.is_empty()
     }
 
@@ -126,7 +126,7 @@ impl ThemeRegistry {
     /// Switch to a theme by ID.
     ///
     /// Returns `true` if the switch succeeded (valid ID).
-    pub fn switch(&mut self, id: ThemeId) -> bool {
+    pub const fn switch(&mut self, id: ThemeId) -> bool {
         if id.0 < self.themes.len() {
             self.active = id.0;
             true
@@ -136,7 +136,7 @@ impl ThemeRegistry {
     }
 
     /// Switch to the next theme in the list, wrapping around.
-    pub fn next(&mut self) {
+    pub const fn next(&mut self) {
         if !self.themes.is_empty() {
             self.active = (self.active + 1) % self.themes.len();
         }

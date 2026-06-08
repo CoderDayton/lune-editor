@@ -18,8 +18,8 @@
 //!   - The Agents tab asks the `AiManagerPort` for the list of live
 //!     sessions, spawns new ones, and kills dead ones.
 //!
-//! This mirrors `GitPort`'s split between repo-wide [`StatusSnapshot`]
-//! and per-buffer [`GutterSnapshot`]: the manager-level trait fans out
+//! This mirrors `GitPort`'s split between repo-wide `StatusSnapshot`
+//! and per-buffer `GutterSnapshot`: the manager-level trait fans out
 //! into per-entity snapshot producers.
 
 use std::sync::Arc;
