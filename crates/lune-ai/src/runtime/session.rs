@@ -382,6 +382,7 @@ fn start_reader_thread(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn start_shell_session() {
         let mut session = AiSession::start(
@@ -422,6 +423,7 @@ mod tests {
         session.stop().unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn session_scroll() {
         let mut session = AiSession::start(
@@ -463,6 +465,7 @@ mod tests {
         session.stop().unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn session_resize() {
         let mut session = AiSession::start(
@@ -492,6 +495,7 @@ mod tests {
         assert_eq!(custom.display_name(), "My Tool");
     }
 
+    #[cfg(unix)]
     #[test]
     fn session_detects_exit() {
         let mut session = AiSession::start(

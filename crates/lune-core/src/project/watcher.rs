@@ -58,7 +58,10 @@ impl FileWatcher {
         let (tx, rx) = channel::unbounded();
         let pending = Arc::new(Mutex::new(PendingEvents::new()));
         let pending_clone = Arc::clone(&pending);
-        let root_owned = root.to_path_buf();
+        // Canonicalize so `should_ignore` can strip the root prefix from event
+        // paths: some backends (notably macOS FSEvents) report canonicalized
+        // paths, which would otherwise never match a symlinked watch root.
+        let root_owned = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
 
         // Spawn a debounce flush thread.
         let debounce_dur = debounce;

@@ -226,6 +226,7 @@ mod tests {
         assert_eq!(pty.pixel_height, 0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn spawn_echo_and_read_output() {
         let (mut handle, mut reader) = PtyHandle::spawn(
@@ -253,6 +254,7 @@ mod tests {
         assert!(!handle.is_alive());
     }
 
+    #[cfg(unix)]
     #[test]
     fn spawn_cat_write_and_read() {
         let (mut handle, mut reader) = PtyHandle::spawn(
@@ -281,6 +283,7 @@ mod tests {
         handle.kill().unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn spawn_with_env() {
         let mut env = HashMap::new();
@@ -314,6 +317,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn resize_succeeds() {
         let (mut handle, _reader) = PtyHandle::spawn(

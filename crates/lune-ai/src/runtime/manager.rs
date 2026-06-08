@@ -178,6 +178,7 @@ impl Default for AiManager {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn make_manager_with_shell() -> AiManager {
         let mut mgr = AiManager::new();
         mgr.new_session(
@@ -199,6 +200,7 @@ mod tests {
         assert!(mgr.active_id().is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn start_session_makes_active() {
         let mgr = make_manager_with_shell();
@@ -208,6 +210,7 @@ mod tests {
         assert!(mgr.active_id().is_some());
     }
 
+    #[cfg(unix)]
     #[test]
     fn multiple_sessions() {
         let mut mgr = AiManager::new();
@@ -242,6 +245,7 @@ mod tests {
         mgr.close_all();
     }
 
+    #[cfg(unix)]
     #[test]
     fn close_session_switches_active() {
         let mut mgr = AiManager::new();
@@ -276,6 +280,7 @@ mod tests {
         assert!(mgr.active_id().is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn session_list_returns_all() {
         let mut mgr = AiManager::new();
@@ -302,6 +307,7 @@ mod tests {
         mgr.close_all();
     }
 
+    #[cfg(unix)]
     #[test]
     fn poll_all_works() {
         let mut mgr = make_manager_with_shell();
@@ -318,6 +324,7 @@ mod tests {
         mgr.close_all();
     }
 
+    #[cfg(unix)]
     #[test]
     fn pending_wake_only_flips_when_reader_thread_emits_activity() {
         let mut mgr = make_manager_with_shell();

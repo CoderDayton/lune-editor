@@ -427,7 +427,9 @@ mod tests {
     /// Create a temp directory with a known structure for testing.
     fn setup_test_dir() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::tempdir().expect("failed to create temp dir");
-        let root = tmp.path().to_path_buf();
+        // Canonicalize so comparisons match `Workspace::open`, which resolves
+        // symlinks (e.g. macOS `/var` -> `/private/var` in the temp path).
+        let root = std::fs::canonicalize(tmp.path()).expect("canonicalize temp dir");
 
         // Create structure:
         // root/
