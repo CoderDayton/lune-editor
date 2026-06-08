@@ -291,7 +291,13 @@ mod tests {
     fn rel_names(root: &Path, files: &[PathBuf]) -> Vec<String> {
         files
             .iter()
-            .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().into_owned())
+            .map(|p| {
+                // Normalize to `/` so assertions match on Windows (`\`).
+                p.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
             .collect()
     }
 

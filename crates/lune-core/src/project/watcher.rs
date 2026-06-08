@@ -61,7 +61,7 @@ impl FileWatcher {
         // Canonicalize so `should_ignore` can strip the root prefix from event
         // paths: some backends (notably macOS FSEvents) report canonicalized
         // paths, which would otherwise never match a symlinked watch root.
-        let root_owned = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let root_owned = canonical_root(root);
 
         // Spawn a debounce flush thread.
         let debounce_dur = debounce;
@@ -121,6 +121,20 @@ impl FileWatcher {
     pub const fn receiver(&self) -> &Receiver<WatchEvent> {
         &self.rx
     }
+}
+
+/// Canonicalize the watch root so it lines up with the paths the backend
+/// reports for events.
+///
+/// On Windows `canonicalize` returns a `\\?\` verbatim path, but the backend
+/// reports plain paths — strip the prefix so `should_ignore` can match.
+fn canonical_root(root: &Path) -> PathBuf {
+    let canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let stripped = canon
+        .to_str()
+        .and_then(|s| s.strip_prefix(r"\\?\"))
+        .map(PathBuf::from);
+    stripped.unwrap_or(canon)
 }
 
 /// Check whether a path should be ignored.

@@ -49,10 +49,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --locked
+      # --no-fail-fast: run every crate's tests so all failures surface at
+      # once instead of stopping at the first failing crate.
+      - run: cargo test --workspace --locked --no-fail-fast
       - name: Long-running (ignored) tests
         if: runner.os == 'Linux'
-        run: cargo test --workspace --locked -- --ignored
+        run: cargo test --workspace --locked --no-fail-fast -- --ignored
 
   msrv:
     name: MSRV (1.90)

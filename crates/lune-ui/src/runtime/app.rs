@@ -4060,6 +4060,7 @@ mod tests {
         assert!(state.agents_tab.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn handle_ai_event_cleans_finished_agent_sessions() {
         let mut state = AppState::new();
@@ -4069,7 +4070,7 @@ mod tests {
             .new_session(
                 AiClientKind::Custom {
                     name: "true".to_string(),
-                    command: "/bin/true".to_string(),
+                    command: "/usr/bin/true".to_string(),
                 },
                 None,
                 &std::collections::HashMap::new(),
@@ -4841,6 +4842,7 @@ mod tests {
         state.ai_manager.close_all();
     }
 
+    #[cfg(unix)]
     #[test]
     fn applying_saved_layout_threads_pane_kinds_end_to_end() {
         let mut state = AppState::new();
@@ -4858,7 +4860,7 @@ mod tests {
                 Some(tiling::SavedPaneKind::Shell),
                 Some(tiling::SavedPaneKind::Custom {
                     name: "true".to_string(),
-                    command: "/bin/true".to_string(),
+                    command: "/usr/bin/true".to_string(),
                 }),
             ],
         };
@@ -4894,7 +4896,7 @@ mod tests {
             second_kind,
             AiClientKind::Custom {
                 name: "true".to_string(),
-                command: "/bin/true".to_string(),
+                command: "/usr/bin/true".to_string(),
             }
         );
 
