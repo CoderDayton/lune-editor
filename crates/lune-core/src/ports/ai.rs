@@ -40,8 +40,7 @@ impl SessionId {
         use std::time::{SystemTime, UNIX_EPOCH};
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_nanos());
         Self(
             nanos
                 .wrapping_mul(2_862_933_555_777_941_757)

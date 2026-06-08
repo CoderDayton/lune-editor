@@ -92,128 +92,77 @@ fn load_highlight_config(lang_id: LanguageId) -> Option<HighlightConfiguration> 
     let (language_fn, highlights, injections, locals, name) = match lang_id {
         l if l == lang::RUST => (
             tree_sitter_rust::LANGUAGE,
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-rust-0.24.0/queries/highlights.scm"
-            )),
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-rust-0.24.0/queries/injections.scm"
-            )),
+            tree_sitter_rust::HIGHLIGHTS_QUERY,
+            tree_sitter_rust::INJECTIONS_QUERY,
             "",
             "rust",
         ),
         l if l == lang::PYTHON => (
             tree_sitter_python::LANGUAGE,
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-python-0.25.0/queries/highlights.scm"
-            )),
+            tree_sitter_python::HIGHLIGHTS_QUERY,
             "",
             "",
             "python",
         ),
         l if l == lang::JAVASCRIPT || l == lang::JSX => (
             tree_sitter_javascript::LANGUAGE,
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-javascript-0.25.0/queries/highlights.scm"
-            )),
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-javascript-0.25.0/queries/injections.scm"
-            )),
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-javascript-0.25.0/queries/locals.scm"
-            )),
+            tree_sitter_javascript::HIGHLIGHT_QUERY,
+            tree_sitter_javascript::INJECTIONS_QUERY,
+            tree_sitter_javascript::LOCALS_QUERY,
             "javascript",
         ),
         l if l == lang::TYPESCRIPT => (
             tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-typescript-0.23.2/queries/highlights.scm"
-            )),
+            tree_sitter_typescript::HIGHLIGHTS_QUERY,
             "",
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-typescript-0.23.2/queries/locals.scm"
-            )),
+            tree_sitter_typescript::LOCALS_QUERY,
             "typescript",
         ),
         l if l == lang::TSX => (
             tree_sitter_typescript::LANGUAGE_TSX,
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-typescript-0.23.2/queries/highlights.scm"
-            )),
+            tree_sitter_typescript::HIGHLIGHTS_QUERY,
             "",
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-typescript-0.23.2/queries/locals.scm"
-            )),
+            tree_sitter_typescript::LOCALS_QUERY,
             "tsx",
         ),
         l if l == lang::JSON => (
             tree_sitter_json::LANGUAGE,
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-json-0.24.8/queries/highlights.scm"
-            )),
+            tree_sitter_json::HIGHLIGHTS_QUERY,
             "",
             "",
             "json",
         ),
         l if l == lang::C => (
             tree_sitter_c::LANGUAGE,
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-c-0.24.1/queries/highlights.scm"
-            )),
+            tree_sitter_c::HIGHLIGHT_QUERY,
             "",
             "",
             "c",
         ),
         l if l == lang::GO => (
             tree_sitter_go::LANGUAGE,
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-go-0.25.0/queries/highlights.scm"
-            )),
+            tree_sitter_go::HIGHLIGHTS_QUERY,
             "",
             "",
             "go",
         ),
         l if l == lang::HTML => (
             tree_sitter_html::LANGUAGE,
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-html-0.23.2/queries/highlights.scm"
-            )),
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-html-0.23.2/queries/injections.scm"
-            )),
+            tree_sitter_html::HIGHLIGHTS_QUERY,
+            tree_sitter_html::INJECTIONS_QUERY,
             "",
             "html",
         ),
         l if l == lang::CSS => (
             tree_sitter_css::LANGUAGE,
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-css-0.25.0/queries/highlights.scm"
-            )),
+            tree_sitter_css::HIGHLIGHTS_QUERY,
             "",
             "",
             "css",
         ),
         l if l == lang::SHELL => (
             tree_sitter_bash::LANGUAGE,
-            include_str!(concat!(
-                env!("CARGO_HOME"),
-                "/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-bash-0.25.1/queries/highlights.scm"
-            )),
+            tree_sitter_bash::HIGHLIGHT_QUERY,
             "",
             "",
             "bash",

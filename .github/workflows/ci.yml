@@ -29,7 +29,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned (not `stable`): clippy::pedantic + nursery are denied via -D
+      # warnings, and nursery lints change between toolchains — a moving stable
+      # would surface new lints and break CI. Bump deliberately.
+      - uses: dtolnay/rust-toolchain@1.94.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -67,7 +70,8 @@ jobs:
       RUSTDOCFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned for the same reason as clippy: rustdoc lints drift across stable.
+      - uses: dtolnay/rust-toolchain@1.94.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --no-deps
 
