@@ -5,7 +5,7 @@
 **A fast, agentic terminal editor built in Rust.**
 
 [![CI](https://github.com/user/lune-editor/actions/workflows/ci.yml/badge.svg)](https://github.com/user/lune-editor/actions)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.90%2B-orange?logo=rust)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Edition](https://img.shields.io/badge/edition-2024-purple)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 
@@ -42,7 +42,7 @@ It runs entirely in your terminal, starts instantly, and stays out of your way â
 
 ## Quick Start
 
-Requires **Rust 1.85+** (2024 edition) and a C compiler (for tree-sitter and libgit2).
+Requires **Rust 1.90+** (2024 edition) and a C compiler (for tree-sitter and libgit2).
 
 ```bash
 git clone https://github.com/user/lune-editor

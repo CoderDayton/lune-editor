@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Rust 1.85+ (2024 edition)
+- Rust 1.90+ (2024 edition)
 - A C compiler (for tree-sitter and libgit2)
 
 ## Build
