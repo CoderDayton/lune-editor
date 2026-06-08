@@ -8,13 +8,10 @@
 //! ```toml
 //! [normal]
 //! "ctrl+s" = "save"
-//! "ctrl+shift+p" = "command_palette"
-//!
-//! [vim.normal]
-//! "g d" = "go_to_definition"
+//! "ctrl+k a" = "ai_ask_selection"   # a leader chord (Ctrl+K, then a)
 //! ```
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::path::Path;
 
 use crate::primitives::{KeyCode, KeyEvent, KeyModifiers};
@@ -50,10 +47,32 @@ impl KeyCombo {
     }
 }
 
-/// Maps key combos to application commands.
+/// Result of resolving a key sequence against the keymap.
+pub enum KeyMatch<'a> {
+    /// The sequence is a complete binding.
+    Exact(&'a AppCommand),
+    /// The sequence is a prefix of one or more longer bindings (a live leader).
+    Prefix,
+    /// The sequence matches no binding.
+    None,
+}
+
+/// Maps key *sequences* to application commands.
+///
+/// A plain binding is a one-combo sequence; a chord/leader binding (e.g.
+/// `Ctrl+K` then `a`) is a multi-combo sequence. [`Self::resolve`] drives the
+/// runtime's pending-key state machine, telling a completed binding apart from
+/// an in-progress leader prefix.
 #[derive(Debug)]
 pub struct Keymap {
-    bindings: FxHashMap<KeyCombo, AppCommand>,
+    /// Full key sequences → command.
+    ///
+    /// `FxHash` is fine here: keys come from the built-in defaults and the
+    /// user's own local config file, never from untrusted/network input.
+    bindings: FxHashMap<Vec<KeyCombo>, AppCommand>,
+    /// Every proper prefix of a bound sequence, so the runtime waits for more
+    /// keys instead of treating a leader as unbound.
+    prefixes: FxHashSet<Vec<KeyCombo>>,
 }
 
 impl Keymap {
@@ -62,6 +81,7 @@ impl Keymap {
     pub fn new() -> Self {
         Self {
             bindings: FxHashMap::default(),
+            prefixes: FxHashSet::default(),
         }
     }
 
@@ -78,12 +98,11 @@ impl Keymap {
         );
         const ALT: KeyModifiers = KeyModifiers::ALT;
 
-        let bindings: &[(KeyCode, KeyModifiers, AppCommand)] = &[
+        let singles: &[(KeyCode, KeyModifiers, AppCommand)] = &[
             // Application lifecycle
             (Char('q'), CTRL, AppCommand::Quit),
             // File operations
             (Char('s'), CTRL, AppCommand::Save),
-            (Char('S'), CTRL_SHIFT, AppCommand::SaveAll),
             (Char('o'), CTRL, AppCommand::OpenFilePicker),
             // Tab management
             (Char('w'), CTRL, AppCommand::CloseTab),
@@ -103,13 +122,7 @@ impl Keymap {
             // Panel toggles
             (Char('b'), CTRL, AppCommand::ToggleFileTree),
             (Char('g'), CTRL, AppCommand::ToggleGitPanel),
-            // AI commands
-            (Char('A'), CTRL_SHIFT, AppCommand::AiAskSelection),
-            (Char('R'), CTRL_SHIFT, AppCommand::AiRefactorFile),
-            (Char('I'), CTRL_SHIFT, AppCommand::AiSummarizeChanges),
-            (Char('W'), CTRL_SHIFT, AppCommand::AiCloseSession),
-            // Notifications
-            (Char('K'), CTRL_SHIFT, AppCommand::DismissNotifications),
+            // AI sessions
             (Char(']'), CTRL, AppCommand::AiNextSession),
             (Char('['), CTRL, AppCommand::AiPrevSession),
             // Editor commands
@@ -119,15 +132,11 @@ impl Keymap {
             (Char('h'), CTRL, AppCommand::Replace),
             // Command palette
             (Char('p'), CTRL, AppCommand::OpenCommandPalette),
-            // Project-wide search ("search in files")
-            (Char('F'), CTRL_SHIFT, AppCommand::OpenProjectSearch),
             // File / language picker
             (Char('n'), CTRL, AppCommand::NewFile),
             (Char('l'), CTRL, AppCommand::OpenLanguagePicker),
             // Theme
             (Char('t'), CTRL, AppCommand::OpenThemePicker),
-            // Markdown preview overlay (toggle).
-            (Char('V'), CTRL_SHIFT, AppCommand::ToggleMarkdownPreview),
             // Keybinding hints (which-key style cheatsheet).
             //
             // `?` is intentionally NOT bound globally — it would block
@@ -143,31 +152,106 @@ impl Keymap {
         ];
 
         let mut km = Self::new();
-        for (code, mods, cmd) in bindings {
-            km.bind(*code, *mods, cmd.clone());
+        for (code, mods, cmd) in singles {
+            km.bind(vec![KeyCombo::new(*code, *mods)], cmd.clone());
         }
+
+        // `Ctrl+K` leader chords. These secondary actions sit behind a
+        // terminal-safe leader rather than `Ctrl+Shift+<letter>`, which legacy
+        // terminals can't transmit and emulators reserve for copy/paste/tabs.
+        let leader: &[(&str, AppCommand)] = &[
+            ("ctrl+k a", AppCommand::AiAskSelection),
+            ("ctrl+k r", AppCommand::AiRefactorFile),
+            ("ctrl+k c", AppCommand::AiSummarizeChanges),
+            ("ctrl+k s", AppCommand::SaveAll),
+            ("ctrl+k f", AppCommand::OpenProjectSearch),
+            ("ctrl+k m", AppCommand::ToggleMarkdownPreview),
+            ("ctrl+k n", AppCommand::DismissNotifications),
+            ("ctrl+k w", AppCommand::AiCloseSession),
+        ];
+        for (seq, cmd) in leader {
+            if let Some(sequence) = parse_key_sequence(seq) {
+                km.bind(sequence, cmd.clone());
+            }
+        }
+
         km
     }
 
-    /// Add a binding.
-    pub fn bind(&mut self, code: KeyCode, modifiers: KeyModifiers, command: AppCommand) {
-        self.bindings
-            .insert(KeyCombo::new(code, modifiers), command);
+    /// Bind a key sequence to a command.
+    ///
+    /// A one-combo sequence is a plain binding; a multi-combo sequence is a
+    /// chord/leader. Every proper prefix is recorded so [`Self::resolve`] can
+    /// report an in-progress leader.
+    pub fn bind(&mut self, sequence: Vec<KeyCombo>, command: AppCommand) {
+        for i in 1..sequence.len() {
+            self.prefixes.insert(sequence[..i].to_vec());
+        }
+        self.bindings.insert(sequence, command);
     }
 
-    /// Look up a key event in the keymap.
+    /// Resolve a key sequence: a completed binding, a live leader prefix, or
+    /// nothing.
+    #[must_use]
+    pub fn resolve(&self, sequence: &[KeyCombo]) -> KeyMatch<'_> {
+        match self.bindings.get(sequence) {
+            Some(cmd) => KeyMatch::Exact(cmd),
+            None if self.prefixes.contains(sequence) => KeyMatch::Prefix,
+            None => KeyMatch::None,
+        }
+    }
+
+    /// Look up a single key event as a completed one-combo binding.
+    ///
+    /// Returns `None` for a key that merely *begins* a leader chord — use
+    /// [`Self::resolve`] for chord-aware dispatch. A convenience for callers and
+    /// tests that only deal in single keys.
     #[must_use]
     pub fn lookup(&self, event: &KeyEvent) -> Option<&AppCommand> {
-        let combo = KeyCombo::from_key_event(event);
-        self.bindings.get(&combo)
+        match self.resolve(&[KeyCombo::from_key_event(event)]) {
+            KeyMatch::Exact(cmd) => Some(cmd),
+            KeyMatch::Prefix | KeyMatch::None => None,
+        }
     }
 
-    /// Merge custom overrides into this keymap.
+    /// Next-key options that continue `prefix`, for the which-key hint.
+    /// Sorted by key for stable display.
+    #[must_use]
+    pub fn continuations(&self, prefix: &[KeyCombo]) -> Vec<(KeyCombo, &AppCommand)> {
+        let mut out: Vec<(KeyCombo, &AppCommand)> = self
+            .bindings
+            .iter()
+            .filter(|(seq, _)| seq.len() == prefix.len() + 1 && seq.starts_with(prefix))
+            .map(|(seq, cmd)| (seq[prefix.len()], cmd))
+            .collect();
+        out.sort_by(|(a, _), (b, _)| combo_key_str(a).cmp(&combo_key_str(b)));
+        out
+    }
+
+    /// Build a one-line which-key hint for an in-progress leader `prefix`,
+    /// e.g. `ctrl+k  a:ask AI  r:refactor  …  ·  esc cancel`.
+    #[must_use]
+    pub fn which_key_hint(&self, prefix: &[KeyCombo]) -> String {
+        let prefix_str = prefix
+            .iter()
+            .map(combo_key_str)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let opts = self
+            .continuations(prefix)
+            .into_iter()
+            .map(|(combo, cmd)| format!("{}:{}", combo_key_str(&combo), command_hint_label(cmd)))
+            .collect::<Vec<_>>()
+            .join("  ");
+        format!("{prefix_str}  {opts}  ·  esc cancel")
+    }
+
+    /// Merge custom sequence overrides into this keymap.
     ///
-    /// Overrides replace existing bindings for the same key combo.
-    pub fn merge(&mut self, overrides: &FxHashMap<KeyCombo, AppCommand>) {
-        for (combo, cmd) in overrides {
-            self.bindings.insert(*combo, cmd.clone());
+    /// Overrides replace existing bindings for the same sequence.
+    pub fn merge(&mut self, overrides: &FxHashMap<Vec<KeyCombo>, AppCommand>) {
+        for (sequence, cmd) in overrides {
+            self.bind(sequence.clone(), cmd.clone());
         }
     }
 }
@@ -175,6 +259,22 @@ impl Keymap {
 impl Default for Keymap {
     fn default() -> Self {
         Self::default_global()
+    }
+}
+
+/// Short human label for a command, used in the which-key leader hint.
+const fn command_hint_label(cmd: &AppCommand) -> &'static str {
+    match cmd {
+        AppCommand::AiAskSelection => "ask AI",
+        AppCommand::AiRefactorFile => "refactor",
+        AppCommand::AiSummarizeChanges => "summarize",
+        AppCommand::SaveAll => "save all",
+        AppCommand::OpenProjectSearch => "find in files",
+        AppCommand::ToggleMarkdownPreview => "markdown",
+        AppCommand::DismissNotifications => "dismiss",
+        AppCommand::AiCloseSession => "close AI",
+        // Fallback for user-defined chords whose command isn't listed above.
+        _ => "command",
     }
 }
 
@@ -191,7 +291,7 @@ impl Default for Keymap {
 /// ```toml
 /// [normal]
 /// "ctrl+s" = "save"
-/// "ctrl+shift+p" = "command_palette"
+/// "ctrl+k o" = "open_settings"   # a leader chord (Ctrl+K, then o)
 /// "f5" = "toggle_git_panel"
 /// ```
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -223,24 +323,72 @@ impl KeymapConfig {
     /// Entries with unparseable key combos or unknown commands are
     /// silently skipped (logged at warn level).
     #[must_use]
-    pub fn compile_normal(&self) -> FxHashMap<KeyCombo, AppCommand> {
+    pub fn compile_normal(&self) -> FxHashMap<Vec<KeyCombo>, AppCommand> {
         let mut result = FxHashMap::default();
         for (key_str, cmd_str) in &self.normal {
-            let Some(combo) = parse_key_combo(key_str) else {
-                log::warn!("keybindings: unknown key combo: {key_str:?}");
+            let Some(sequence) = parse_key_sequence(key_str) else {
+                log::warn!("keybindings: unknown key sequence: {key_str:?}");
                 continue;
             };
             let Some(cmd) = parse_command(cmd_str) else {
                 log::warn!("keybindings: unknown command: {cmd_str:?}");
                 continue;
             };
-            result.insert(combo, cmd);
+            result.insert(sequence, cmd);
         }
         result
     }
 }
 
 // ── Key combo string parsing ──────────────────────────────────────────
+
+/// Maximum combos in a single key sequence. Caps how deep a leader chord can
+/// nest, bounding the pending-key buffer and the prefix set even for a hostile
+/// or fat-fingered config.
+const MAX_SEQUENCE_LEN: usize = 5;
+
+/// Parse a key *sequence* — one or more whitespace-separated combos.
+///
+/// E.g. `"ctrl+s"` or `"ctrl+k a"` (a leader chord). Returns `None` if the
+/// string is empty, longer than `MAX_SEQUENCE_LEN`, or any combo is unparseable.
+#[must_use]
+pub fn parse_key_sequence(s: &str) -> Option<Vec<KeyCombo>> {
+    let combos = s
+        .split_whitespace()
+        .map(parse_key_combo)
+        .collect::<Option<Vec<_>>>()?;
+    if combos.is_empty() || combos.len() > MAX_SEQUENCE_LEN {
+        return None;
+    }
+    Some(combos)
+}
+
+/// Render a single combo for the which-key hint, e.g. `ctrl+k` or `a`.
+fn combo_key_str(combo: &KeyCombo) -> String {
+    let mut s = String::new();
+    if combo.modifiers.contains(KeyModifiers::CONTROL) {
+        s.push_str("ctrl+");
+    }
+    if combo.modifiers.contains(KeyModifiers::ALT) {
+        s.push_str("alt+");
+    }
+    if combo.modifiers.contains(KeyModifiers::SHIFT) {
+        s.push_str("shift+");
+    }
+    match combo.code {
+        KeyCode::Char(c) => s.push(c),
+        KeyCode::Tab => s.push_str("tab"),
+        KeyCode::BackTab => s.push_str("backtab"),
+        KeyCode::Enter => s.push_str("enter"),
+        KeyCode::Esc => s.push_str("esc"),
+        KeyCode::F(n) => {
+            s.push('f');
+            s.push_str(&n.to_string());
+        }
+        other => s.push_str(&format!("{other:?}").to_lowercase()),
+    }
+    s
+}
 
 /// Parse a key combo string like `"ctrl+shift+a"` into a [`KeyCombo`].
 ///
@@ -483,12 +631,126 @@ mod tests {
     fn custom_binding() {
         let mut km = Keymap::new();
         km.bind(
-            KeyCode::F(5),
-            KeyModifiers::NONE,
+            vec![KeyCombo::new(KeyCode::F(5), KeyModifiers::NONE)],
             AppCommand::ToggleGitPanel,
         );
         let event = key_event(KeyCode::F(5), KeyModifiers::NONE);
         assert_eq!(km.lookup(&event), Some(&AppCommand::ToggleGitPanel));
+    }
+
+    // ── Chords & leaders ───────────────────────────────────────────────
+
+    #[test]
+    fn parse_sequence_single_and_chord() {
+        assert_eq!(parse_key_sequence("ctrl+s").unwrap().len(), 1);
+        let chord = parse_key_sequence("ctrl+k a").unwrap();
+        assert_eq!(
+            chord,
+            vec![
+                KeyCombo::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+                KeyCombo::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            ]
+        );
+        assert!(parse_key_sequence("   ").is_none());
+    }
+
+    #[test]
+    fn resolve_exact_prefix_and_none() {
+        let km = Keymap::default_global();
+        let ctrl_k = KeyCombo::new(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        let a = KeyCombo::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        let x = KeyCombo::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        // Ctrl+K alone is a live leader prefix, not a command.
+        assert!(matches!(km.resolve(&[ctrl_k]), KeyMatch::Prefix));
+        // Ctrl+K a completes to the AI ask command.
+        assert!(matches!(
+            km.resolve(&[ctrl_k, a]),
+            KeyMatch::Exact(AppCommand::AiAskSelection)
+        ));
+        // An unrelated key resolves to nothing.
+        assert!(matches!(km.resolve(&[x]), KeyMatch::None));
+    }
+
+    #[test]
+    fn leader_continuations_and_hint() {
+        let km = Keymap::default_global();
+        let ctrl_k = KeyCombo::new(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        let keys: Vec<char> = km
+            .continuations(&[ctrl_k])
+            .into_iter()
+            .filter_map(|(combo, _)| match combo.code {
+                KeyCode::Char(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        for expected in ['a', 'r', 'c', 's', 'f', 'm', 'n', 'w'] {
+            assert!(
+                keys.contains(&expected),
+                "leader missing `{expected}`: {keys:?}"
+            );
+        }
+        let hint = km.which_key_hint(&[ctrl_k]);
+        assert!(hint.contains("a:ask AI"), "hint: {hint}");
+        assert!(hint.contains("esc cancel"), "hint: {hint}");
+    }
+
+    #[test]
+    fn custom_chord_config_round_trips() {
+        // A multi-combo binding from a user config compiles, merges, and fires.
+        let mut config = KeymapConfig::default();
+        config
+            .normal
+            .insert("ctrl+x ctrl+s".to_owned(), "save".to_owned());
+        let mut km = Keymap::new();
+        km.merge(&config.compile_normal());
+
+        let ctrl_x = KeyCombo::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        let ctrl_s = KeyCombo::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert!(matches!(km.resolve(&[ctrl_x]), KeyMatch::Prefix));
+        assert!(matches!(
+            km.resolve(&[ctrl_x, ctrl_s]),
+            KeyMatch::Exact(AppCommand::Save)
+        ));
+    }
+
+    #[test]
+    fn single_binding_shadows_chord_with_same_prefix() {
+        // A key bound both alone and as a chord prefix resolves to the immediate
+        // single-key command; the chord is unreachable (documented constraint).
+        let mut km = Keymap::new();
+        let s = KeyCombo::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        let x = KeyCombo::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        km.bind(vec![s], AppCommand::Save);
+        km.bind(vec![s, x], AppCommand::SaveAll);
+        assert!(matches!(
+            km.resolve(&[s]),
+            KeyMatch::Exact(AppCommand::Save)
+        ));
+    }
+
+    #[test]
+    fn parse_sequence_rejects_overlong_and_invalid() {
+        // Bounded by MAX_SEQUENCE_LEN (5): a 6-combo sequence is rejected.
+        assert!(parse_key_sequence("a b c d e f").is_none());
+        // A valid combo followed by an unparseable one is rejected whole.
+        assert!(parse_key_sequence("ctrl+s nope!").is_none());
+    }
+
+    #[test]
+    fn ctrl_shift_letters_are_not_bound() {
+        // Ctrl+Shift+<letter> is untransmittable in legacy terminals, so the
+        // default keymap must not depend on it.
+        let km = Keymap::default_global();
+        for c in ['A', 'R', 'I', 'F', 'V', 'S', 'W', 'K'] {
+            let combo = KeyCombo::new(
+                KeyCode::Char(c),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            );
+            assert!(
+                matches!(km.resolve(&[combo]), KeyMatch::None),
+                "Ctrl+Shift+{c} should be unbound"
+            );
+        }
     }
 
     // ── Key combo parsing ──────────────────────────────────────────────
@@ -646,11 +908,11 @@ mod tests {
         let compiled = config.compile_normal();
         assert_eq!(compiled.len(), 2);
         assert_eq!(
-            compiled.get(&KeyCombo::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            compiled.get([KeyCombo::new(KeyCode::Char('s'), KeyModifiers::CONTROL)].as_slice()),
             Some(&AppCommand::Save)
         );
         assert_eq!(
-            compiled.get(&KeyCombo::new(KeyCode::F(5), KeyModifiers::NONE)),
+            compiled.get([KeyCombo::new(KeyCode::F(5), KeyModifiers::NONE)].as_slice()),
             Some(&AppCommand::ToggleGitPanel)
         );
     }
@@ -679,7 +941,7 @@ mod tests {
         // Override ctrl+s to quit.
         let mut overrides = FxHashMap::default();
         overrides.insert(
-            KeyCombo::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            vec![KeyCombo::new(KeyCode::Char('s'), KeyModifiers::CONTROL)],
             AppCommand::Quit,
         );
         km.merge(&overrides);

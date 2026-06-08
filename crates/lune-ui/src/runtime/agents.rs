@@ -2,7 +2,7 @@
 //!
 //! Manages the mapping between [`PaneId`]s in the tiling layout and
 //! [`AiSessionId`]s in the AI manager. Handles pane lifecycle (split, close,
-//! focus cycling) and the leader-key state machine.
+//! focus cycling).
 
 use rustc_hash::FxHashMap;
 

@@ -72,7 +72,7 @@ pub const KEY_HINT_GROUPS: &[KeyHintGroup] = &[
                 label: "Save",
             },
             KeyHintEntry {
-                key: "Ctrl+Shift+S",
+                key: "Ctrl+K S",
                 label: "Save all",
             },
             KeyHintEntry {
@@ -164,7 +164,7 @@ pub const KEY_HINT_GROUPS: &[KeyHintGroup] = &[
                 label: "Theme picker",
             },
             KeyHintEntry {
-                key: "Ctrl+Shift+V",
+                key: "Ctrl+K M",
                 label: "Markdown preview",
             },
             KeyHintEntry {
@@ -177,19 +177,19 @@ pub const KEY_HINT_GROUPS: &[KeyHintGroup] = &[
         title: "AI",
         entries: &[
             KeyHintEntry {
-                key: "Ctrl+Shift+A",
+                key: "Ctrl+K A",
                 label: "Ask about selection",
             },
             KeyHintEntry {
-                key: "Ctrl+Shift+R",
+                key: "Ctrl+K R",
                 label: "Refactor file",
             },
             KeyHintEntry {
-                key: "Ctrl+Shift+I",
+                key: "Ctrl+K C",
                 label: "Summarize changes",
             },
             KeyHintEntry {
-                key: "Ctrl+Shift+W",
+                key: "Ctrl+K W",
                 label: "Close AI session",
             },
             KeyHintEntry {
@@ -235,7 +235,7 @@ pub const KEY_HINT_GROUPS: &[KeyHintGroup] = &[
         title: "Notifications & mode",
         entries: &[
             KeyHintEntry {
-                key: "Ctrl+Shift+K",
+                key: "Ctrl+K N",
                 label: "Dismiss notifications",
             },
             KeyHintEntry {

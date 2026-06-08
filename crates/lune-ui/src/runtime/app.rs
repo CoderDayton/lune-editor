@@ -60,7 +60,7 @@ use crate::theme_config::{ThemeId, ThemeRegistry};
 
 use crate::event::{AppCommand, AppEvent};
 use crate::focus::{FocusManager, PanelId};
-use crate::keybindings::Keymap;
+use crate::keybindings::{KeyCombo, Keymap};
 use crate::layout::{self, LayoutSplits, LayoutState};
 use crate::runtime::terminal_layouts;
 use crate::runtime::tiling;
@@ -170,6 +170,10 @@ pub struct AppState {
     pub focus: FocusManager,
     /// Global keybindings.
     pub keymap: Keymap,
+    /// In-progress key sequence (a leader chord awaiting its next key).
+    pending_keys: Vec<KeyCombo>,
+    /// Which-key hint shown in the status bar while a leader is pending.
+    chord_hint: Option<String>,
     /// Vim mode state.
     pub vim: VimState,
     /// Whether vim keybindings are enabled. When `false`, only Normal↔Insert
@@ -394,6 +398,8 @@ impl AppState {
             root_tab: RootTab::Editor,
             focus: FocusManager::new(),
             keymap: Keymap::default_global(),
+            pending_keys: Vec::new(),
+            chord_hint: None,
             vim: VimState::new(),
             vim_enabled: false, // default off; set by apply_settings()
             status_message: String::new(),
@@ -1399,7 +1405,12 @@ impl AppState {
             encoding: "UTF-8",
             ai_status: self.build_ai_status(),
             file_type: self.detect_file_type(),
-            message: self.status_message.clone(),
+            // A pending leader chord shows its which-key hint in place of the
+            // ordinary status message.
+            message: self
+                .chord_hint
+                .clone()
+                .unwrap_or_else(|| self.status_message.clone()),
             selection_chars,
             line_ending,
             vim_cmdline: (self.vim.mode == VimMode::Command).then(|| self.vim.cmdline.clone()),

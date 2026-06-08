@@ -1,6 +1,75 @@
 #![allow(clippy::wildcard_imports)]
 
 use super::*;
+use crate::keybindings::KeyMatch;
+
+/// Resolution of a key against the keymap (start or continuation of a chord).
+enum KeyResolve {
+    /// A complete binding fired.
+    Command(AppCommand),
+    /// A leader prefix is armed; await the next key.
+    Pending,
+    /// Not bound and not a leader prefix.
+    Unbound,
+}
+
+/// Feed the first key of a possible sequence. Arms the pending-chord state on a
+/// leader prefix; the caller dispatches a [`KeyResolve::Command`] and falls
+/// through on [`KeyResolve::Unbound`].
+fn begin_chord(key: &KeyEvent, state: &mut AppState) -> KeyResolve {
+    let combo = KeyCombo::from_key_event(key);
+    let resolve = match state.keymap.resolve(&[combo]) {
+        KeyMatch::Exact(cmd) => KeyResolve::Command(cmd.clone()),
+        KeyMatch::Prefix => KeyResolve::Pending,
+        KeyMatch::None => KeyResolve::Unbound,
+    };
+    if matches!(resolve, KeyResolve::Pending) {
+        state.pending_keys.push(combo);
+        refresh_chord_hint(state);
+    }
+    resolve
+}
+
+/// Feed the next key of an in-progress leader chord.
+fn continue_chord(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
+    // Escape abandons the chord.
+    if key.code == KeyCode::Esc {
+        clear_chord(state);
+        return Control::Changed;
+    }
+    state.pending_keys.push(KeyCombo::from_key_event(key));
+    let resolve = match state.keymap.resolve(&state.pending_keys) {
+        KeyMatch::Exact(cmd) => KeyResolve::Command(cmd.clone()),
+        KeyMatch::Prefix => KeyResolve::Pending,
+        KeyMatch::None => KeyResolve::Unbound,
+    };
+    match resolve {
+        KeyResolve::Command(cmd) => {
+            clear_chord(state);
+            Control::Event(AppEvent::Command(cmd))
+        }
+        KeyResolve::Pending => {
+            refresh_chord_hint(state);
+            Control::Changed
+        }
+        // Dead end mid-chord: consume the key and abandon the leader.
+        KeyResolve::Unbound => {
+            clear_chord(state);
+            Control::Changed
+        }
+    }
+}
+
+/// Refresh the which-key hint for the current pending prefix.
+fn refresh_chord_hint(state: &mut AppState) {
+    state.chord_hint = Some(state.keymap.which_key_hint(&state.pending_keys));
+}
+
+/// Clear the pending chord and its hint.
+fn clear_chord(state: &mut AppState) {
+    state.pending_keys.clear();
+    state.chord_hint = None;
+}
 
 pub(super) fn handle_terminal_event(ct_event: &CtEvent, state: &mut AppState) -> Control<AppEvent> {
     match ct_event {
@@ -44,6 +113,13 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         };
     }
 
+    // A leader chord is in progress: this key continues or cancels it, ahead of
+    // every other handler — including overlays — so a follow-up key never leaks
+    // elsewhere and the which-key hint can't get stranded.
+    if !state.pending_keys.is_empty() {
+        return continue_chord(key, state);
+    }
+
     if state.overlay.is_active() {
         return handle_overlay_key(key, state);
     }
@@ -69,8 +145,12 @@ fn handle_key_event(key: &KeyEvent, state: &mut AppState) -> Control<AppEvent> {
         return Control::Event(AppEvent::Command(cmd));
     }
 
-    if let Some(cmd) = state.keymap.lookup(key) {
-        return Control::Event(AppEvent::Command(cmd.clone()));
+    // Keymap resolution: a complete binding fires; a leader prefix arms the
+    // pending-chord state; anything else falls through to the mode handlers.
+    match begin_chord(key, state) {
+        KeyResolve::Command(cmd) => return Control::Event(AppEvent::Command(cmd)),
+        KeyResolve::Pending => return Control::Changed,
+        KeyResolve::Unbound => {}
     }
 
     if key.code == KeyCode::Esc {
@@ -1727,5 +1807,58 @@ mod tests {
             state.file_tree.selected, 1,
             "Left on an expanded dir collapses it in place, not jump to parent"
         );
+    }
+}
+
+#[cfg(test)]
+mod leader_tests {
+    use super::*;
+
+    fn press(state: &mut AppState, code: KeyCode, mods: KeyModifiers) -> Control<AppEvent> {
+        handle_key_event(&KeyEvent::new(code, mods), state)
+    }
+
+    #[test]
+    fn ctrl_k_leader_fires_ai_ask() {
+        let mut state = AppState::new();
+
+        // Ctrl+K arms the leader and shows the which-key hint.
+        let armed = press(&mut state, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert!(matches!(armed, Control::Changed));
+        assert_eq!(state.pending_keys.len(), 1);
+        assert!(state.chord_hint.is_some());
+
+        // `a` completes the chord into the AI-ask command and clears the leader.
+        let fired = press(&mut state, KeyCode::Char('a'), KeyModifiers::NONE);
+        assert!(matches!(
+            fired,
+            Control::Event(AppEvent::Command(AppCommand::AiAskSelection))
+        ));
+        assert!(state.pending_keys.is_empty());
+        assert!(state.chord_hint.is_none());
+    }
+
+    #[test]
+    fn leader_esc_cancels() {
+        let mut state = AppState::new();
+        let _ = press(&mut state, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_eq!(state.pending_keys.len(), 1);
+
+        let cancelled = press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(cancelled, Control::Changed));
+        assert!(state.pending_keys.is_empty());
+        assert!(state.chord_hint.is_none());
+    }
+
+    #[test]
+    fn leader_dead_end_abandons_without_typing() {
+        let mut state = AppState::new();
+        let _ = press(&mut state, KeyCode::Char('k'), KeyModifiers::CONTROL);
+
+        // `q` is not a leader continuation → the chord is abandoned and the key
+        // is consumed (not dispatched, not typed).
+        let dead = press(&mut state, KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(matches!(dead, Control::Changed));
+        assert!(state.pending_keys.is_empty());
     }
 }

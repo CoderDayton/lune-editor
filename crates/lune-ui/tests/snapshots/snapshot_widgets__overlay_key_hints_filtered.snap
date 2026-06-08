@@ -7,7 +7,7 @@ expression: text
         ╭───────────────── Keybindings  filter: save ──────────────────╮
         │File                                                          │
         │  Ctrl+S           Save                                       │
-        │  Ctrl+Shift+S     Save all                                   │
+        │  Ctrl+K S         Save all                                   │
         │                                                              │
         │                                                              │
         │                                                              │
