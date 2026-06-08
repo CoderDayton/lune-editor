@@ -35,15 +35,20 @@ pub struct SessionId(pub u128);
 impl SessionId {
     #[must_use]
     pub fn new() -> Self {
-        // u128 random enough for in-process collision resistance. Real
-        // adapters may use `uuid::Uuid::new_v4().as_u128()`.
+        // Mix a monotonic timestamp with a process-wide counter so rapid
+        // consecutive calls never collide, even on platforms with a coarse
+        // clock. Real adapters may use `uuid::Uuid::new_v4().as_u128()`.
+        use std::sync::atomic::{AtomicU64, Ordering};
         use std::time::{SystemTime, UNIX_EPOCH};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
+        let seq = u128::from(COUNTER.fetch_add(1, Ordering::Relaxed));
         Self(
             nanos
                 .wrapping_mul(2_862_933_555_777_941_757)
+                .wrapping_add(seq)
                 .wrapping_add(1),
         )
     }
