@@ -7,11 +7,10 @@ yanked = "deny"
 # Transitive advisories we don't control (unmaintained / unsound, not exploitable
 # vulnerabilities). Revisit when upstreams update. Real vulnerabilities still fail.
 ignore = [
-  "RUSTSEC-2025-0141", # bincode unmaintained (via syntect -> tui-markdown)
-  "RUSTSEC-2025-0057", # fxhash unmaintained (via rat-focus)
-  "RUSTSEC-2024-0384", # instant unmaintained (via notify)
-  "RUSTSEC-2024-0320", # yaml-rust unmaintained (via syntect)
-  "RUSTSEC-2026-0097", # rand unsound w/ custom-logger rng() — not used that way (via ratatui-image, proptest)
+  "RUSTSEC-2025-0141", # bincode unmaintained (direct + via syntect); no maintained successor
+  "RUSTSEC-2025-0057", # fxhash unmaintained (transitive via rat-focus)
+  "RUSTSEC-2024-0384", # instant unmaintained (transitive via notify)
+  "RUSTSEC-2024-0320", # yaml-rust unmaintained (transitive via syntect)
 ]
 
 [licenses]
