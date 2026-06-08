@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 540 250" role="img" aria-labelledby="title">
+  <title id="title">Lune Editor</title>
+
+  <defs>
+    <!-- Square terminal-font glyphs, cell 52x84, stem 16 -->
+    <g id="gL"><rect x="0" y="0" width="16" height="84"/><rect x="0" y="68" width="52" height="16"/></g>
+    <g id="gU"><rect x="0" y="0" width="16" height="84"/><rect x="36" y="0" width="16" height="84"/><rect x="0" y="68" width="52" height="16"/></g>
+    <g id="gN"><rect x="0" y="0" width="16" height="84"/><rect x="36" y="0" width="16" height="84"/><polygon points="16,0 32,0 36,84 20,84"/></g>
+    <g id="gE"><rect x="0" y="0" width="16" height="84"/><rect x="0" y="0" width="52" height="16"/><rect x="0" y="34" width="44" height="16"/><rect x="0" y="68" width="52" height="16"/></g>
+    <g id="gD"><rect x="0" y="0" width="16" height="84"/><rect x="0" y="0" width="40" height="16"/><rect x="0" y="68" width="40" height="16"/><rect x="36" y="16" width="16" height="52"/></g>
+    <g id="gI"><rect x="18" y="0" width="16" height="84"/><rect x="6" y="0" width="40" height="16"/><rect x="6" y="68" width="40" height="16"/></g>
+    <g id="gT"><rect x="0" y="0" width="52" height="16"/><rect x="18" y="0" width="16" height="84"/></g>
+    <g id="gO"><rect x="0" y="0" width="16" height="84"/><rect x="36" y="0" width="16" height="84"/><rect x="0" y="0" width="52" height="16"/><rect x="0" y="68" width="52" height="16"/></g>
+    <g id="gR"><rect x="0" y="0" width="16" height="84"/><rect x="0" y="0" width="40" height="16"/><rect x="36" y="0" width="16" height="40"/><rect x="0" y="34" width="40" height="16"/><polygon points="22,40 36,40 52,84 38,84"/></g>
+
+    <!-- Words -->
+    <g id="lune"><use href="#gL" x="0"/><use href="#gU" x="70"/><use href="#gN" x="140"/><use href="#gE" x="210"/></g>
+    <g id="editor"><use href="#gE" x="0"/><use href="#gD" x="70"/><use href="#gI" x="140"/><use href="#gT" x="210"/><use href="#gO" x="280"/><use href="#gR" x="350"/></g>
+  </defs>
+
+  <!-- LUNE: extruded 3D terminal text -->
+  <g transform="translate(46 28) scale(1.7)">
+    <use href="#lune" transform="translate(6 6)" fill="#3f5f8a"/>
+    <use href="#lune" transform="translate(5 5)" fill="#45689a"/>
+    <use href="#lune" transform="translate(4 4)" fill="#4a6fa3"/>
+    <use href="#lune" transform="translate(3 3)" fill="#4f74a8"/>
+    <use href="#lune" transform="translate(2 2)" fill="#5479ad"/>
+    <use href="#lune" transform="translate(1 1)" fill="#597eb2"/>
+    <use href="#lune" fill="#f2f1ed"/>
+  </g>
+
+  <!-- EDITOR: flat blocky label -->
+  <g transform="translate(168 190) scale(0.5)">
+    <use href="#editor" fill="#83a6d6"/>
+  </g>
+</svg>

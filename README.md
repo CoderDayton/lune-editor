@@ -1,114 +1,108 @@
 <div align="center">
 
-# 🌙 Lune Editor
+<img src="https://raw.githubusercontent.com/CoderDayton/lune-editor/main/assets/banner.png" alt="Lune Editor" width="440">
 
-**A fast, agentic terminal editor built in Rust.**
+A terminal code editor written in Rust. It opens fast, runs entirely in your terminal, and comes with the things you'd normally add through plugins: a Git panel, tree-sitter highlighting, an embedded terminal, and a way to run CLI AI tools next to your code.
 
-[![CI](https://github.com/user/lune-editor/actions/workflows/ci.yml/badge.svg)](https://github.com/user/lune-editor/actions)
+[![CI](https://github.com/CoderDayton/lune-editor/actions/workflows/ci.yml/badge.svg)](https://github.com/CoderDayton/lune-editor/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-1.90%2B-orange?logo=rust)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Edition](https://img.shields.io/badge/edition-2024-purple)](https://doc.rust-lang.org/edition-guide/rust-2024/)
 
-*Multi-buffer editing · Vim mode · Built-in AI · Git panel · Embedded terminal · Tree-sitter syntax*
+Multi-buffer editing · Vim mode · Git panel · Embedded terminal · Tree-sitter highlighting · AI sessions
 
 </div>
 
 ---
 
-## Why Lune?
-
-Most terminal editors make you choose: raw speed *or* modern features. Lune doesn't.
-
-It runs entirely in your terminal, starts instantly, and stays out of your way — while shipping a native Git panel, incremental tree-sitter highlighting, an embedded PTY terminal, and AI assistance that sees your editor context. No plugins required.
-
----
-
 ## Features
 
-- Multi-buffer editing with rope-based text engine (ropey)
-- Optional Vim mode (Normal/Insert/Visual/V-Line)
-- Tree-sitter syntax highlighting for 20+ languages
-- Native Git panel — stage/unstage files and hunks, per-hunk diff view
-- Find & replace with live search highlighting
-- File operation dialogs — create, rename, delete with inline prompts
-- Language selector overlay (Ctrl+L) with fuzzy filter
-- Notification toasts with fade-out animations
-- Visual effects via tachyonfx (diff fade-in, panel transitions, focus glow)
-- Embedded AI session manager — Claude Code, Aider, Gemini, shell, etc.
-- Crash recovery + workspace persistence (sled)
-- TOML themes with live switching
+- Multi-buffer editing on a rope-based text engine (ropey)
+- Optional Vim mode with Normal, Insert, Visual, Visual Line, and Command modes
+- Tree-sitter syntax highlighting for a growing list of languages, including Rust, Python, JavaScript, TypeScript, and Go
+- A native Git panel: stage and unstage files, work with individual hunks, and read diffs inline in unified or side-by-side view
+- Find and replace with live match highlighting
+- Inline dialogs for creating, renaming, and deleting files
+- A fuzzy language selector for overriding the detected language
+- Notification toasts that fade out on their own
+- Run CLI AI tools in an embedded terminal session, right next to your code
+- Crash recovery and workspace state that persists between runs
+- Two built-in themes plus any TOML themes you drop in, switchable while running
 
 ---
 
-## Quick Start
+## Quick start
 
-Requires **Rust 1.90+** (2024 edition) and a C compiler (for tree-sitter and libgit2).
+You'll need Rust 1.90 or newer (2024 edition) and a C compiler, which tree-sitter and libgit2 build against.
 
 ```bash
-git clone https://github.com/user/lune-editor
+git clone https://github.com/CoderDayton/lune-editor
 cd lune-editor
 cargo build --release       # binary at target/release/lune
-cargo install --path .      # optional: put `lune` on your PATH
+cargo install --path .      # optional: puts `lune` on your PATH
 
-# Open a project
+# open a project
 lune ~/my-project
 
-# …with vim mode and a theme
+# with vim mode and a theme
 lune ~/my-project --vim --theme "Lune Dark"
 ```
 
-First run? Press `Ctrl+P` for the command palette.
+On the first run, press `Ctrl+P` to open the command palette.
 
 ---
 
 ## Usage
 
 ```
-lune [OPTIONS] [PATH]
+lune [OPTIONS] [PATH]...
 
 Arguments:
-  [PATH]  File or directory to open (defaults to current directory)
+  [PATH]...  File(s) or directory to open (defaults to the current directory)
 
 Options:
       --vim            Enable vim mode
-      --theme <THEME>  Theme name (e.g. "Lune Dark")
+      --no-vim         Disable vim mode
+      --theme <THEME>  Theme name, for example "Lune Dark"
+      --config <PATH>  Use a specific config file
   -h, --help           Print help
-  -V, --version        Print version
+      --version        Print version
 ```
 
-### Common workflows
+### A few ways people use it
 
-**Web / Python developer**
+Web or Python project, with vim mode:
+
 ```bash
 lune ~/my-project --vim
-# File tree left · AI panel right · git panel on demand (Ctrl+G)
+# file tree on the left, AI panel on the Agents tab, git panel on demand (Ctrl+G)
 ```
 
-**Open-source contributor**
+Reviewing a repo before committing:
+
 ```bash
 lune /path/to/repo
-# Git panel shows staged/unstaged · press s/u to stage/unstage
-# Open diff view from git panel (d key) before committing
+# Ctrl+G opens the git panel: s to stage, u to unstage, c to commit
 ```
 
-**AI-assisted refactoring**
+AI-assisted editing:
+
 ```bash
 lune ~/my-project
-# Ctrl+` to toggle AI panel
-# Select code · Ctrl+K a to ask AI
+# select some code, then Ctrl+K a to ask the AI about it
 ```
 
 ---
 
 ## Configuration
 
-Global config lives at `~/.config/lune-editor/config.toml`; per-project overrides go in `.lune/config.toml`. Both are TOML, layered over the built-in defaults.
+Config lives at `~/.config/lune-editor/config.toml` (or under `$XDG_CONFIG_HOME` if that's set). Per-project overrides go in `.lune/config.toml` at the workspace root. Both are TOML and layer over the built-in defaults.
 
 ```toml
 [editor]
 tab_size = 4
 vim_mode = false
-cursor_style = "block"   # block | bar | underline
+cursor_style = "block"   # block, bar, or underline
 
 [ui]
 show_file_tree = true
@@ -117,102 +111,103 @@ show_file_tree = true
 default_client = "claude"
 
 [agents]
-placement = "fixed"   # fixed | mouse
+placement = "fixed"   # fixed or mouse
 
 theme = "Lune Dark"
 ```
 
-See the **[configuration guide](docs/configuration.md)** for every section, field, default, and workspace-override behavior.
+The [configuration guide](docs/configuration.md) covers every section, field, and default, plus how per-project overrides work.
 
 ---
 
 ## Keybindings
 
-Defaults (all rebindable in `~/.config/lune-editor/keybindings.toml`):
+Defaults, all rebindable in `~/.config/lune-editor/keybindings.toml`:
 
 | Key | Action |
 |-----|--------|
 | `Ctrl+P` | Command palette |
-| `Ctrl+S` | Save · `Ctrl+O` open file · `Ctrl+N` new file |
-| `Ctrl+F` | Find · `Ctrl+H` replace |
-| `Ctrl+B` | File tree · `Ctrl+G` git panel |
-| `Ctrl+1` / `Ctrl+2` | Editor / Agents tab |
-| `Ctrl+T` | Select theme |
-| `Ctrl+K` | Leader: then `a` ask AI · `f` find in files · `m` markdown · `s` save all |
+| `Ctrl+S` | Save |
+| `Ctrl+O` | Open file |
+| `Ctrl+N` | New file |
+| `Ctrl+F` | Find |
+| `Ctrl+H` | Replace |
+| `Ctrl+B` | Toggle file tree |
+| `Ctrl+G` | Toggle Git panel |
+| `Ctrl+1` / `Ctrl+2` | Editor tab / Agents tab |
+| `` Ctrl+` `` | Toggle the Agents (AI) tab |
+| `Ctrl+L` | Language selector |
+| `Ctrl+T` | Theme selector |
 | `Ctrl+Alt+V` | Toggle Vim mode |
+| `F1` | Keybinding hints |
 
-See the **[keybindings guide](docs/keybindings.md)** for the full list, Agents-tab keys, Vim mode, and custom bindings.
+`Ctrl+K` is a leader key. Press it, then a second key: `a` to ask the AI about the selection, `r` to refactor the file, `c` to summarize changes, `s` to save all, `f` to find in files, `m` to toggle markdown preview, `n` to dismiss notifications, `w` to close the AI session.
 
----
-
-## AI Integration
-
-Lune ships a native AI manager that launches any CLI AI tool (`claude`, `opencode`, etc.) in a PTY session so it can execute commands and see terminal output alongside your code.
-
-**Setup:** Install your preferred CLI AI tool and ensure it's on your `PATH`. Lune launches it as a subprocess — auth is handled by the client itself.
-
-```bash
-lune ~/my-project
-```
-
-**Point query** (`Ctrl+K` then `a`, or the command palette): opens the AI prompt with your current selection as context — just type your question.
-
-Lune launches the AI client as a subprocess in the embedded terminal using your local install. No API key configuration inside Lune is required — the client handles auth however it normally does.
+The [keybindings guide](docs/keybindings.md) has the full list, including the Agents tab and Vim mode.
 
 ---
 
-## Git Panel
+## AI sessions
+
+Lune Editor can run a CLI AI tool in an embedded terminal session, so the tool can run commands and see output right next to your code.
+
+Install a tool like Claude Code or OpenCode and make sure it's on your `PATH`. Lune Editor launches it as a subprocess, so sign-in and API keys are handled by the tool itself, not by Lune Editor.
+
+To ask about a selection, press `Ctrl+K` then `a`, or use the command palette. That opens an AI prompt with your current selection as context.
+
+---
+
+## Git panel
 
 Press `Ctrl+G` to open the Git panel.
 
 | Key | Action |
 |-----|--------|
-| `s` | Stage file |
-| `u` | Unstage file |
-| `d` | Open diff view |
+| `s` | Stage the selected file |
+| `u` | Unstage the selected file |
+| `d` | Discard changes to the selected file |
+| `c` | Commit |
+| `r` | Refresh |
+| `Enter` | Open the selected file in the editor |
 
-In the diff view, `GitStageHunk`, `GitUnstageHunk`, and `GitDiscardHunk` actions are available via the `Ctrl+P` command palette.
-
-The diff view (`widgets/diff_view.rs`) renders inline unified diffs with syntax-highlighted context.
+The panel shows each file's diff inline, in unified or side-by-side mode. Hunk-level actions, staging, unstaging, and discarding a single hunk, are available from the command palette.
 
 ---
 
 ## Themes
 
-Two themes ship with Lune — **Lune Dark** (default) and **Lune Light** —
-switch with `Ctrl+T` or `theme = "Lune Light"` in your config. Drop your
-own TOML themes in `~/.config/lune-editor/themes/`.
+Lune Editor ships with two themes: Lune Dark (the default) and Lune Light. Switch with `Ctrl+T`, or set `theme = "Lune Light"` in your config. Drop your own TOML themes in `~/.config/lune-editor/themes/`.
 
-See the **[theming guide](docs/theming.md)** for the built-in themes, the
-full config schema, and how to write a custom theme.
+The [theming guide](docs/theming.md) covers the built-in themes, the config schema, and writing your own.
 
 ---
 
 ## Architecture
 
-Lune is a Cargo workspace: a thin binary over four library crates.
+Lune Editor is a Cargo workspace: a small binary over five library crates.
 
 ```text
 lune-editor/
-├── src/main.rs        # CLI entry, config loading
+├── src/main.rs            # CLI entry and config loading
 └── crates/
-    ├── lune-core/     # buffers, settings, tree-sitter, search, undo, recovery
-    ├── lune-ui/       # ratatui TUI: event loop, widgets, vim, themes
-    ├── lune-ai/       # AI manager, PTY sessions
-    └── lune-git/      # git service (libgit2)
+    ├── lune-core/         # buffers, settings, search, undo, recovery, persistence
+    ├── lune-ui/           # ratatui TUI: event loop, widgets, vim, themes
+    ├── lune-ai/           # AI session manager and PTY sessions
+    ├── lune-git/          # git service (libgit2)
+    └── lune-ts-highlight/ # tree-sitter highlighting with incremental reparsing
 ```
 
-See the **[architecture guide](docs/architecture.md)** for the crate breakdown, key dependencies, the event loop, and state persistence.
+The [architecture guide](docs/architecture.md) goes into the crate breakdown, key dependencies, the event loop, and how state is persisted.
 
 ---
 
 ## Documentation
 
-- [Configuration guide](docs/configuration.md) — every setting, default, and workspace overrides
-- [Keybindings guide](docs/keybindings.md) — default bindings, Vim mode, and custom bindings
-- [Theming guide](docs/theming.md) — built-in themes, config schema, and custom themes
-- [Testing guide](docs/guides/testing.md) — running the suite, snapshots, and property tests
-- [Architecture guide](docs/architecture.md) — crates, dependencies, the event loop, and persistence
+- [Configuration guide](docs/configuration.md): every setting, default, and how overrides work
+- [Keybindings guide](docs/keybindings.md): default bindings, Vim mode, and custom bindings
+- [Theming guide](docs/theming.md): built-in themes, the config schema, and custom themes
+- [Testing guide](docs/guides/testing.md): running the suite, snapshots, and property tests
+- [Architecture guide](docs/architecture.md): crates, dependencies, the event loop, and persistence
 
 ---
 
@@ -224,14 +219,10 @@ cargo test --workspace
 cargo fmt --check && cargo clippy --workspace -- -D warnings   # before submitting
 ```
 
-See **[CONTRIBUTING.md](CONTRIBUTING.md)** for prerequisites, guidelines, the crate map, and commit style.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for prerequisites, the crate map, and commit style.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
-
----
-
-<div align="right"><a href="#-lune-editor">↑ back to top</a></div>
+MIT. See [LICENSE](LICENSE).
